@@ -1,0 +1,17 @@
+[workspace]
+members = ["crates/mudcore", "crates/mudgui"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["suzuke"]
+license = "MIT"
+
+[workspace.dependencies]
+tokio = { version = "1.43", features = ["full"] }
+encoding_rs = "0.8"
+bytes = "1.9"
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -1,0 +1,19 @@
+[package]
+name = "mudgui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "GUI application for MUD client using egui"
+
+[dependencies]
+mudcore = { path = "../mudcore" }
+eframe = { version = "0.30", default-features = false, features = [
+    "default_fonts",
+    "glow",
+    "persistence",
+] }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+font-kit = "0.14"

@@ -1,0 +1,17 @@
+[package]
+name = "mudcore"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Core library for MUD client - Telnet protocol, encoding, and message buffering"
+
+[dependencies]
+tokio = { workspace = true }
+encoding_rs = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
