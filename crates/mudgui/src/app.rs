@@ -1,14 +1,24 @@
 //! MUD Client 主要 UI 邏輯
 
-use std::sync::{Arc, Mutex};
+// No unused sync imports needed anymore
 
 use eframe::egui::{self, Color32, FontId, RichText, ScrollArea, TextEdit};
 use eframe::egui::text::LayoutJob;
-use mudcore::{MessageBuffer, TelnetClient};
+use mudcore::{
+    Alias, AliasManager, Logger, ScriptEngine, TelnetClient, Trigger, TriggerAction,
+    TriggerManager, TriggerPattern, WindowManager, WindowMessage,
+};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 
 use crate::ansi::parse_ansi;
+
+/// UI 視圖模式
+#[derive(Debug, Clone, PartialEq)]
+enum ViewMode {
+    Main,     // 顯示訊息視窗
+    Settings, // 顯示設定介面
+}
 
 /// 連線狀態
 #[derive(Debug, Clone, PartialEq)]
@@ -22,9 +32,6 @@ enum ConnectionStatus {
 pub struct MudApp {
     /// Tokio 運行時
     runtime: Runtime,
-
-    /// 訊息緩衝區（與網路執行緒共享）
-    messages: Arc<Mutex<MessageBuffer>>,
 
     /// 輸入框內容
     input: String,
@@ -45,9 +52,30 @@ pub struct MudApp {
     /// 是否自動滾動到底部
     auto_scroll: bool,
 
+    /// 視窗管理器（包含主視窗與子視窗）
+    window_manager: WindowManager,
+
+    /// 別名管理器
+    alias_manager: AliasManager,
+
+    /// 觸發器管理器
+    trigger_manager: TriggerManager,
+
+    /// 腳本引擎
+    script_engine: ScriptEngine,
+
+    /// 日誌記錄器
+    logger: Logger,
+
     /// 輸入歷史
     input_history: Vec<String>,
     history_index: Option<usize>,
+
+    /// 當前選中的視窗 ID
+    active_window_id: String,
+
+    /// 當前 UI 視圖模式
+    view_mode: ViewMode,
 }
 
 /// 發送給網路執行緒的命令
@@ -67,9 +95,25 @@ impl MudApp {
         // 創建 Tokio 運行時
         let runtime = Runtime::new().expect("無法創建 Tokio 運行時");
 
+        let mut alias_manager = AliasManager::new();
+        // 預設別名範例
+        alias_manager.add(Alias::new("kk", "kk", "kill kobold"));
+        alias_manager.add(Alias::new("h", "h", "help"));
+
+        let mut trigger_manager = TriggerManager::new();
+        // 預設觸發器範例
+        trigger_manager.add(
+            Trigger::new("系統公告", TriggerPattern::Contains("系統公告".to_string()))
+                .add_action(TriggerAction::Highlight { r: 255, g: 255, b: 0 }),
+        );
+
         Self {
             runtime,
-            messages: Arc::new(Mutex::new(MessageBuffer::new(10000))),
+            window_manager: WindowManager::new(),
+            alias_manager,
+            trigger_manager,
+            script_engine: ScriptEngine::new(),
+            logger: Logger::new(),
             input: String::new(),
             status: ConnectionStatus::Disconnected,
             command_tx: None,
@@ -79,6 +123,8 @@ impl MudApp {
             auto_scroll: true,
             input_history: Vec::new(),
             history_index: None,
+            active_window_id: "main".to_string(),
+            view_mode: ViewMode::Main,
         }
     }
 
@@ -158,8 +204,6 @@ impl MudApp {
         self.command_tx = Some(cmd_tx.clone());
         self.message_rx = Some(msg_rx);
         self.status = ConnectionStatus::Connecting;
-
-        let _messages = Arc::clone(&self.messages);
 
         // 啟動網路執行緒
         self.runtime.spawn(async move {
@@ -244,8 +288,17 @@ impl MudApp {
         }
         self.history_index = None;
 
+        // 別名處理
+        let expanded = self.alias_manager.process(&text);
+
         if let Some(tx) = &self.command_tx {
-            let _ = tx.blocking_send(Command::Send(text));
+            // 如果別名展開後包含多個命令（以分號分隔），則分開發送
+            for cmd in expanded.split(';') {
+                let cmd = cmd.trim();
+                if !cmd.is_empty() {
+                    let _ = tx.blocking_send(Command::Send(cmd.to_string()));
+                }
+            }
         }
     }
 
@@ -263,12 +316,66 @@ impl MudApp {
     fn process_messages(&mut self) {
         if let Some(rx) = &mut self.message_rx {
             while let Ok(msg) = rx.try_recv() {
-                if let Ok(mut buf) = self.messages.lock() {
-                    // 檢查是否已經存在（避免重複）
-                    buf.push(msg.clone());
+                // 觸發器處理
+                if self.trigger_manager.should_gag(&msg) {
+                    continue; // 訊息被抑制
                 }
 
-                // 更新連線狀態
+                // 處理所有匹配的觸發器動作
+                let matches = self.trigger_manager.process(&msg);
+                
+                // 預設路由目標（主視窗）
+                let mut targets = vec!["main".to_string()];
+                
+                for (trigger, m) in matches {
+                    for action in &trigger.actions {
+                        match action {
+                            TriggerAction::SendCommand(cmd) => {
+                                let mut expanded = cmd.clone();
+                                for (i, cap) in m.captures.iter().enumerate() {
+                                    expanded = expanded.replace(&format!("${}", i + 1), cap);
+                                }
+                                if let Some(tx) = &self.command_tx {
+                                    let _ = tx.blocking_send(Command::Send(expanded));
+                                }
+                            }
+                            TriggerAction::RouteToWindow(win_id) => {
+                                targets.push(win_id.clone());
+                            }
+                            TriggerAction::ExecuteScript(code) => {
+                                if let Ok(context) = self.script_engine.execute_inline(code, &msg, &m.captures) {
+                                    // 執行腳本產生的命令
+                                    if let Some(tx) = &self.command_tx {
+                                        for cmd in context.commands {
+                                            let _ = tx.blocking_send(Command::Send(cmd));
+                                        }
+                                    }
+                                    // 處理腳本中的 Gag
+                                    if context.gag {
+                                        return; // 此訊息被腳本抑制，不再繼續處理
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                // 路由到視窗
+                for target_id in targets {
+                    self.window_manager.route_message(
+                        &target_id,
+                        WindowMessage {
+                            content: msg.clone(),
+                            preserve_ansi: true,
+                        },
+                    );
+                }
+
+                // 日誌記錄
+                let _ = self.logger.log(&msg);
+
+                // 更新連線狀態 (從主視窗訊息判斷)
                 if msg.contains("已連線到") {
                     let info = msg.replace(">>> 已連線到 ", "").replace("\n", "");
                     self.status = ConnectionStatus::Connected(info);
@@ -318,10 +425,10 @@ impl MudApp {
             .show(ui, |ui| {
                 let font_id = FontId::monospace(14.0);
 
-                if let Ok(buf) = self.messages.lock() {
-                    for msg in buf.iter() {
+                if let Some(window) = self.window_manager.get(&self.active_window_id) {
+                    for msg in window.messages() {
                         // 解析 ANSI 顏色碼
-                        let spans = parse_ansi(msg);
+                        let spans = parse_ansi(&msg.content);
                         
                         // 使用 LayoutJob 來正確渲染多顏色文字
                         let mut job = LayoutJob::default();
@@ -343,6 +450,73 @@ impl MudApp {
                     }
                 }
             });
+    }
+
+    /// 繪製側邊欄
+    fn render_sidebar(&mut self, ui: &mut egui::Ui) {
+        ui.heading("視窗");
+        ui.separator();
+
+        for window in self.window_manager.windows() {
+            let is_active = window.id == self.active_window_id;
+            if ui.selectable_label(is_active, &window.title).clicked() {
+                self.active_window_id = window.id.clone();
+            }
+        }
+
+        ui.add_space(20.0);
+        ui.heading("工具");
+        ui.separator();
+        
+        if ui.button("中心管理").clicked() {
+            self.view_mode = ViewMode::Settings;
+        }
+        
+        if ui.button("返回遊戲").clicked() {
+            self.view_mode = ViewMode::Main;
+        }
+
+        ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+            ui.checkbox(&mut self.auto_scroll, "自動捲動");
+        });
+    }
+
+    /// 繪製設定與管理介面
+    fn render_settings(&mut self, ui: &mut egui::Ui) {
+        ui.heading("管理中心");
+        ui.separator();
+
+        ui.collapsing("別名 (Alias)", |ui| {
+            for alias in self.alias_manager.list() {
+                ui.label(format!("{} -> {}", alias.pattern, alias.replacement));
+            }
+            if self.alias_manager.list().is_empty() {
+                ui.label("尚無別名");
+            }
+        });
+
+        ui.collapsing("觸發器 (Trigger)", |ui| {
+            for trigger in self.trigger_manager.list() {
+                ui.label(format!("{} [{:?}]", trigger.name, trigger.pattern));
+            }
+            if self.trigger_manager.list().is_empty() {
+                ui.label("尚無觸發器");
+            }
+        });
+        
+        ui.collapsing("日誌 (Logger)", |ui| {
+            if self.logger.is_recording() {
+                ui.label(format!("狀態: 正在記錄中 ({:?})", self.logger.path().unwrap_or(std::path::Path::new(""))));
+            } else {
+                ui.label("狀態: 未啟動");
+            }
+        });
+
+        ui.add_space(20.0);
+            
+        if ui.button("關閉並返回").clicked() {
+            self.view_mode = ViewMode::Main;
+        }
     }
 
     /// 繪製輸入區
@@ -411,22 +585,43 @@ impl MudApp {
 
 impl eframe::App for MudApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // 處理接收到的訊息
+        // 處理網路訊息
         self.process_messages();
 
-        // 設定深色主題
+        // 設定暗黑模式
         ctx.set_visuals(egui::Visuals::dark());
 
-        egui::TopBottomPanel::top("connection_panel").show(ctx, |ui| {
+        // 側邊欄
+        egui::SidePanel::left("sidebar")
+            .resizable(true)
+            .default_width(120.0)
+            .show(ctx, |ui| {
+                self.render_sidebar(ui);
+            });
+
+        // 頂部面板：連線設定
+        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
+            ui.add_space(5.0);
             self.render_connection_panel(ui, ctx);
+            ui.add_space(5.0);
         });
 
-        egui::TopBottomPanel::bottom("input_panel").show(ctx, |ui| {
+        // 底部面板：輸入區
+        egui::TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
+            ui.add_space(5.0);
             self.render_input_area(ui);
+            ui.add_space(5.0);
         });
 
+        // 中央面板：訊息顯示區或設定區
         egui::CentralPanel::default().show(ctx, |ui| {
-            self.render_message_area(ui);
+            match self.view_mode {
+                ViewMode::Main => self.render_message_area(ui),
+                ViewMode::Settings => self.render_settings(ui),
+            }
         });
+
+        // 持續刷新 UI 以獲取新訊息
+        ctx.request_repaint();
     }
 }
