@@ -2,6 +2,7 @@
 
 mod ansi;
 mod app;
+mod config;
 
 use app::MudApp;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};

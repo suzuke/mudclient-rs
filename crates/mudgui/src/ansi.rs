@@ -9,6 +9,8 @@ use eframe::egui::Color32;
 pub struct AnsiSpan {
     pub text: String,
     pub fg_color: Color32,
+    pub bg_color: Option<Color32>,
+    pub blink: bool,
 }
 
 impl Default for AnsiSpan {
@@ -16,6 +18,8 @@ impl Default for AnsiSpan {
         Self {
             text: String::new(),
             fg_color: Color32::from_rgb(200, 200, 200),
+            bg_color: None,
+            blink: false,
         }
     }
 }
@@ -24,73 +28,120 @@ impl Default for AnsiSpan {
 #[derive(Default, Clone)]
 struct AnsiState {
     fg_color: Color32,
+    bg_color: Option<Color32>,
     bold: bool,
+    blink: bool,
 }
 
 impl AnsiState {
     fn new() -> Self {
         Self {
             fg_color: Color32::from_rgb(200, 200, 200),
+            bg_color: None,
             bold: false,
+            blink: false,
         }
     }
 
     fn reset(&mut self) {
-        self.fg_color = Color32::from_rgb(200, 200, 200);
-        self.bold = false;
+        *self = Self::new();
     }
 
-    /// 獲取當前顏色（考慮 bold 加亮）
-    fn current_color(&self) -> Color32 {
+    fn current_fg(&self) -> Color32 {
         self.fg_color
     }
 
-    fn apply_code(&mut self, code: u8) {
-        match code {
-            0 => self.reset(),
-            1 => {
-                self.bold = true;
-                // 如果已經有顏色，加亮它
-                self.brighten_current_color();
+    fn current_bg(&self) -> Option<Color32> {
+        self.bg_color
+    }
+
+    fn apply_code(&mut self, codes: &[u16]) {
+        let mut i = 0;
+        while i < codes.len() {
+            let code = codes[i];
+            match code {
+                0 => self.reset(),
+                1 => {
+                    self.bold = true;
+                    self.brighten_current_color();
+                }
+                2 | 22 => self.bold = false,
+                5 => self.blink = true,
+                25 => self.blink = false,
+                // 前景色
+                30..=37 => self.fg_color = self.get_basic_color((code - 30) as u8, self.bold),
+                38 => {
+                    // Extended foreground
+                    if i + 2 < codes.len() && codes[i+1] == 5 {
+                        self.fg_color = self.get_256_color(codes[i+2] as u8);
+                        i += 2;
+                    } else if i + 4 < codes.len() && codes[i+1] == 2 {
+                        self.fg_color = Color32::from_rgb(codes[i+2] as u8, codes[i+3] as u8, codes[i+4] as u8);
+                        i += 4;
+                    }
+                }
+                39 => self.fg_color = Color32::from_rgb(200, 200, 200),
+                // 背景色
+                40..=47 => self.bg_color = Some(self.get_basic_color((code - 40) as u8, false)),
+                48 => {
+                    // Extended background
+                    if i + 2 < codes.len() && codes[i+1] == 5 {
+                        self.bg_color = Some(self.get_256_color(codes[i+2] as u8));
+                        i += 2;
+                    } else if i + 4 < codes.len() && codes[i+1] == 2 {
+                        self.bg_color = Some(Color32::from_rgb(codes[i+2] as u8, codes[i+3] as u8, codes[i+4] as u8));
+                        i += 4;
+                    }
+                }
+                49 => self.bg_color = None,
+                // 高亮前景色 (90-97)
+                90..=97 => self.fg_color = self.get_basic_color((code - 90) as u8, true),
+                // 高亮背景色 (100-107)
+                100..=107 => self.bg_color = Some(self.get_basic_color((code - 100) as u8, true)),
+                _ => {}
             }
-            2 | 22 => self.bold = false,
-            // 閃爍、反轉等效果忽略（5, 7, 8, 27 等）
-            5 | 6 | 7 | 8 | 25 | 27 | 28 => {}
-            // 前景色
-            30 => self.set_fg(0, 0, 0),
-            31 => self.set_fg(187, 0, 0),
-            32 => self.set_fg(0, 187, 0),
-            33 => self.set_fg(187, 187, 0),
-            34 => self.set_fg(0, 0, 187),
-            35 => self.set_fg(187, 0, 187),
-            36 => self.set_fg(0, 187, 187),
-            37 => self.set_fg(187, 187, 187),
-            39 => self.fg_color = Color32::from_rgb(200, 200, 200), // 默認前景色
-            // 高亮前景色 (90-97)
-            90 => self.set_fg(128, 128, 128),
-            91 => self.set_fg(255, 85, 85),
-            92 => self.set_fg(85, 255, 85),
-            93 => self.set_fg(255, 255, 85),
-            94 => self.set_fg(85, 85, 255),
-            95 => self.set_fg(255, 85, 255),
-            96 => self.set_fg(85, 255, 255),
-            97 => self.set_fg(255, 255, 255),
-            // 背景色 (40-47, 100-107) - 暫時忽略
-            40..=49 | 100..=107 => {}
-            _ => {}
+            i += 1;
         }
     }
 
-    fn set_fg(&mut self, r: u8, g: u8, b: u8) {
-        if self.bold {
-            // 加亮顏色
-            self.fg_color = Color32::from_rgb(
-                r.saturating_add(68),
-                g.saturating_add(68),
-                b.saturating_add(68),
-            );
+    fn get_basic_color(&self, index: u8, bright: bool) -> Color32 {
+        match (index, bright) {
+            (0, false) => Color32::from_rgb(0, 0, 0),         // Black
+            (0, true)  => Color32::from_rgb(128, 128, 128),   // Gray
+            (1, false) => Color32::from_rgb(187, 0, 0),       // Red
+            (1, true)  => Color32::from_rgb(255, 85, 85),     // Bright Red
+            (2, false) => Color32::from_rgb(0, 187, 0),       // Green
+            (2, true)  => Color32::from_rgb(85, 255, 85),     // Bright Green
+            (3, false) => Color32::from_rgb(187, 187, 0),     // Yellow
+            (3, true)  => Color32::from_rgb(255, 255, 85),    // Bright Yellow
+            (4, false) => Color32::from_rgb(0, 0, 187),       // Blue
+            (4, true)  => Color32::from_rgb(85, 85, 255),     // Bright Blue
+            (5, false) => Color32::from_rgb(187, 0, 187),     // Magenta
+            (5, true)  => Color32::from_rgb(255, 85, 255),    // Bright Magenta
+            (6, false) => Color32::from_rgb(0, 187, 187),     // Cyan
+            (6, true)  => Color32::from_rgb(85, 255, 255),    // Bright Cyan
+            (7, false) => Color32::from_rgb(187, 187, 187),   // White
+            (7, true)  => Color32::from_rgb(255, 255, 255),   // Bright White
+            _ => Color32::LIGHT_GRAY,
+        }
+    }
+
+    fn get_256_color(&self, index: u8) -> Color32 {
+        if index < 8 {
+            self.get_basic_color(index, false)
+        } else if index < 16 {
+            self.get_basic_color(index - 8, true)
+        } else if index < 232 {
+            // 6x6x6 color cube
+            let i = index - 16;
+            let r = (i / 36) * 51;
+            let g = ((i / 6) % 6) * 51;
+            let b = (i % 6) * 51;
+            Color32::from_rgb(r, g, b)
         } else {
-            self.fg_color = Color32::from_rgb(r, g, b);
+            // Grayscale ramp
+            let gray = (index - 232) * 10 + 8;
+            Color32::from_rgb(gray, gray, gray)
         }
     }
 
@@ -110,71 +161,79 @@ pub fn parse_ansi(input: &str) -> Vec<AnsiSpan> {
     let mut state = AnsiState::new();
     let mut current_span = AnsiSpan {
         text: String::new(),
-        fg_color: state.current_color(),
+        fg_color: state.current_fg(),
+        bg_color: state.current_bg(),
+        blink: state.blink,
     };
 
     let mut chars = input.chars().peekable();
 
     while let Some(c) = chars.next() {
         if c == '\x1b' {
-            // ESC 開始
-            if chars.peek() == Some(&'[') {
-                chars.next(); // 消耗 '['
-
-                // 讀取參數（數字和分號）
-                let mut params = Vec::new();
-                let mut current_param = String::new();
-
-                while let Some(&ch) = chars.peek() {
-                    if ch.is_ascii_digit() {
-                        current_param.push(chars.next().unwrap());
-                    } else if ch == ';' {
-                        params.push(current_param.parse::<u8>().unwrap_or(0));
-                        current_param.clear();
-                        chars.next();
-                    } else {
-                        break;
+            match chars.peek() {
+                Some(&'[') => {
+                    chars.next(); // 消耗 '['
+                    
+                    // 1. 提取序列內容直至終止符
+                    let mut sequence_content = String::new();
+                    let mut cmd = '\0';
+                    while let Some(&ch) = chars.peek() {
+                        let b = ch as u8;
+                        if (0x40..=0x7E).contains(&b) {
+                            cmd = chars.next().unwrap();
+                            break;
+                        }
+                        sequence_content.push(chars.next().unwrap());
                     }
-                }
 
-                // 最後一個參數
-                if !current_param.is_empty() {
-                    params.push(current_param.parse::<u8>().unwrap_or(0));
-                }
-
-                // 讀取命令字元
-                if let Some(cmd) = chars.next() {
+                    // 2. 處理 SGR (顏色/樣式)
                     if cmd == 'm' {
-                        // SGR (Select Graphic Rendition)
-                        // 保存當前 span（如果有內容）
                         if !current_span.text.is_empty() {
                             spans.push(current_span);
                         }
 
-                        // 解析顏色碼
-                        if params.is_empty() {
-                            state.reset();
-                        } else {
-                            for code in params {
-                                state.apply_code(code);
+                        let mut params = Vec::new();
+                        for part in sequence_content.split(';') {
+                            let mut filtered = String::new();
+                            for digit in part.chars().filter(|c| c.is_ascii_digit()) {
+                                filtered.push(digit);
+                            }
+                            if let Ok(p) = filtered.parse::<u16>() {
+                                params.push(p);
                             }
                         }
 
-                        // 開始新 span
+                        if params.is_empty() && sequence_content.is_empty() {
+                            state.reset();
+                        } else {
+                            state.apply_code(&params);
+                        }
+
                         current_span = AnsiSpan {
                             text: String::new(),
-                            fg_color: state.current_color(),
+                            fg_color: state.current_fg(),
+                            bg_color: state.current_bg(),
+                            blink: state.blink,
                         };
+                    } else if cmd != '\0' {
+                        // 非 SGR 指令被忽略，cmd 與 sequence_content 都已從 chars 中消耗
+                        // 且不會進入 else 分支加入 current_span.text
                     }
-                    // 其他 CSI 命令（A, B, C, D, H, J, K 等）直接忽略
+                }
+                Some(&'(') | Some(&')') => {
+                    chars.next(); // 消耗 '(' 或 ')'
+                    chars.next(); // 消耗字集識別碼
+                }
+                _ => {
+                    // 其他 ESC 序列暫不處理
                 }
             }
-            // 其他 ESC 序列也忽略
-        } else if c >= ' ' || c == '\n' || c == '\r' || c == '\t' {
-            // 可列印字符和控制字符（換行、回車、Tab）
-            current_span.text.push(c);
+        } else {
+            // 基本字元處理
+            if c >= ' ' || c == '\n' || c == '\r' || c == '\t' {
+                current_span.text.push(c);
+            }
         }
-        // 其他控制字符忽略
     }
 
     // 添加最後一個 span
@@ -233,5 +292,26 @@ mod tests {
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].text, "Bright Red");
         assert_eq!(spans[0].fg_color, Color32::from_rgb(255, 85, 85));
+    }
+
+    #[test]
+    fn test_background_color() {
+        let spans = parse_ansi("\x1b[41mRed BG\x1b[0m");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].text, "Red BG");
+        assert_eq!(spans[0].bg_color, Some(Color32::from_rgb(187, 0, 0)));
+    }
+
+    #[test]
+    fn test_complex_csi_sequences() {
+        // [3B 游標下移（忽略），接 [33;36;40m 顏色序列
+        let input = "\x1b[3B\x1b[33;36;40mColor\x1b[0m";
+        let spans = parse_ansi(input);
+        for span in &spans {
+            println!("Span: {:?}", span);
+        }
+        // 應產出 1 個 span: "Color"（顏色狀態已更新，但文字不含轉義雜訊）
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].text, "Color");
     }
 }

@@ -154,21 +154,25 @@ pub enum TelnetEvent {
 }
 
 /// 解析 Telnet 資料流，分離出文字和命令
-pub fn parse_telnet_data(input: &[u8]) -> (Vec<u8>, Vec<TelnetEvent>) {
+/// 
+/// 返回 (文字資料, 事件列表, 已處理的位元組數)
+pub fn parse_telnet_data(input: &[u8]) -> (Vec<u8>, Vec<TelnetEvent>, usize) {
     let mut data = Vec::new();
     let mut events = Vec::new();
     let mut i = 0;
+    let mut last_consumed = 0;
 
     while i < input.len() {
         if input[i] == IAC {
             if i + 1 >= input.len() {
-                break; // 不完整的 IAC 序列
+                break; // 不完整的 IAC 序列，留在緩衝區下次處理
             }
 
             if input[i + 1] == IAC {
                 // IAC IAC = 轉義的 0xFF
                 data.push(IAC);
                 i += 2;
+                last_consumed = i;
                 continue;
             }
 
@@ -182,7 +186,10 @@ pub fn parse_telnet_data(input: &[u8]) -> (Vec<u8>, Vec<TelnetEvent>) {
                             let option = TelnetOption::from_byte(input[i + 2]);
                             events.push(TelnetEvent::Command(cmd, option));
                             i += 3;
+                            last_consumed = i;
                             continue;
+                        } else {
+                            break; // 不完整的命令，留在緩衝區
                         }
                     }
                     TelnetCommand::Sb => {
@@ -191,35 +198,47 @@ pub fn parse_telnet_data(input: &[u8]) -> (Vec<u8>, Vec<TelnetEvent>) {
                             let option = TelnetOption::from_byte(input[i + 2]);
                             let mut sub_data = Vec::new();
                             let mut j = i + 3;
+                            let mut found_se = false;
 
                             while j + 1 < input.len() {
                                 if input[j] == IAC && input[j + 1] == TelnetCommand::Se as u8 {
                                     events.push(TelnetEvent::Subnegotiation(option, sub_data));
                                     i = j + 2;
+                                    last_consumed = i;
+                                    found_se = true;
                                     break;
                                 }
                                 sub_data.push(input[j]);
                                 j += 1;
                             }
+                            
+                            if !found_se {
+                                break; // 尚未收到 SE，留在緩衝區
+                            }
                             continue;
+                        } else {
+                            break; // 不完整的 SB，留在緩衝區
                         }
                     }
                     _ => {
-                        // 其他命令，跳過
+                        // 其他命令（如 GA, NOP），直接消耗
                         i += 2;
+                        last_consumed = i;
                         continue;
                     }
                 }
             }
 
             i += 2;
+            last_consumed = i;
         } else {
             data.push(input[i]);
             i += 1;
+            last_consumed = i;
         }
     }
 
-    (data, events)
+    (data, events, last_consumed)
 }
 
 /// 生成 Telnet 拒絕回應（對所有選項回應 WONT/DONT）
@@ -260,7 +279,7 @@ mod tests {
     #[test]
     fn test_parse_plain_text() {
         let input = b"Hello World";
-        let (data, events) = parse_telnet_data(input);
+        let (data, events, _) = parse_telnet_data(input);
         assert_eq!(data, b"Hello World");
         assert!(events.is_empty());
     }
@@ -268,7 +287,7 @@ mod tests {
     #[test]
     fn test_parse_escaped_iac() {
         let input = [b'A', IAC, IAC, b'B'];
-        let (data, events) = parse_telnet_data(&input);
+        let (data, events, _) = parse_telnet_data(&input);
         assert_eq!(data, vec![b'A', IAC, b'B']);
         assert!(events.is_empty());
     }
@@ -276,7 +295,7 @@ mod tests {
     #[test]
     fn test_parse_will_command() {
         let input = [IAC, TelnetCommand::Will as u8, TelnetOption::Echo.as_byte()];
-        let (data, events) = parse_telnet_data(&input);
+        let (data, events, _) = parse_telnet_data(&input);
         assert!(data.is_empty());
         assert_eq!(events.len(), 1);
         assert_eq!(
@@ -291,7 +310,7 @@ mod tests {
         input.extend_from_slice(&[IAC, TelnetCommand::Do as u8, TelnetOption::SuppressGoAhead.as_byte()]);
         input.extend_from_slice(b" World");
 
-        let (data, events) = parse_telnet_data(&input);
+        let (data, events, _) = parse_telnet_data(&input);
         assert_eq!(data, b"Hello  World");
         assert_eq!(events.len(), 1);
     }

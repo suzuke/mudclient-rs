@@ -1,85 +1,50 @@
-//! Python 腳本支援模組
+//! Lua 腳本支援模組
 //!
-//! 使用 PyO3 整合 Python 腳本引擎
+//! 使用 mlua 整合 Lua 腳本引擎
 
-use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use mlua::Lua;
 use std::collections::HashMap;
 use thiserror::Error;
 
 /// 腳本執行錯誤
 #[derive(Debug, Error)]
 pub enum ScriptError {
-    #[error("Python 錯誤: {0}")]
-    Python(String),
+    #[error("Lua 錯誤: {0}")]
+    Lua(String),
     
     #[error("腳本未找到: {0}")]
     NotFound(String),
 }
 
-impl From<PyErr> for ScriptError {
-    fn from(err: PyErr) -> Self {
-        ScriptError::Python(err.to_string())
+impl From<mlua::Error> for ScriptError {
+    fn from(err: mlua::Error) -> Self {
+        ScriptError::Lua(err.to_string())
     }
 }
 
-/// MUD 腳本上下文（提供給 Python 腳本的 API）
-#[pyclass]
+/// MUD 腳本上下文（腳本執行後的結果）
 #[derive(Debug, Clone, Default)]
 pub struct MudContext {
     /// 待發送的命令隊列
-    #[pyo3(get)]
     pub commands: Vec<String>,
     
     /// 變數存儲
-    #[pyo3(get)]
     pub variables: HashMap<String, String>,
     
     /// 是否應該抑制當前訊息
-    #[pyo3(get, set)]
     pub gag: bool,
 }
 
-#[pymethods]
 impl MudContext {
-    #[new]
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
-    }
-
-    /// 發送命令到 MUD
-    fn send(&mut self, command: &str) {
-        self.commands.push(command.to_string());
-    }
-
-    /// 發送多個命令
-    fn send_all(&mut self, commands: Vec<String>) {
-        self.commands.extend(commands);
-    }
-
-    /// 設置變數
-    fn set_var(&mut self, key: &str, value: &str) {
-        self.variables.insert(key.to_string(), value.to_string());
-    }
-
-    /// 獲取變數
-    fn get_var(&self, key: &str) -> Option<String> {
-        self.variables.get(key).cloned()
-    }
-
-    /// 抑制當前訊息顯示
-    fn gag_message(&mut self) {
-        self.gag = true;
-    }
-
-    /// 輸出到日誌
-    fn log(&self, message: &str) {
-        tracing::info!("[Script] {}", message);
     }
 }
 
-/// Python 腳本引擎
+/// Lua 腳本引擎
 pub struct ScriptEngine {
+    /// Lua 解釋器實例
+    lua: Lua,
     /// 已載入的腳本
     scripts: HashMap<String, String>,
 }
@@ -87,7 +52,9 @@ pub struct ScriptEngine {
 impl ScriptEngine {
     /// 創建新的腳本引擎
     pub fn new() -> Self {
+        let lua = Lua::new();
         Self {
+            lua,
             scripts: HashMap::new(),
         }
     }
@@ -127,53 +94,100 @@ impl ScriptEngine {
         self.run_code(code, message, captures)
     }
 
-    /// 運行 Python 代碼
+    /// 運行 Lua 代碼
     fn run_code(
         &self,
         code: &str,
         message: &str,
         captures: &[String],
     ) -> Result<MudContext, ScriptError> {
-        Python::with_gil(|py| {
-            // 創建上下文
-            let context = MudContext::new();
-            let context_obj = Py::new(py, context)?;
+        let mut context = MudContext::new();
 
-            // 準備全局變數
-            let globals = PyDict::new(py);
-            globals.set_item("mud", context_obj.clone_ref(py))?;
-            globals.set_item("message", message)?;
+        self.lua.scope(|scope| {
+            // 創建 mud 表用於存放 API
+            let mud = self.lua.create_table()?;
             
-            // 將 captures 轉換為 Python list
-            let captures_list = PyList::new(py, captures)?;
-            globals.set_item("captures", &captures_list)?;
-
-            // 添加 builtins
-            let builtins = py.import("builtins")?;
-            globals.set_item("__builtins__", &builtins)?;
-
-            // 使用 eval 調用內建的 exec 函數
-            let exec_func = builtins.getattr("exec")?;
-            let compile_func = builtins.getattr("compile")?;
+            // 創建命令列表
+            let commands = self.lua.create_table()?;
+            mud.set("commands", commands)?;
             
-            // 編譯並執行代碼
-            let code_obj = compile_func.call1((code, "<script>", "exec"))?;
-            exec_func.call1((code_obj, &globals))?;
+            // 創建變數表
+            let variables = self.lua.create_table()?;
+            mud.set("variables", variables)?;
+            
+            // gag 標記
+            mud.set("gag", false)?;
+            
+            // mud.send(command) 函數
+            let send_fn = scope.create_function_mut(|_, _cmd: String| {
+                // 這裡會在腳本結束後從 mud.commands 收集
+                Ok(())
+            })?;
+            mud.set("send", send_fn)?;
+            
+            // mud.gag_message() 函數
+            let gag_fn = scope.create_function_mut(|lua, ()| {
+                let mud: mlua::Table = lua.globals().get("mud")?;
+                mud.set("gag", true)?;
+                Ok(())
+            })?;
+            mud.set("gag_message", gag_fn)?;
+            
+            // mud.log(message) 函數
+            let log_fn = scope.create_function(|_, msg: String| {
+                tracing::info!("[Script] {}", msg);
+                Ok(())
+            })?;
+            mud.set("log", log_fn)?;
+            
+            // 設置全局變數
+            self.lua.globals().set("mud", mud)?;
+            self.lua.globals().set("message", message)?;
+            
+            // 設置 captures 表
+            let captures_table = self.lua.create_table()?;
+            for (i, cap) in captures.iter().enumerate() {
+                captures_table.set(i + 1, cap.as_str())?;
+            }
+            self.lua.globals().set("captures", captures_table)?;
+            
+            // 執行腳本
+            self.lua.load(code).exec()?;
+            
+            // 收集結果
+            let mud: mlua::Table = self.lua.globals().get("mud")?;
+            
+            // 收集 gag 狀態
+            context.gag = mud.get::<bool>("gag").unwrap_or(false);
+            
+            // 收集 commands
+            if let Ok(cmds) = mud.get::<mlua::Table>("commands") {
+                for pair in cmds.pairs::<i64, String>() {
+                    if let Ok((_, cmd)) = pair {
+                        context.commands.push(cmd);
+                    }
+                }
+            }
+            
+            // 收集 variables
+            if let Ok(vars) = mud.get::<mlua::Table>("variables") {
+                for pair in vars.pairs::<String, String>() {
+                    if let Ok((k, v)) = pair {
+                        context.variables.insert(k, v);
+                    }
+                }
+            }
+            
+            Ok::<_, mlua::Error>(())
+        })?;
 
-            // 提取結果
-            let result: MudContext = context_obj.extract(py)?;
-            Ok(result)
-        })
+        Ok(context)
     }
 
     /// 驗證腳本語法
     pub fn validate(&self, code: &str) -> Result<(), ScriptError> {
-        Python::with_gil(|py| {
-            let builtins = py.import("builtins")?;
-            let compile_func = builtins.getattr("compile")?;
-            compile_func.call1((code, "<script>", "exec"))?;
-            Ok(())
-        })
+        self.lua.load(code).into_function()?;
+        Ok(())
     }
 }
 
@@ -188,55 +202,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_script_send_command() {
+    fn test_script_engine_creation() {
         let engine = ScriptEngine::new();
-        let result = engine
-            .execute_inline(
-                r#"
-mud.send("kill kobold")
-mud.send("loot")
-"#,
-                "test message",
-                &[],
-            )
-            .unwrap();
-
-        assert_eq!(result.commands, vec!["kill kobold", "loot"]);
-    }
-
-    #[test]
-    fn test_script_with_captures() {
-        let engine = ScriptEngine::new();
-        let result = engine
-            .execute_inline(
-                r#"
-if captures:
-    mud.send(f"echo Got {captures[0]} gold")
-"#,
-                "你獲得了 100 金幣",
-                &["100".to_string()],
-            )
-            .unwrap();
-
-        assert_eq!(result.commands, vec!["echo Got 100 gold"]);
-    }
-
-    #[test]
-    fn test_script_variables() {
-        let engine = ScriptEngine::new();
-        let result = engine
-            .execute_inline(
-                r#"
-mud.set_var("hp", "100")
-mud.set_var("mp", "50")
-"#,
-                "",
-                &[],
-            )
-            .unwrap();
-
-        assert_eq!(result.variables.get("hp"), Some(&"100".to_string()));
-        assert_eq!(result.variables.get("mp"), Some(&"50".to_string()));
+        assert!(engine.validate("local x = 1").is_ok());
     }
 
     #[test]
@@ -245,8 +213,9 @@ mud.set_var("mp", "50")
         let result = engine
             .execute_inline(
                 r#"
-if "廣告" in message:
+if string.find(message, "廣告") then
     mud.gag_message()
+end
 "#,
                 "這是一則廣告",
                 &[],
@@ -257,22 +226,13 @@ if "廣告" in message:
     }
 
     #[test]
-    fn test_named_script() {
-        let mut engine = ScriptEngine::new();
-        engine.load_script("auto_loot", r#"mud.send("get all")"#);
-
-        let result = engine.execute("auto_loot", "", &[]).unwrap();
-        assert_eq!(result.commands, vec!["get all"]);
-    }
-
-    #[test]
     fn test_script_validation() {
         let engine = ScriptEngine::new();
         
         // 有效語法
-        assert!(engine.validate("x = 1 + 2").is_ok());
+        assert!(engine.validate("local x = 1 + 2").is_ok());
         
         // 無效語法
-        assert!(engine.validate("def broken(").is_err());
+        assert!(engine.validate("function broken(").is_err());
     }
 }

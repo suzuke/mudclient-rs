@@ -14,7 +14,7 @@ use tokio::time::timeout;
 use tracing::{debug, error, info, warn};
 
 use super::protocol::{generate_refusal, parse_telnet_data, TelnetEvent};
-use crate::encoding::{decode_big5, encode_big5};
+use crate::encoding::encode_big5;
 
 /// Telnet 客戶端錯誤
 #[derive(Debug, Error)]
@@ -63,6 +63,12 @@ pub struct TelnetClient {
     stream: Option<TcpStream>,
     config: TelnetConfig,
     state: ConnectionState,
+    /// 尚未處理的原始位元組緩衝區（Telnet 協定層）
+    raw_buffer: Vec<u8>,
+    /// 已處理 Telnet 協定但尚未解碼為 UTF-8 的位元組緩衝區
+    text_buffer: Vec<u8>,
+    /// Big5 解碼器（有狀態，處理斷掉的字元）
+    decoder: encoding_rs::Decoder,
 }
 
 impl TelnetClient {
@@ -72,6 +78,9 @@ impl TelnetClient {
             stream: None,
             config,
             state: ConnectionState::Disconnected,
+            raw_buffer: Vec::new(),
+            text_buffer: Vec::new(),
+            decoder: encoding_rs::BIG5.new_decoder(),
         }
     }
 
@@ -165,36 +174,83 @@ impl TelnetClient {
         let n = stream.read(&mut buffer).await?;
 
         if n == 0 {
+            // 真正收到 EOF，切換狀態
             self.state = ConnectionState::Disconnected;
-            return Ok(String::new());
+            return Err(TelnetError::NotConnected);
         }
 
-        let raw_data = &buffer[..n];
+        // 將新資料加入 raw_buffer
+        self.raw_buffer.extend_from_slice(&buffer[..n]);
+        crate::debug_log::DebugLogger::log_bytes("READ_RAW", &buffer[..n]);
 
-        // 解析 Telnet 協定
-        let (text_data, events) = parse_telnet_data(raw_data);
+        // 1. 解析 Telnet 協定（處理 IAC）
+        let (text_bytes, events, consumed) = parse_telnet_data(&self.raw_buffer);
+        crate::debug_log::DebugLogger::log_bytes("TEXT_BYTES", &text_bytes);
+        self.raw_buffer.drain(..consumed);
 
-        // 處理 Telnet 命令（自動回應）
+        // 2. 處理 Telnet 命令
         for event in events {
-            match event {
-                TelnetEvent::Command(cmd, option) => {
-                    debug!("收到 Telnet 命令: {:?} {:?}", cmd, option);
-                    let response = generate_refusal(cmd, option);
-                    if !response.is_empty() {
-                        self.send_raw(&response).await?;
-                        debug!("已回應 Telnet 命令");
-                    }
+            if let TelnetEvent::Command(cmd, option) = event {
+                let response = generate_refusal(cmd, option);
+                if !response.is_empty() {
+                    let _ = self.send_raw(&response).await;
                 }
-                TelnetEvent::Subnegotiation(option, data) => {
-                    debug!("收到 Sub-negotiation: {:?}, {} bytes", option, data.len());
-                }
-                TelnetEvent::Data(_) => {}
             }
         }
 
-        // 將 Big5 解碼為 UTF-8
-        let text = decode_big5(&text_data);
-        Ok(text)
+        // 3. 處理 text_bytes：分離 ANSI 與文字位元組，避免 ANSI 截斷 Big5 字元
+        let mut final_output = String::new();
+        let mut i = 0;
+        
+        while i < text_bytes.len() {
+            // 尋找下一個 ESC [
+            if text_bytes[i] == 0x1B && i + 1 < text_bytes.len() && text_bytes[i+1] == b'[' {
+                // 1. 先將累積在 text_buffer 的純文字位元組解碼
+                if !self.text_buffer.is_empty() {
+                    let mut decoded = String::with_capacity(self.text_buffer.len() * 2);
+                    let (_result, read, _replaced) = self.decoder.decode_to_string(&self.text_buffer, &mut decoded, false);
+                    final_output.push_str(&decoded);
+                    self.text_buffer.drain(..read);
+                }
+
+                // 2. 提取完整的 ANSI 序列 (直到 0x40-0x7E)
+                let start = i;
+                i += 2; // 跳過 ESC [
+                while i < text_bytes.len() {
+                    let b = text_bytes[i];
+                    i += 1;
+                    if (0x40..=0x7E).contains(&b) {
+                        break;
+                    }
+                }
+                // 直接將 ANSI 序列轉為字串並加入輸出
+                if let Ok(ansi_str) = std::str::from_utf8(&text_bytes[start..i]) {
+                    final_output.push_str(ansi_str);
+                }
+            } else {
+                self.text_buffer.push(text_bytes[i]);
+                i += 1;
+            }
+        }
+
+        // 4. 最後解碼剩餘的 text_buffer
+        if !self.text_buffer.is_empty() {
+            let mut decoded = String::with_capacity(self.text_buffer.len() * 2);
+            let (_result, read, replaced) = self.decoder.decode_to_string(&self.text_buffer, &mut decoded, false);
+            
+            if replaced {
+                debug!("Big5 解碼包含無效字元。Raw: {:02X?}", &self.text_buffer[..read.min(32)]);
+            }
+            
+            final_output.push_str(&decoded);
+            self.text_buffer.drain(..read);
+        }
+
+        if !final_output.is_empty() {
+            debug!("成功處理 {} 字元 (含 ANSI)", final_output.chars().count());
+        }
+
+        Ok(final_output)
     }
 
     /// 啟動非同步讀取迴圈，將接收到的資料發送到 channel
@@ -207,16 +263,13 @@ impl TelnetClient {
             tokio::select! {
                 result = self.read() => {
                     match result {
-                        Ok(text) if !text.is_empty() => {
-                            if tx.send(text).await.is_err() {
-                                warn!("接收端已關閉");
-                                break;
+                        Ok(text) => {
+                            if !text.is_empty() {
+                                if tx.send(text).await.is_err() {
+                                    warn!("接收端已關閉");
+                                    break;
+                                }
                             }
-                        }
-                        Ok(_) => {
-                            // 空字串表示連線已關閉
-                            info!("伺服器已關閉連線");
-                            break;
                         }
                         Err(e) => {
                             error!("讀取錯誤: {}", e);
