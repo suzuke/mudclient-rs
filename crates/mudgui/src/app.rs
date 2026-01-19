@@ -21,6 +21,7 @@ enum ConnectionStatus {
     Disconnected,
     Connecting,
     Connected(String), // 包含伺服器資訊
+    Reconnecting,      // 正在等待重連
 }
 
 /// MUD 客戶端 GUI 應用程式
@@ -66,6 +67,10 @@ pub struct MudApp {
     /// 輸入歷史
     input_history: Vec<String>,
     history_index: Option<usize>,
+    
+    /// Tab 補齊狀態
+    tab_completion_prefix: Option<String>,
+    tab_completion_index: usize,
 
     /// 當前選中的視窗 ID
     active_window_id: String,
@@ -90,10 +95,20 @@ pub struct MudApp {
     trigger_edit_name: String,
     trigger_edit_pattern: String,
     trigger_edit_action: String,
+    /// 是否使用 Lua 腳本模式
+    trigger_edit_is_script: bool,
 
     // === 設定視窗狀態 ===
     /// 是否顯示設定中心視窗
     show_settings_window: bool,
+
+    // === 自動重連 ===
+    /// 是否啟用自動重連
+    auto_reconnect: bool,
+    /// 重連等待時間點
+    reconnect_delay_until: Option<Instant>,
+    /// egui Context 的參照（用於自動重連時觸發連線）
+    ctx: Option<egui::Context>,
 }
 
 /// 發送給網路執行緒的命令
@@ -191,6 +206,8 @@ impl MudApp {
             auto_scroll: true,
             input_history: Vec::new(),
             history_index: None,
+            tab_completion_prefix: None,
+            tab_completion_index: 0,
             active_window_id: "main".to_string(),
             connected_at: None,
             // 別名編輯狀態
@@ -204,8 +221,13 @@ impl MudApp {
             trigger_edit_name: String::new(),
             trigger_edit_pattern: String::new(),
             trigger_edit_action: String::new(),
+            trigger_edit_is_script: false,
             // 設定視窗狀態
             show_settings_window: false,
+            // 自動重連
+            auto_reconnect: true,
+            reconnect_delay_until: None,
+            ctx: None,
         }
     }
 
@@ -230,12 +252,12 @@ impl MudApp {
                     TriggerPattern::EndsWith(s) => s.clone(),
                     TriggerPattern::Regex(s) => s.clone(),
                 };
-                // 提取第一個 SendCommand 動作
+                // 提取第一個 SendCommand 或 ExecuteScript 動作
                 let action_str = t.actions.iter().find_map(|a| {
-                    if let TriggerAction::SendCommand(cmd) = a {
-                        Some(cmd.clone())
-                    } else {
-                        None
+                    match a {
+                        TriggerAction::SendCommand(cmd) => Some(cmd.clone()),
+                        TriggerAction::ExecuteScript(code) => Some(code.clone()),
+                        _ => None,
                     }
                 }).unwrap_or_default();
                 
@@ -445,7 +467,24 @@ impl MudApp {
             // 如果輸入為空，直接發送空字串（MUD 需要空 Enter）
             if expanded.is_empty() {
                 let _ = tx.blocking_send(Command::Send(String::new()));
+                // 空 Enter 回顯
+                self.window_manager.route_message(
+                    "main",
+                    WindowMessage {
+                        content: "\n".to_string(),
+                        preserve_ansi: false,
+                    },
+                );
             } else {
+                // 回顯原始輸入（緊隨提示字元）
+                self.window_manager.route_message(
+                    "main",
+                    WindowMessage {
+                        content: format!("{}\n", text),
+                        preserve_ansi: false,
+                    },
+                );
+
                 // 如果別名展開後包含多個命令（以分號分隔），則分開發送
                 for cmd in expanded.split(';') {
                     let cmd = cmd.trim();
@@ -465,6 +504,24 @@ impl MudApp {
         self.command_tx = None;
         self.message_rx = None;
         self.status = ConnectionStatus::Disconnected;
+        // 手動斷線時停止自動重連
+        self.reconnect_delay_until = None;
+    }
+
+    /// 檢查並執行自動重連
+    fn check_reconnect(&mut self, ctx: &egui::Context) {
+        if let ConnectionStatus::Reconnecting = self.status {
+            if let Some(until) = self.reconnect_delay_until {
+                if Instant::now() >= until {
+                    // 時間到，執行重連
+                    self.reconnect_delay_until = None;
+                    self.start_connection(ctx.clone());
+                } else {
+                    // 持續刷新 UI 以更新倒數顯示
+                    ctx.request_repaint();
+                }
+            }
+        }
     }
 
     /// 處理接收到的訊息
@@ -483,15 +540,31 @@ impl MudApp {
                 let mut targets = vec!["main".to_string()];
                 
                 for (trigger, m) in matches {
+                    tracing::info!("[Trigger] 匹配觸發器: {}, 動作數: {}", trigger.name, trigger.actions.len());
                     for action in &trigger.actions {
+                        tracing::info!("[Trigger] 動作類型: {:?}", std::mem::discriminant(action));
                         match action {
                             TriggerAction::SendCommand(cmd) => {
                                 let mut expanded = cmd.clone();
                                 for (i, cap) in m.captures.iter().enumerate() {
                                     expanded = expanded.replace(&format!("${}", i + 1), cap);
                                 }
+                                // 支援用 ; 分隔多個命令
+                                let commands: Vec<&str> = expanded.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+                                tracing::info!("[Trigger] 執行 SendCommand: {} (拆分為 {} 個命令)", expanded, commands.len());
                                 if let Some(tx) = &self.command_tx {
-                                    let _ = tx.blocking_send(Command::Send(expanded));
+                                    for single_cmd in commands {
+                                        let _ = tx.blocking_send(Command::Send(single_cmd.to_string()));
+                                        
+                                        // 自動指令回顯（單獨成行）
+                                        self.window_manager.route_message(
+                                            "main",
+                                            WindowMessage {
+                                                content: format!("\n[AUTO] {}\n", single_cmd),
+                                                preserve_ansi: false,
+                                            },
+                                        );
+                                    }
                                 }
                             }
                             TriggerAction::RouteToWindow(win_id) => {
@@ -502,9 +575,52 @@ impl MudApp {
                                     // 執行腳本產生的命令
                                     if let Some(tx) = &self.command_tx {
                                         for cmd in context.commands {
-                                            let _ = tx.blocking_send(Command::Send(cmd));
+                                            let _ = tx.blocking_send(Command::Send(cmd.clone()));
+                                            
+                                            // 腳本指令回顯（單獨成行）
+                                            self.window_manager.route_message(
+                                                "main",
+                                                WindowMessage {
+                                                    content: format!("\n[SCRIPT] {}\n", cmd),
+                                                    preserve_ansi: false,
+                                                },
+                                            );
                                         }
                                     }
+                                    
+                                    // 處理 echos - 本地顯示
+                                    for echo_text in context.echos {
+                                        self.window_manager.route_message(
+                                            "main",
+                                            WindowMessage {
+                                                content: format!(">>> {}\n", echo_text),
+                                                preserve_ansi: false,
+                                            },
+                                        );
+                                    }
+                                    
+                                    // 處理 window_outputs - 子視窗輸出
+                                    for (win_id, text) in context.window_outputs {
+                                        self.window_manager.route_message(
+                                            &win_id,
+                                            WindowMessage {
+                                                content: format!("{}\n", text),
+                                                preserve_ansi: true,
+                                            },
+                                        );
+                                    }
+                                    
+                                    // 處理 log_messages - 寫入日誌
+                                    for log_msg in context.log_messages {
+                                        let _ = self.logger.log(&format!("[Script] {}", log_msg));
+                                    }
+                                    
+                                    // 處理 timers - 暫時僅記錄（完整實現需要 pending_timers 欄位）
+                                    for (delay_ms, timer_code) in context.timers {
+                                        tracing::info!("[Timer] 將在 {}ms 後執行: {}", delay_ms, timer_code);
+                                        // TODO: 加入 pending_timers 欄位並在 update() 中處理
+                                    }
+                                    
                                     // 處理腳本中的 Gag
                                     if context.gag {
                                         return; // 此訊息被腳本抑制，不再繼續處理
@@ -536,8 +652,15 @@ impl MudApp {
                     self.status = ConnectionStatus::Connected(info);
                     self.connected_at = Some(Instant::now());
                 } else if msg.contains("連線已關閉") || msg.contains("已斷開連線") {
-                    self.status = ConnectionStatus::Disconnected;
                     self.connected_at = None;
+                    // 自動重連邏輯
+                    if self.auto_reconnect {
+                        use std::time::Duration;
+                        self.reconnect_delay_until = Some(Instant::now() + Duration::from_secs(3));
+                        self.status = ConnectionStatus::Reconnecting;
+                    } else {
+                        self.status = ConnectionStatus::Disconnected;
+                    }
                 }
             }
         }
@@ -565,6 +688,14 @@ impl MudApp {
                     ui.label(RichText::new(format!("● 已連線 ({})", info)).color(Color32::GREEN));
                     if ui.button("斷線").clicked() {
                         self.disconnect();
+                    }
+                }
+                ConnectionStatus::Reconnecting => {
+                    ui.spinner();
+                    ui.label("重連中...");
+                    if ui.button("取消").clicked() {
+                        self.reconnect_delay_until = None;
+                        self.status = ConnectionStatus::Disconnected;
                     }
                 }
             }
@@ -717,7 +848,7 @@ impl MudApp {
 
             let triggers: Vec<_> = self.trigger_manager.list().iter().cloned().collect();
             let mut to_delete: Option<String> = None;
-            let mut to_edit: Option<(String, String, String)> = None;
+            let mut to_edit: Option<(String, String, String, bool)> = None;
             let trigger_empty = triggers.is_empty();
 
             for trigger in &triggers {
@@ -743,16 +874,16 @@ impl MudApp {
                             TriggerPattern::Regex(s) => s.clone(),
                         };
                         
-                        // 提取第一個 SendCommand 動作
-                        let action_str = trigger.actions.iter().find_map(|a| {
-                            if let TriggerAction::SendCommand(cmd) = a {
-                                Some(cmd.clone())
-                            } else {
-                                None
+                        // 提取第一個 SendCommand 或 ExecuteScript 動作
+                        let (action_str, is_script) = trigger.actions.iter().find_map(|a| {
+                            match a {
+                                TriggerAction::SendCommand(cmd) => Some((cmd.clone(), false)),
+                                TriggerAction::ExecuteScript(code) => Some((code.clone(), true)),
+                                _ => None,
                             }
                         }).unwrap_or_default();
                         
-                        to_edit = Some((trigger.name.clone(), clean_pattern, action_str));
+                        to_edit = Some((trigger.name.clone(), clean_pattern, action_str, is_script));
                     }
                     if ui.small_button("🗑️").clicked() {
                         to_delete = Some(trigger.name.clone());
@@ -769,11 +900,12 @@ impl MudApp {
                 self.save_config();
             }
 
-            if let Some((name, pattern, action)) = to_edit {
+            if let Some((name, pattern, action, is_script)) = to_edit {
                 self.editing_trigger_name = Some(name.clone());
                 self.trigger_edit_name = name;
                 self.trigger_edit_pattern = pattern;
                 self.trigger_edit_action = action;
+                self.trigger_edit_is_script = is_script;
                 self.show_trigger_window = true;
             }
         });
@@ -884,7 +1016,11 @@ impl MudApp {
                         TriggerPattern::Contains(self.trigger_edit_pattern.clone()),
                     );
                     if !self.trigger_edit_action.is_empty() {
-                        trigger = trigger.add_action(TriggerAction::SendCommand(self.trigger_edit_action.clone()));
+                        if self.trigger_edit_is_script {
+                            trigger = trigger.add_action(TriggerAction::ExecuteScript(self.trigger_edit_action.clone()));
+                        } else {
+                            trigger = trigger.add_action(TriggerAction::SendCommand(self.trigger_edit_action.clone()));
+                        }
                     }
                     self.trigger_manager.add(trigger);
                     self.save_config();
@@ -936,9 +1072,15 @@ impl MudApp {
             if response.has_focus() {
                 if ui.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
                     self.navigate_history(-1);
+                    self.tab_completion_prefix = None; // 清除 Tab 補齊狀態
                 }
                 if ui.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
                     self.navigate_history(1);
+                    self.tab_completion_prefix = None; // 清除 Tab 補齊狀態
+                }
+                // Tab 補齊歷史指令
+                if ui.input(|i| i.key_pressed(egui::Key::Tab)) {
+                    self.tab_complete();
                 }
             }
         });
@@ -969,6 +1111,48 @@ impl MudApp {
 
         self.history_index = Some(new_index);
         self.input = self.input_history[new_index].clone();
+    }
+
+    /// Tab 補齊歷史指令
+    fn tab_complete(&mut self) {
+        if self.input.is_empty() {
+            self.tab_completion_prefix = None;
+            return;
+        }
+        
+        // 檢查使用者是否手動修改了輸入（不再匹配已存的前綴）
+        if let Some(ref prefix) = self.tab_completion_prefix {
+            // 如果當前輸入不是以前綴開頭，或者輸入就是前綴本身（使用者重新輸入）
+            // 則視為新的補齊開始
+            if !self.input.starts_with(prefix) || &self.input == prefix {
+                // 使用者改變了輸入，重置狀態，以當前輸入作為新前綴
+                self.tab_completion_prefix = Some(self.input.clone());
+                self.tab_completion_index = 0;
+            }
+        } else {
+            // 第一次按 Tab，記錄當前輸入作為前綴
+            self.tab_completion_prefix = Some(self.input.clone());
+            self.tab_completion_index = 0;
+        }
+        
+        let prefix = self.tab_completion_prefix.clone().unwrap();
+        
+        // 過濾匹配前綴的歷史（從新到舊）
+        let matches: Vec<_> = self.input_history.iter()
+            .rev()
+            .filter(|h| h.starts_with(&prefix) && *h != &prefix)
+            .collect();
+        
+        if matches.is_empty() {
+            return;
+        }
+        
+        // 取得當前索引對應的匹配項
+        let idx = self.tab_completion_index % matches.len();
+        self.input = matches[idx].clone();
+        
+        // 下一次 Tab 時跳到下一個匹配項
+        self.tab_completion_index = (self.tab_completion_index + 1) % matches.len();
     }
 
     /// 發送方向指令
@@ -1023,6 +1207,12 @@ impl MudApp {
 
 impl eframe::App for MudApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // 儲存 context 以供自動重連使用
+        self.ctx = Some(ctx.clone());
+
+        // 檢查自動重連
+        self.check_reconnect(ctx);
+
         // 處理網路訊息
         self.process_messages();
 
@@ -1057,6 +1247,15 @@ impl eframe::App for MudApp {
                             ui.label(format!("時長: {:02}:{:02}", mins, secs));
                         }
                     }
+                    ConnectionStatus::Reconnecting => {
+                        ui.spinner();
+                        if let Some(until) = self.reconnect_delay_until {
+                            let remaining = until.saturating_duration_since(Instant::now());
+                            ui.label(RichText::new(format!("⟳ 重連中... ({}s)", remaining.as_secs() + 1)).color(Color32::YELLOW));
+                        } else {
+                            ui.label(RichText::new("⟳ 重連中...").color(Color32::YELLOW));
+                        }
+                    }
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1069,6 +1268,12 @@ impl eframe::App for MudApp {
                         ConnectionStatus::Connected(_) => {
                             if ui.button("❌ 斷線").clicked() {
                                 self.disconnect();
+                            }
+                        }
+                        ConnectionStatus::Reconnecting => {
+                            if ui.button("⏹ 取消重連").clicked() {
+                                self.reconnect_delay_until = None;
+                                self.status = ConnectionStatus::Disconnected;
                             }
                         }
                         _ => {}
@@ -1235,22 +1440,36 @@ impl eframe::App for MudApp {
                     
                     ui.add_space(5.0);
                     
+                    // Lua 腳本模式勾選框
+                    ui.checkbox(&mut self.trigger_edit_is_script, "使用 Lua 腳本");
+                    
                     // 執行命令
                     ui.horizontal(|ui| {
                         ui.label("執行命令：");
-                        ui.add(TextEdit::singleline(&mut self.trigger_edit_action)
-                            .hint_text("例如：get all")
-                            .desired_width(250.0));
+                        if self.trigger_edit_is_script {
+                            ui.add(TextEdit::multiline(&mut self.trigger_edit_action)
+                                .hint_text("mud.send(\"get all\")\nmud.echo(\"OK\")")
+                                .desired_width(250.0)
+                                .desired_rows(3));
+                        } else {
+                            ui.add(TextEdit::singleline(&mut self.trigger_edit_action)
+                                .hint_text("get all")
+                                .desired_width(250.0));
+                        }
                     });
-                    ui.label(RichText::new("  ↳ 觸發時自動發送的指令（可留空）").weak().small());
+                    if self.trigger_edit_is_script {
+                        ui.label(RichText::new("  ↳ Lua 腳本模式，使用 mud.send(\"...\") 發送命令").weak().small());
+                    } else {
+                        ui.label(RichText::new("  ↳ 直接發送命令到 MUD").weak().small());
+                    }
                     
                     ui.add_space(15.0);
                     
                     // 範例區塊
                     ui.collapsing("📖 使用範例", |ui| {
-                        ui.label("• 自動撿取：匹配「掉落了」→ 執行「get all」");
-                        ui.label("• 自動回血：匹配「你的血量偏低」→ 執行「drink potion」");
-                        ui.label("• 抵達提示：匹配「你已抵達」→ 執行「look」");
+                        ui.label("• 簡單模式：輸入 get all");
+                        ui.label("• Lua 模式（多指令）：");
+                        ui.monospace("mud.send(\"get all\")\nmud.send(\"put all in bag\")");
                     });
                     
                     ui.add_space(10.0);
@@ -1268,7 +1487,11 @@ impl eframe::App for MudApp {
                                     TriggerPattern::Contains(self.trigger_edit_pattern.clone()),
                                 );
                                 if !self.trigger_edit_action.is_empty() {
-                                    trigger = trigger.add_action(TriggerAction::SendCommand(self.trigger_edit_action.clone()));
+                                    if self.trigger_edit_is_script {
+                                        trigger = trigger.add_action(TriggerAction::ExecuteScript(self.trigger_edit_action.clone()));
+                                    } else {
+                                        trigger = trigger.add_action(TriggerAction::SendCommand(self.trigger_edit_action.clone()));
+                                    }
                                 }
                                 self.trigger_manager.add(trigger);
                                 self.save_config();
