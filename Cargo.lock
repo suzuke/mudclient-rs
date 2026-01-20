@@ -1309,6 +1309,7 @@ dependencies = [
  "eframe",
  "font-kit",
  "mudcore",
+ "regex",
  "serde",
  "serde_json",
  "tokio",

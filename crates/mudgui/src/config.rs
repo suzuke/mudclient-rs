@@ -19,6 +19,8 @@ pub struct TriggerConfig {
     pub name: String,
     pub pattern: String,
     pub action: String,
+    #[serde(default)]
+    pub is_script: bool,
     pub enabled: bool,
 }
 

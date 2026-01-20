@@ -59,6 +59,8 @@ pub struct ScriptEngine {
     lua: Lua,
     /// 已載入的腳本
     scripts: HashMap<String, String>,
+    /// 持久化變數（跨觸發器共享）
+    persistent_vars: std::cell::RefCell<HashMap<String, String>>,
 }
 
 impl ScriptEngine {
@@ -68,6 +70,7 @@ impl ScriptEngine {
         Self {
             lua,
             scripts: HashMap::new(),
+            persistent_vars: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
@@ -123,8 +126,11 @@ impl ScriptEngine {
             let commands = self.lua.create_table()?;
             mud.set("commands", commands)?;
             
-            // 創建變數表
+            // 創建變數表並載入已儲存的持久化變數
             let variables = self.lua.create_table()?;
+            for (key, value) in self.persistent_vars.borrow().iter() {
+                variables.set(key.as_str(), value.as_str())?;
+            }
             mud.set("variables", variables)?;
             
             // 創建 echos 表（本地顯示）
@@ -240,10 +246,12 @@ impl ScriptEngine {
                 }
             }
             
-            // 收集 variables
+            // 收集 variables 並持久化儲存
             if let Ok(vars) = mud.get::<mlua::Table>("variables") {
+                let mut persistent = self.persistent_vars.borrow_mut();
                 for pair in vars.pairs::<String, String>() {
                     if let Ok((k, v)) = pair {
+                        persistent.insert(k.clone(), v.clone());
                         context.variables.insert(k, v);
                     }
                 }

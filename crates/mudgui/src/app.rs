@@ -24,6 +24,15 @@ enum ConnectionStatus {
     Reconnecting,      // 正在等待重連
 }
 
+/// 畫面單字的中繼資料，用於智慧補齊排序
+#[derive(Debug, Clone)]
+struct WordMetadata {
+    /// 最後一次出現在畫面的時間
+    last_seen: Instant,
+    /// 是否出現在 Mob/NPC 的名稱標籤中
+    is_mob: bool,
+}
+
 /// MUD 客戶端 GUI 應用程式
 pub struct MudApp {
 #[allow(dead_code)]
@@ -48,6 +57,9 @@ pub struct MudApp {
 
     /// 是否自動滾動到底部
     auto_scroll: bool,
+
+    /// 是否需要在下一幀捲動到底部（發送指令時觸發）
+    scroll_to_bottom_on_next_frame: bool,
 
     /// 視窗管理器（包含主視窗與子視窗）
     window_manager: WindowManager,
@@ -97,6 +109,11 @@ pub struct MudApp {
     trigger_edit_action: String,
     /// 是否使用 Lua 腳本模式
     trigger_edit_is_script: bool,
+
+    /// 畫面單字字典與其數據（用於智慧補齊排序）
+    screen_words: std::collections::HashMap<String, WordMetadata>,
+    /// 是否正在接收房間敘述內容
+    in_room_description: bool,
 
     // === 設定視窗狀態 ===
     /// 是否顯示設定中心視窗
@@ -164,7 +181,11 @@ impl MudApp {
                     TriggerPattern::Contains(clean_pattern),
                 );
                 if !trigger_cfg.action.is_empty() {
-                    trigger = trigger.add_action(TriggerAction::SendCommand(trigger_cfg.action.clone()));
+                    if trigger_cfg.is_script {
+                        trigger = trigger.add_action(TriggerAction::ExecuteScript(trigger_cfg.action.clone()));
+                    } else {
+                        trigger = trigger.add_action(TriggerAction::SendCommand(trigger_cfg.action.clone()));
+                    }
                 }
                 trigger.enabled = trigger_cfg.enabled;
                 trigger_manager.add(trigger);
@@ -204,6 +225,7 @@ impl MudApp {
             host,
             port,
             auto_scroll: true,
+            scroll_to_bottom_on_next_frame: false,
             input_history: Vec::new(),
             history_index: None,
             tab_completion_prefix: None,
@@ -222,6 +244,8 @@ impl MudApp {
             trigger_edit_pattern: String::new(),
             trigger_edit_action: String::new(),
             trigger_edit_is_script: false,
+            screen_words: std::collections::HashMap::new(),
+            in_room_description: false,
             // 設定視窗狀態
             show_settings_window: false,
             // 自動重連
@@ -253,10 +277,10 @@ impl MudApp {
                     TriggerPattern::Regex(s) => s.clone(),
                 };
                 // 提取第一個 SendCommand 或 ExecuteScript 動作
-                let action_str = t.actions.iter().find_map(|a| {
+                let (action_str, is_script) = t.actions.iter().find_map(|a| {
                     match a {
-                        TriggerAction::SendCommand(cmd) => Some(cmd.clone()),
-                        TriggerAction::ExecuteScript(code) => Some(code.clone()),
+                        TriggerAction::SendCommand(cmd) => Some((cmd.clone(), false)),
+                        TriggerAction::ExecuteScript(code) => Some((code.clone(), true)),
                         _ => None,
                     }
                 }).unwrap_or_default();
@@ -265,6 +289,7 @@ impl MudApp {
                     name: t.name.clone(),
                     pattern: pattern_str,
                     action: action_str,
+                    is_script: is_script,
                     enabled: t.enabled,
                 }
             }).collect(),
@@ -450,6 +475,9 @@ impl MudApp {
 
     /// 發送訊息（允許空訊息以發送純 Enter）
     fn send_message(&mut self) {
+        // 發送指令時自動捲到最底
+        self.scroll_to_bottom_on_next_frame = true;
+        
         let text = self.input.clone();
         // zMUD 風格：發送後不清除內容，改在 UI 端全選
         // self.input.clear();
@@ -463,28 +491,18 @@ impl MudApp {
         // 別名處理
         let expanded = self.alias_manager.process(&text);
 
+        // 處理本地回顯與觸發 (這需要 &mut self)
+        if expanded.is_empty() {
+            self.handle_text_and_triggers("\n", true);
+        } else {
+            self.handle_text_and_triggers(&format!("{}\n", text), true);
+        }
+
+        // 最後才處理發送 (這需要持有租用 self.command_tx)
         if let Some(tx) = &self.command_tx {
-            // 如果輸入為空，直接發送空字串（MUD 需要空 Enter）
             if expanded.is_empty() {
                 let _ = tx.blocking_send(Command::Send(String::new()));
-                // 空 Enter 回顯
-                self.window_manager.route_message(
-                    "main",
-                    WindowMessage {
-                        content: "\n".to_string(),
-                        preserve_ansi: false,
-                    },
-                );
             } else {
-                // 回顯原始輸入（緊隨提示字元）
-                self.window_manager.route_message(
-                    "main",
-                    WindowMessage {
-                        content: format!("{}\n", text),
-                        preserve_ansi: false,
-                    },
-                );
-
                 // 如果別名展開後包含多個命令（以分號分隔），則分開發送
                 for cmd in expanded.split(';') {
                     let cmd = cmd.trim();
@@ -494,6 +512,187 @@ impl MudApp {
                 }
             }
         }
+    }
+
+    /// 處理接收到的（或本地回顯的）文字並執行觸發器
+    fn handle_text_and_triggers(&mut self, text: &str, is_echo: bool) -> bool {
+        // 觸發器處理
+        if self.trigger_manager.should_gag(text) {
+            return false; // 訊息被抑制
+        }
+
+        // 處理所有匹配的觸發器動作
+        let matches = self.trigger_manager.process(text);
+        
+        // 預設路由目標
+        let mut targets = if is_echo {
+            Vec::new() // 回顯通常只去主視窗
+        } else {
+            vec!["main".to_string()]
+        };
+        
+        let mut gagged = false;
+
+        for (trigger, m) in matches {
+            tracing::info!("[Trigger] 匹配觸發器: {}, 動作數: {}", trigger.name, trigger.actions.len());
+            for action in &trigger.actions {
+                match action {
+                    TriggerAction::SendCommand(cmd) => {
+                        let mut expanded = cmd.clone();
+                        for (i, cap) in m.captures.iter().enumerate() {
+                            expanded = expanded.replace(&format!("${}", i + 1), cap);
+                        }
+                        let commands: Vec<&str> = expanded.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+                        if let Some(tx) = &self.command_tx {
+                            for single_cmd in commands {
+                                let _ = tx.blocking_send(Command::Send(single_cmd.to_string()));
+                                self.window_manager.route_message(
+                                    "main",
+                                    WindowMessage {
+                                        content: format!("\n[AUTO] {}\n", single_cmd),
+                                        preserve_ansi: false,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    TriggerAction::RouteToWindow(win_id) => {
+                        if !targets.contains(win_id) {
+                            targets.push(win_id.clone());
+                        }
+                    }
+                    TriggerAction::ExecuteScript(code) => {
+                        if let Ok(context) = self.script_engine.execute_inline(code, text, &m.captures) {
+                            if let Some(tx) = &self.command_tx {
+                                for cmd in context.commands {
+                                    let _ = tx.blocking_send(Command::Send(cmd.clone()));
+                                    self.window_manager.route_message(
+                                        "main",
+                                        WindowMessage {
+                                            content: format!("\n[SCRIPT] {}\n", cmd),
+                                            preserve_ansi: false,
+                                        },
+                                    );
+                                }
+                            }
+                            for echo_text in context.echos {
+                                self.window_manager.route_message(
+                                    "main",
+                                    WindowMessage {
+                                        content: format!(">>> {}\n", echo_text),
+                                        preserve_ansi: false,
+                                    },
+                                );
+                            }
+                            for (win_id, text) in context.window_outputs {
+                                self.window_manager.route_message(
+                                    &win_id,
+                                    WindowMessage {
+                                        content: format!("{}\n", text),
+                                        preserve_ansi: true,
+                                    },
+                                );
+                            }
+                            for log_msg in context.log_messages {
+                                let _ = self.logger.log(&format!("[Script] {}", log_msg));
+                            }
+                            if context.gag {
+                                gagged = true;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if gagged {
+            return false;
+        }
+
+        // 路由到視窗
+        for target_id in targets {
+            self.window_manager.route_message(
+                &target_id,
+                WindowMessage {
+                    content: text.to_string(),
+                    preserve_ansi: !is_echo, // 回顯通常不需要 ANSI
+                },
+            );
+        }
+
+        // 提取單字用於自動補齊 (僅限正面表列內容：生物行或房間敘述)
+        let clean_text = if text.contains('\x1b') {
+            let re = regex::Regex::new(r"\x1b\[[0-9;]*[mK]").unwrap();
+            re.replace_all(text, "").to_string()
+        } else {
+            text.to_string()
+        };
+
+        // 偵測房間敘述區塊的開始與結束
+        // 典型的房間區塊：
+        // 1. 本地回顯 'l' 或移動指令後
+        // 2. 出現 [出口: ...] 行
+        // 3. 出現 Prompt 行 (H... M... V...) 則視為區塊結束
+        let is_prompt = clean_text.contains('(') && clean_text.contains('/') && 
+                        (clean_text.contains('H') || clean_text.contains('M') || clean_text.contains('V'));
+        
+        if is_echo && (text.trim() == "l" || ["n", "s", "e", "w", "u", "d", "nw", "ne", "sw", "se"].contains(&text.trim())) {
+            self.in_room_description = true;
+        }
+
+        if is_prompt {
+            self.in_room_description = false;
+        }
+
+        let is_exit_line = clean_text.contains("[出口:");
+        let has_mob_brackets = clean_text.contains('(') && clean_text.contains(')');
+
+        // 正面表列提取邏輯：僅提取「生物行」或「正在接收的房間敘述/出口行」
+        if has_mob_brackets || self.in_room_description || is_exit_line {
+            let now = Instant::now();
+            
+            // 識別並高權重提取 Mob (括弧內容)
+            let mob_re = regex::Regex::new(r"\(([^)]+)\)").unwrap();
+            for cap in mob_re.captures_iter(&clean_text) {
+                let content = &cap[1];
+                for word in content.split(|c: char| !c.is_alphanumeric()) {
+                    // 只提取純英文單字，排除雜訊
+                    if word.len() >= 3 && word.chars().all(|c| c.is_ascii_alphabetic()) {
+                        self.screen_words.insert(word.to_string(), WordMetadata {
+                            last_seen: now,
+                            is_mob: true,
+                        });
+                    }
+                }
+            }
+
+            // 提取目前行中的其他單字 (作為普通畫面單字)
+            for word in clean_text.split(|c: char| !c.is_alphanumeric()) {
+                if word.len() >= 3 && word.chars().all(|c| c.is_ascii_alphabetic()) {
+                    let entry = self.screen_words.entry(word.to_string()).or_insert(WordMetadata {
+                        last_seen: now,
+                        is_mob: false,
+                    });
+                    entry.last_seen = now;
+                }
+            }
+        }
+
+        // 限制字典大小
+        if self.screen_words.len() > 1000 {
+            let mut items: Vec<_> = self.screen_words.iter().collect();
+            items.sort_by_key(|(_, meta)| meta.last_seen);
+            let to_remove: Vec<String> = items.iter().take(200).map(|(k, _)| (*k).clone()).collect();
+            for k in to_remove {
+                self.screen_words.remove(&k);
+            }
+        }
+
+        // 日誌記錄
+        let _ = self.logger.log(text);
+
+        true
     }
 
     /// 斷開連線
@@ -526,144 +725,36 @@ impl MudApp {
 
     /// 處理接收到的訊息
     fn process_messages(&mut self) {
-        if let Some(rx) = &mut self.message_rx {
-            while let Ok(msg) = rx.try_recv() {
-                // 觸發器處理
-                if self.trigger_manager.should_gag(&msg) {
-                    continue; // 訊息被抑制
-                }
+        // 先將 message_rx 取出以避免借用衝突
+        let mut rx = match self.message_rx.take() {
+            Some(rx) => rx,
+            None => return,
+        };
 
-                // 處理所有匹配的觸發器動作
-                let matches = self.trigger_manager.process(&msg);
-                
-                // 預設路由目標（主視窗）
-                let mut targets = vec!["main".to_string()];
-                
-                for (trigger, m) in matches {
-                    tracing::info!("[Trigger] 匹配觸發器: {}, 動作數: {}", trigger.name, trigger.actions.len());
-                    for action in &trigger.actions {
-                        tracing::info!("[Trigger] 動作類型: {:?}", std::mem::discriminant(action));
-                        match action {
-                            TriggerAction::SendCommand(cmd) => {
-                                let mut expanded = cmd.clone();
-                                for (i, cap) in m.captures.iter().enumerate() {
-                                    expanded = expanded.replace(&format!("${}", i + 1), cap);
-                                }
-                                // 支援用 ; 分隔多個命令
-                                let commands: Vec<&str> = expanded.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
-                                tracing::info!("[Trigger] 執行 SendCommand: {} (拆分為 {} 個命令)", expanded, commands.len());
-                                if let Some(tx) = &self.command_tx {
-                                    for single_cmd in commands {
-                                        let _ = tx.blocking_send(Command::Send(single_cmd.to_string()));
-                                        
-                                        // 自動指令回顯（單獨成行）
-                                        self.window_manager.route_message(
-                                            "main",
-                                            WindowMessage {
-                                                content: format!("\n[AUTO] {}\n", single_cmd),
-                                                preserve_ansi: false,
-                                            },
-                                        );
-                                    }
-                                }
-                            }
-                            TriggerAction::RouteToWindow(win_id) => {
-                                targets.push(win_id.clone());
-                            }
-                            TriggerAction::ExecuteScript(code) => {
-                                if let Ok(context) = self.script_engine.execute_inline(code, &msg, &m.captures) {
-                                    // 執行腳本產生的命令
-                                    if let Some(tx) = &self.command_tx {
-                                        for cmd in context.commands {
-                                            let _ = tx.blocking_send(Command::Send(cmd.clone()));
-                                            
-                                            // 腳本指令回顯（單獨成行）
-                                            self.window_manager.route_message(
-                                                "main",
-                                                WindowMessage {
-                                                    content: format!("\n[SCRIPT] {}\n", cmd),
-                                                    preserve_ansi: false,
-                                                },
-                                            );
-                                        }
-                                    }
-                                    
-                                    // 處理 echos - 本地顯示
-                                    for echo_text in context.echos {
-                                        self.window_manager.route_message(
-                                            "main",
-                                            WindowMessage {
-                                                content: format!(">>> {}\n", echo_text),
-                                                preserve_ansi: false,
-                                            },
-                                        );
-                                    }
-                                    
-                                    // 處理 window_outputs - 子視窗輸出
-                                    for (win_id, text) in context.window_outputs {
-                                        self.window_manager.route_message(
-                                            &win_id,
-                                            WindowMessage {
-                                                content: format!("{}\n", text),
-                                                preserve_ansi: true,
-                                            },
-                                        );
-                                    }
-                                    
-                                    // 處理 log_messages - 寫入日誌
-                                    for log_msg in context.log_messages {
-                                        let _ = self.logger.log(&format!("[Script] {}", log_msg));
-                                    }
-                                    
-                                    // 處理 timers - 暫時僅記錄（完整實現需要 pending_timers 欄位）
-                                    for (delay_ms, timer_code) in context.timers {
-                                        tracing::info!("[Timer] 將在 {}ms 後執行: {}", delay_ms, timer_code);
-                                        // TODO: 加入 pending_timers 欄位並在 update() 中處理
-                                    }
-                                    
-                                    // 處理腳本中的 Gag
-                                    if context.gag {
-                                        return; // 此訊息被腳本抑制，不再繼續處理
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
+        while let Ok(msg) = rx.try_recv() {
+            // 統一生產與分發邏輯
+            self.handle_text_and_triggers(&msg, false);
 
-                // 路由到視窗
-                for target_id in targets {
-                    self.window_manager.route_message(
-                        &target_id,
-                        WindowMessage {
-                            content: msg.clone(),
-                            preserve_ansi: true,
-                        },
-                    );
-                }
-
-                // 日誌記錄
-                let _ = self.logger.log(&msg);
-
-                // 更新連線狀態 (從主視窗訊息判斷)
-                if msg.contains("已連線到") {
-                    let info = msg.replace(">>> 已連線到 ", "").replace("\n", "");
-                    self.status = ConnectionStatus::Connected(info);
-                    self.connected_at = Some(Instant::now());
-                } else if msg.contains("連線已關閉") || msg.contains("已斷開連線") {
-                    self.connected_at = None;
-                    // 自動重連邏輯
-                    if self.auto_reconnect {
-                        use std::time::Duration;
-                        self.reconnect_delay_until = Some(Instant::now() + Duration::from_secs(3));
-                        self.status = ConnectionStatus::Reconnecting;
-                    } else {
-                        self.status = ConnectionStatus::Disconnected;
-                    }
+            // 更新連線狀態 (從原始訊息判斷)
+            if msg.contains("已連線到") {
+                let info = msg.replace(">>> 已連線到 ", "").replace("\n", "");
+                self.status = ConnectionStatus::Connected(info);
+                self.connected_at = Some(Instant::now());
+            } else if msg.contains("連線已關閉") || msg.contains("已斷開連線") {
+                self.connected_at = None;
+                // 自動重連邏輯
+                if self.auto_reconnect {
+                    use std::time::Duration;
+                    self.reconnect_delay_until = Some(Instant::now() + Duration::from_secs(3));
+                    self.status = ConnectionStatus::Reconnecting;
+                } else {
+                    self.status = ConnectionStatus::Disconnected;
                 }
             }
         }
+
+        // 放回 message_rx
+        self.message_rx = Some(rx);
     }
 
     /// 繪製連線設定面板
@@ -703,10 +794,18 @@ impl MudApp {
     }
 
     /// 繪製訊息顯示區（支援 ANSI 顏色）
-    fn render_message_area(&self, ui: &mut egui::Ui) {
+    fn render_message_area(&mut self, ui: &mut egui::Ui) {
         let available_height = ui.available_height() - 40.0; // 保留輸入區空間
 
-        ScrollArea::vertical()
+        // 檢查是否需要強制捲到底部
+        let force_scroll_to_bottom = self.scroll_to_bottom_on_next_frame;
+        self.scroll_to_bottom_on_next_frame = false;
+
+        // 使用固定 ID 以便後續操作 State
+        let scroll_area_id = egui::Id::new("main_message_scroll_area");
+
+        let output = ScrollArea::vertical()
+            .id_salt(scroll_area_id)
             .auto_shrink([false, false])
             .max_height(available_height)
             .stick_to_bottom(self.auto_scroll)
@@ -743,6 +842,19 @@ impl MudApp {
                     }
                 }
             });
+
+        // 如果需要強制捲到底部，直接設定 offset
+        if force_scroll_to_bottom {
+            let content_size = output.content_size;
+            let inner_rect = output.inner_rect;
+            let max_scroll = (content_size.y - inner_rect.height()).max(0.0);
+            
+            // 載入並修改 state
+            if let Some(mut state) = egui::scroll_area::State::load(ui.ctx(), output.id) {
+                state.offset.y = max_scroll;
+                state.store(ui.ctx(), output.id);
+            }
+        }
     }
 
     /// 繪製側邊欄
@@ -1113,7 +1225,7 @@ impl MudApp {
         self.input = self.input_history[new_index].clone();
     }
 
-    /// Tab 補齊歷史指令
+    /// Tab 補齊邏輯：支援歷史指令與畫面英文單詞
     fn tab_complete(&mut self) {
         if self.input.is_empty() {
             self.tab_completion_prefix = None;
@@ -1135,14 +1247,60 @@ impl MudApp {
             self.tab_completion_index = 0;
         }
         
-        let prefix = self.tab_completion_prefix.clone().unwrap();
+        let original_prefix = self.tab_completion_prefix.clone().unwrap();
         
-        // 過濾匹配前綴的歷史（從新到舊）
-        let matches: Vec<_> = self.input_history.iter()
-            .rev()
-            .filter(|h| h.starts_with(&prefix) && *h != &prefix)
-            .collect();
-        
+        // 分離最後一個單詞（用於畫面單字補齊）
+        let (prefix_to_match, base_input) = if let Some(last_space_idx) = original_prefix.rfind(' ') {
+            let (base, last) = original_prefix.split_at(last_space_idx + 1);
+            (last.to_string(), Some(base.to_string()))
+        } else {
+            (original_prefix.clone(), None)
+        };
+
+        let mut matches: Vec<String> = Vec::new();
+
+        // 策略 1: 如果沒有空格，優先嘗試歷史指令全匹配
+        if base_input.is_none() {
+            let history_matches: Vec<_> = self.input_history.iter()
+                .rev()
+                .filter(|h| h.starts_with(&original_prefix) && *h != &original_prefix)
+                .cloned()
+                .collect();
+            // 去重
+            for h in history_matches {
+                if !matches.contains(&h) {
+                    matches.push(h);
+                }
+            }
+        }
+
+        // 策略 2: 如果歷史沒匹配，或是具備空格（補齊最後一個單詞），從 screen_words 找
+        if matches.is_empty() && !prefix_to_match.is_empty() {
+            let mut screen_matches: Vec<_> = self.screen_words.iter()
+                .filter(|(w, _)| w.to_lowercase().starts_with(&prefix_to_match.to_lowercase()))
+                .map(|(w, meta)| (w.clone(), meta.clone()))
+                .collect();
+            
+            // 智慧排序：
+            // 1. is_mob 優先 (Mob 名稱排前面)
+            // 2. last_seen 優先 (最新出現的排前面)
+            screen_matches.sort_by(|a, b| {
+                b.1.is_mob.cmp(&a.1.is_mob)
+                    .then_with(|| b.1.last_seen.cmp(&a.1.last_seen))
+                    .then_with(|| a.0.cmp(&b.0))
+            });
+
+            for (word, _) in screen_matches {
+                let full_cmd = match &base_input {
+                    Some(base) => format!("{}{}", base, word),
+                    None => word,
+                };
+                if !matches.contains(&full_cmd) {
+                    matches.push(full_cmd);
+                }
+            }
+        }
+
         if matches.is_empty() {
             return;
         }
