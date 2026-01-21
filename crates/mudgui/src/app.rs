@@ -138,6 +138,18 @@ pub struct MudApp {
     ctx: Option<egui::Context>,
     /// 是否發生了 Tab 補齊（用於修正游標位置）
     tab_completed: bool,
+
+    /// 當前設定頁面標籤
+    settings_tab: SettingsTab,
+}
+
+/// 設定中心標籤頁
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsTab {
+    Alias,
+    Trigger,
+    Logger,
+    General,
 }
 
 /// 發送給網路執行緒的命令
@@ -262,6 +274,7 @@ impl MudApp {
             in_room_description: false,
             // 設定視窗狀態
             show_settings_window: false,
+            settings_tab: SettingsTab::Alias,
             // 自動重連
             auto_reconnect: true,
             reconnect_delay_until: None,
@@ -957,168 +970,169 @@ impl MudApp {
 
     /// 繪製設定與管理介面
     fn render_settings(&mut self, ui: &mut egui::Ui) {
-        ui.heading("管理中心");
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.settings_tab, SettingsTab::Alias, "別名 (Alias)");
+            ui.selectable_value(&mut self.settings_tab, SettingsTab::Trigger, "觸發器 (Trigger)");
+            ui.selectable_value(&mut self.settings_tab, SettingsTab::Logger, "日誌 (Logger)");
+            ui.selectable_value(&mut self.settings_tab, SettingsTab::General, "一般 (General)");
+        });
         ui.separator();
 
-        // === 別名管理 ===
-        ui.collapsing("別名 (Alias)", |ui| {
-            // 新增按鈕
-            if ui.button("➕ 新增別名").clicked() {
-                self.editing_alias_name = Some(String::new());
-                self.alias_edit_pattern = String::new();
-                self.alias_edit_replacement = String::new();
-                self.show_alias_window = true;
-            }
-
-            ui.add_space(10.0);
-
-            let mut to_delete: Option<String> = None;
-            let mut to_edit: Option<(String, String, String)> = None;
-            let mut needs_save = false;
-            let alias_empty = self.alias_manager.sorted_aliases.is_empty();
-
-            for alias_name in &self.alias_manager.sorted_aliases {
-                if let Some(alias) = self.alias_manager.aliases.get_mut(alias_name) {
-                    ui.horizontal(|ui| {
-                        // 啟用/停用開關
-                        if ui.checkbox(&mut alias.enabled, "").changed() {
-                            needs_save = true;
+        match self.settings_tab {
+            SettingsTab::Alias => {
+                ui.horizontal(|ui| {
+                    ui.heading("別名管理");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("➕ 新增別名").clicked() {
+                            self.editing_alias_name = Some(String::new());
+                            self.alias_edit_pattern = String::new();
+                            self.alias_edit_replacement = String::new();
+                            self.show_alias_window = true;
                         }
-
-                        // 別名資訊
-                        ui.label(format!("{} → {}", alias.pattern, alias.replacement));
-                        
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            // 刪除按鈕
-                            if ui.small_button("🗑️").clicked() {
-                                to_delete = Some(alias_name.clone());
-                            }
-                            // 編輯按鈕
-                            if ui.small_button("✏️").clicked() {
-                                to_edit = Some((alias.name.clone(), alias.pattern.clone(), alias.replacement.clone()));
-                            }
-                        });
                     });
-                }
-            }
+                });
+                ui.add_space(5.0);
 
-            if alias_empty {
-                ui.label("尚無別名，點擊「新增別名」開始");
-            }
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    let mut to_delete: Option<String> = None;
+                    let mut to_edit: Option<(String, String, String)> = None;
+                    let mut needs_save = false;
 
-            if needs_save {
-                self.save_config();
-            }
-            if let Some(name) = to_delete {
-                self.alias_manager.remove(&name);
-                self.save_config();
-            }
-
-            // 處理編輯
-            if let Some((name, pattern, replacement)) = to_edit {
-                self.editing_alias_name = Some(name);
-                self.alias_edit_pattern = pattern;
-                self.alias_edit_replacement = replacement;
-                self.show_alias_window = true;
-            }
-        });
-
-        // === 觸發器管理 ===
-        ui.collapsing("觸發器 (Trigger)", |ui| {
-            if ui.button("➕ 新增觸發器").clicked() {
-                self.editing_trigger_name = Some(String::new());
-                self.trigger_edit_name = String::new();
-                self.trigger_edit_pattern = String::new();
-                self.trigger_edit_action = String::new();
-                self.show_trigger_window = true;
-            }
-
-            ui.add_space(10.0);
-
-            let mut to_delete: Option<String> = None;
-            let mut to_edit: Option<(String, String, String, bool)> = None;
-            let mut needs_save = false;
-            let trigger_empty = self.trigger_manager.order.is_empty();
-
-            for name in &self.trigger_manager.order {
-                if let Some(trigger) = self.trigger_manager.triggers.get_mut(name) {
-                    ui.horizontal(|ui| {
-                        if ui.checkbox(&mut trigger.enabled, "").changed() {
-                            needs_save = true;
-                        }
-                        
-                        // 人性化顯示觸發器模式
-                        let pattern_text = match &trigger.pattern {
-                            TriggerPattern::Contains(s) => format!("包含: {}", s),
-                            TriggerPattern::StartsWith(s) => format!("開頭: {}", s),
-                            TriggerPattern::EndsWith(s) => format!("結尾: {}", s),
-                            TriggerPattern::Regex(s) => format!("正則: {}", s),
-                        };
-                        ui.label(format!("{} [{}]", trigger.name, pattern_text));
-
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("🗑️").clicked() {
-                                to_delete = Some(trigger.name.clone());
-                            }
-                            if ui.small_button("✏️").clicked() {
-                                // 提取純文字模式
-                                let clean_pattern = match &trigger.pattern {
-                                    TriggerPattern::Contains(s) => s.clone(),
-                                    TriggerPattern::StartsWith(s) => s.clone(),
-                                    TriggerPattern::EndsWith(s) => s.clone(),
-                                    TriggerPattern::Regex(s) => s.clone(),
-                                };
-                                
-                                // 提取第一個 SendCommand 或 ExecuteScript 動作
-                                let (action_str, is_script) = trigger.actions.iter().find_map(|a| {
-                                    match a {
-                                        TriggerAction::SendCommand(cmd) => Some((cmd.clone(), false)),
-                                        TriggerAction::ExecuteScript(code) => Some((code.clone(), true)),
-                                        _ => None,
+                    for alias_name in &self.alias_manager.sorted_aliases {
+                        if let Some(alias) = self.alias_manager.aliases.get_mut(alias_name) {
+                            ui.horizontal(|ui| {
+                                if ui.checkbox(&mut alias.enabled, "").changed() {
+                                    needs_save = true;
+                                }
+                                ui.label(format!("{} → {}", alias.pattern, alias.replacement));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.small_button("🗑️").clicked() {
+                                        to_delete = Some(alias_name.clone());
                                     }
-                                }).unwrap_or_default();
-                                
-                                to_edit = Some((trigger.name.clone(), clean_pattern, action_str, is_script));
-                            }
-                        });
+                                    if ui.small_button("✏️").clicked() {
+                                        to_edit = Some((alias.name.clone(), alias.pattern.clone(), alias.replacement.clone()));
+                                    }
+                                });
+                            });
+                        }
+                    }
+
+                    if self.alias_manager.sorted_aliases.is_empty() {
+                        ui.label("尚無別名");
+                    }
+
+                    if needs_save { self.save_config(); }
+                    if let Some(name) = to_delete {
+                        self.alias_manager.remove(&name);
+                        self.save_config();
+                    }
+                    if let Some((name, pattern, replacement)) = to_edit {
+                        self.editing_alias_name = Some(name);
+                        self.alias_edit_pattern = pattern;
+                        self.alias_edit_replacement = replacement;
+                        self.show_alias_window = true;
+                    }
+                });
+            }
+            SettingsTab::Trigger => {
+                ui.horizontal(|ui| {
+                    ui.heading("觸發器管理");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("➕ 新增觸發器").clicked() {
+                            self.editing_trigger_name = Some(String::new());
+                            self.trigger_edit_name = String::new();
+                            self.trigger_edit_pattern = String::new();
+                            self.trigger_edit_action = String::new();
+                            self.show_trigger_window = true;
+                        }
                     });
+                });
+                ui.add_space(5.0);
+
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    let mut to_delete: Option<String> = None;
+                    let mut to_edit: Option<(String, String, String, bool)> = None;
+                    let mut needs_save = false;
+
+                    for name in &self.trigger_manager.order {
+                        if let Some(trigger) = self.trigger_manager.triggers.get_mut(name) {
+                            ui.horizontal(|ui| {
+                                if ui.checkbox(&mut trigger.enabled, "").changed() {
+                                    needs_save = true;
+                                }
+                                let pattern_text = match &trigger.pattern {
+                                    TriggerPattern::Contains(s) => format!("包含: {}", s),
+                                    TriggerPattern::StartsWith(s) => format!("開頭: {}", s),
+                                    TriggerPattern::EndsWith(s) => format!("結尾: {}", s),
+                                    TriggerPattern::Regex(s) => format!("正則: {}", s),
+                                };
+                                ui.label(format!("{} [{}]", trigger.name, pattern_text));
+
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.small_button("🗑️").clicked() {
+                                        to_delete = Some(trigger.name.clone());
+                                    }
+                                    if ui.small_button("✏️").clicked() {
+                                        let clean_pattern = match &trigger.pattern {
+                                            TriggerPattern::Contains(s) | TriggerPattern::StartsWith(s) | 
+                                            TriggerPattern::EndsWith(s) | TriggerPattern::Regex(s) => s.clone(),
+                                        };
+                                        let (action_str, is_script) = trigger.actions.iter().find_map(|a| {
+                                            match a {
+                                                TriggerAction::SendCommand(cmd) => Some((cmd.clone(), false)),
+                                                TriggerAction::ExecuteScript(code) => Some((code.clone(), true)),
+                                                _ => None,
+                                            }
+                                        }).unwrap_or_default();
+                                        to_edit = Some((trigger.name.clone(), clean_pattern, action_str, is_script));
+                                    }
+                                });
+                            });
+                        }
+                    }
+
+                    if self.trigger_manager.order.is_empty() {
+                        ui.label("尚無觸發器");
+                    }
+
+                    if needs_save { self.save_config(); }
+                    if let Some(name) = to_delete {
+                        self.trigger_manager.remove(&name);
+                        self.save_config();
+                    }
+                    if let Some((name, pattern, action, is_script)) = to_edit {
+                        self.editing_trigger_name = Some(name.clone());
+                        self.trigger_edit_name = name;
+                        self.trigger_edit_pattern = pattern;
+                        self.trigger_edit_action = action;
+                        self.trigger_edit_is_script = is_script;
+                        self.show_trigger_window = true;
+                    }
+                });
+            }
+            SettingsTab::Logger => {
+                ui.heading("日誌控制");
+                ui.add_space(10.0);
+                if self.logger.is_recording() {
+                    ui.label(format!("狀態: 正在記錄中 ({:?})", self.logger.path().unwrap_or(std::path::Path::new(""))));
+                    if ui.button("停止記錄").clicked() {
+                        let _ = self.logger.stop();
+                    }
+                } else {
+                    ui.label("狀態: 未啟動");
+                    if ui.button("開始記錄").clicked() {
+                        let path = format!("mud_log_{}.txt", chrono_lite_timestamp());
+                        let _ = self.logger.start(&path);
+                    }
                 }
             }
-
-            if trigger_empty {
-                ui.label("尚無觸發器");
+            SettingsTab::General => {
+                ui.heading("一般設定");
+                ui.add_space(10.0);
+                ui.checkbox(&mut self.auto_scroll, "自動捲動畫面");
+                ui.label("更多設定即將推出...");
             }
-
-            if let Some(name) = to_delete {
-                self.trigger_manager.remove(&name);
-                self.save_config();
-            }
-
-            if let Some((name, pattern, action, is_script)) = to_edit {
-                self.editing_trigger_name = Some(name.clone());
-                self.trigger_edit_name = name;
-                self.trigger_edit_pattern = pattern;
-                self.trigger_edit_action = action;
-                self.trigger_edit_is_script = is_script;
-                self.show_trigger_window = true;
-            }
-        });
-
-        // === 日誌控制 ===
-        ui.collapsing("日誌 (Logger)", |ui| {
-            if self.logger.is_recording() {
-                ui.label(format!("狀態: 正在記錄中 ({:?})", self.logger.path().unwrap_or(std::path::Path::new(""))));
-                if ui.button("停止記錄").clicked() {
-                    let _ = self.logger.stop();
-                }
-            } else {
-                ui.label("狀態: 未啟動");
-                if ui.button("開始記錄").clicked() {
-                    let path = format!("mud_log_{}.txt", chrono_lite_timestamp());
-                    let _ = self.logger.start(&path);
-                }
-            }
-        });
+        }
     }
 
     /// 繪製別名編輯介面
@@ -1274,6 +1288,7 @@ impl MudApp {
                 self.tab_completed = false;
             }
             
+            // 設定視窗狀態
             // 歷史導航（上/下箭頭）
             if response.has_focus() {
                 if ui.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
