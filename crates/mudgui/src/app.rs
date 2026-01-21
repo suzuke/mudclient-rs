@@ -136,6 +136,8 @@ pub struct MudApp {
     reconnect_delay_until: Option<Instant>,
     /// egui Context 的參照（用於自動重連時觸發連線）
     ctx: Option<egui::Context>,
+    /// 是否發生了 Tab 補齊（用於修正游標位置）
+    tab_completed: bool,
 }
 
 /// 發送給網路執行緒的命令
@@ -241,6 +243,7 @@ impl MudApp {
             tab_completion_prefix: None,
             tab_completion_index: 0,
             active_window_id: "main".to_string(),
+            tab_completed: false,
             connected_at: None,
             // 別名編輯狀態
             show_alias_window: false,
@@ -540,12 +543,8 @@ impl MudApp {
             self.trigger_manager.process(text)
         };
         
-        // 預設路由目標
-        let mut targets = if is_echo {
-            Vec::new() // 回顯通常只去主視窗
-        } else {
-            vec!["main".to_string()]
-        };
+        // 預設路由目標：所有訊息預設都去主視窗，除非被 gag
+        let mut targets = vec!["main".to_string()];
         
         let mut gagged = false;
         let mut pending_contexts = Vec::new();
@@ -1253,6 +1252,18 @@ impl MudApp {
                 }
             }
 
+            // 處理 Tab 補齊後的游標移動
+            if self.tab_completed {
+                if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), response.id) {
+                    let char_count = self.input.chars().count();
+                    state.cursor.set_char_range(Some(egui::text::CCursorRange::one(
+                        egui::text::CCursor::new(char_count)
+                    )));
+                    egui::TextEdit::store_state(ui.ctx(), response.id, state);
+                }
+                self.tab_completed = false;
+            }
+            
             // 歷史導航（上/下箭頭）
             if response.has_focus() {
                 if ui.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
@@ -1313,11 +1324,13 @@ impl MudApp {
                 // 使用者改變了輸入，重置狀態，以當前輸入作為新前綴
                 self.tab_completion_prefix = Some(self.input.clone());
                 self.tab_completion_index = 0;
+                self.tab_completed = false;
             }
         } else {
             // 第一次按 Tab，記錄當前輸入作為前綴
             self.tab_completion_prefix = Some(self.input.clone());
             self.tab_completion_index = 0;
+            self.tab_completed = false;
         }
         
         let original_prefix = self.tab_completion_prefix.clone().unwrap();
@@ -1384,6 +1397,7 @@ impl MudApp {
         
         // 下一次 Tab 時跳到下一個匹配項
         self.tab_completion_index = (self.tab_completion_index + 1) % matches.len();
+        self.tab_completed = true;
     }
 
     /// 發送方向指令
