@@ -113,9 +113,9 @@ impl Alias {
 /// 別名管理器
 #[derive(Debug, Default)]
 pub struct AliasManager {
-    aliases: HashMap<String, Alias>,
+    pub aliases: HashMap<String, Alias>,
     /// 按優先級排序的別名列表（最長模式優先）
-    sorted_aliases: Vec<String>,
+    pub sorted_aliases: Vec<String>,
 }
 
 impl AliasManager {

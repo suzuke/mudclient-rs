@@ -147,9 +147,9 @@ pub struct TriggerMatch {
 /// 觸發器管理器
 #[derive(Debug, Default)]
 pub struct TriggerManager {
-    triggers: HashMap<String, Trigger>,
+    pub triggers: HashMap<String, Trigger>,
     /// 按優先級排序的觸發器列表
-    order: Vec<String>,
+    pub order: Vec<String>,
 }
 
 impl TriggerManager {

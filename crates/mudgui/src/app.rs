@@ -972,38 +972,43 @@ impl MudApp {
 
             ui.add_space(10.0);
 
-            // 別名列表
-            let aliases: Vec<_> = self.alias_manager.list().iter().cloned().collect();
             let mut to_delete: Option<String> = None;
             let mut to_edit: Option<(String, String, String)> = None;
-            let alias_empty = aliases.is_empty();
+            let mut needs_save = false;
+            let alias_empty = self.alias_manager.sorted_aliases.is_empty();
 
-            for alias in &aliases {
-                ui.horizontal(|ui| {
-                    // 啟用/停用開關
-                    let enabled_text = if alias.enabled { "✓" } else { "○" };
-                    ui.label(enabled_text);
+            for alias_name in &self.alias_manager.sorted_aliases {
+                if let Some(alias) = self.alias_manager.aliases.get_mut(alias_name) {
+                    ui.horizontal(|ui| {
+                        // 啟用/停用開關
+                        if ui.checkbox(&mut alias.enabled, "").changed() {
+                            needs_save = true;
+                        }
 
-                    // 別名資訊
-                    ui.label(format!("{} → {}", alias.pattern, alias.replacement));
-
-                    // 編輯按鈕
-                    if ui.small_button("✏️").clicked() {
-                        to_edit = Some((alias.name.clone(), alias.pattern.clone(), alias.replacement.clone()));
-                    }
-
-                    // 刪除按鈕
-                    if ui.small_button("🗑️").clicked() {
-                        to_delete = Some(alias.name.clone());
-                    }
-                });
+                        // 別名資訊
+                        ui.label(format!("{} → {}", alias.pattern, alias.replacement));
+                        
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            // 刪除按鈕
+                            if ui.small_button("🗑️").clicked() {
+                                to_delete = Some(alias_name.clone());
+                            }
+                            // 編輯按鈕
+                            if ui.small_button("✏️").clicked() {
+                                to_edit = Some((alias.name.clone(), alias.pattern.clone(), alias.replacement.clone()));
+                            }
+                        });
+                    });
+                }
             }
 
             if alias_empty {
                 ui.label("尚無別名，點擊「新增別名」開始");
             }
 
-            // 處理刪除
+            if needs_save {
+                self.save_config();
+            }
             if let Some(name) = to_delete {
                 self.alias_manager.remove(&name);
                 self.save_config();
@@ -1030,49 +1035,54 @@ impl MudApp {
 
             ui.add_space(10.0);
 
-            let triggers: Vec<_> = self.trigger_manager.list().iter().cloned().collect();
             let mut to_delete: Option<String> = None;
             let mut to_edit: Option<(String, String, String, bool)> = None;
-            let trigger_empty = triggers.is_empty();
+            let mut needs_save = false;
+            let trigger_empty = self.trigger_manager.order.is_empty();
 
-            for trigger in &triggers {
-                ui.horizontal(|ui| {
-                    let enabled_text = if trigger.enabled { "✓" } else { "○" };
-                    ui.label(enabled_text);
-                    
-                    // 人性化顯示觸發器模式
-                    let pattern_text = match &trigger.pattern {
-                        TriggerPattern::Contains(s) => format!("包含: {}", s),
-                        TriggerPattern::StartsWith(s) => format!("開頭: {}", s),
-                        TriggerPattern::EndsWith(s) => format!("結尾: {}", s),
-                        TriggerPattern::Regex(s) => format!("正則: {}", s),
-                    };
-                    ui.label(format!("{} [{}]", trigger.name, pattern_text));
-
-                    if ui.small_button("✏️").clicked() {
-                        // 提取純文字模式
-                        let clean_pattern = match &trigger.pattern {
-                            TriggerPattern::Contains(s) => s.clone(),
-                            TriggerPattern::StartsWith(s) => s.clone(),
-                            TriggerPattern::EndsWith(s) => s.clone(),
-                            TriggerPattern::Regex(s) => s.clone(),
+            for name in &self.trigger_manager.order {
+                if let Some(trigger) = self.trigger_manager.triggers.get_mut(name) {
+                    ui.horizontal(|ui| {
+                        if ui.checkbox(&mut trigger.enabled, "").changed() {
+                            needs_save = true;
+                        }
+                        
+                        // 人性化顯示觸發器模式
+                        let pattern_text = match &trigger.pattern {
+                            TriggerPattern::Contains(s) => format!("包含: {}", s),
+                            TriggerPattern::StartsWith(s) => format!("開頭: {}", s),
+                            TriggerPattern::EndsWith(s) => format!("結尾: {}", s),
+                            TriggerPattern::Regex(s) => format!("正則: {}", s),
                         };
-                        
-                        // 提取第一個 SendCommand 或 ExecuteScript 動作
-                        let (action_str, is_script) = trigger.actions.iter().find_map(|a| {
-                            match a {
-                                TriggerAction::SendCommand(cmd) => Some((cmd.clone(), false)),
-                                TriggerAction::ExecuteScript(code) => Some((code.clone(), true)),
-                                _ => None,
+                        ui.label(format!("{} [{}]", trigger.name, pattern_text));
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("🗑️").clicked() {
+                                to_delete = Some(trigger.name.clone());
                             }
-                        }).unwrap_or_default();
-                        
-                        to_edit = Some((trigger.name.clone(), clean_pattern, action_str, is_script));
-                    }
-                    if ui.small_button("🗑️").clicked() {
-                        to_delete = Some(trigger.name.clone());
-                    }
-                });
+                            if ui.small_button("✏️").clicked() {
+                                // 提取純文字模式
+                                let clean_pattern = match &trigger.pattern {
+                                    TriggerPattern::Contains(s) => s.clone(),
+                                    TriggerPattern::StartsWith(s) => s.clone(),
+                                    TriggerPattern::EndsWith(s) => s.clone(),
+                                    TriggerPattern::Regex(s) => s.clone(),
+                                };
+                                
+                                // 提取第一個 SendCommand 或 ExecuteScript 動作
+                                let (action_str, is_script) = trigger.actions.iter().find_map(|a| {
+                                    match a {
+                                        TriggerAction::SendCommand(cmd) => Some((cmd.clone(), false)),
+                                        TriggerAction::ExecuteScript(code) => Some((code.clone(), true)),
+                                        _ => None,
+                                    }
+                                }).unwrap_or_default();
+                                
+                                to_edit = Some((trigger.name.clone(), clean_pattern, action_str, is_script));
+                            }
+                        });
+                    });
+                }
             }
 
             if trigger_empty {
