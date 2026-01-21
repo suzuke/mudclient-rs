@@ -1,6 +1,6 @@
 //! MUD Client 主要 UI 邏輯
 
-use std::time::Instant;
+use std::time::{Instant, Duration};
 
 use eframe::egui::{self, Color32, FontId, RichText, ScrollArea, TextEdit};
 use eframe::egui::text::LayoutJob;
@@ -31,6 +31,14 @@ struct WordMetadata {
     last_seen: Instant,
     /// 是否出現在 Mob/NPC 的名稱標籤中
     is_mob: bool,
+}
+
+/// 正在運行的計時器
+struct ActiveTimer {
+    /// 到期時間
+    expires_at: Instant,
+    /// 到期時要執行的 Lua 代碼
+    lua_code: String,
 }
 
 /// MUD 客戶端 GUI 應用程式
@@ -112,6 +120,8 @@ pub struct MudApp {
 
     /// 畫面單字字典與其數據（用於智慧補齊排序）
     screen_words: std::collections::HashMap<String, WordMetadata>,
+    /// 待執行的計時器隊列
+    active_timers: Vec<ActiveTimer>,
     /// 是否正在接收房間敘述內容
     in_room_description: bool,
 
@@ -245,6 +255,7 @@ impl MudApp {
             trigger_edit_action: String::new(),
             trigger_edit_is_script: false,
             screen_words: std::collections::HashMap::new(),
+            active_timers: Vec::new(),
             in_room_description: false,
             // 設定視窗狀態
             show_settings_window: false,
@@ -522,7 +533,12 @@ impl MudApp {
         }
 
         // 處理所有匹配的觸發器動作
-        let matches = self.trigger_manager.process(text);
+        // 按照使用者要求：預設對本地回顯不產生觸發以避免重複
+        let matches = if is_echo {
+            Vec::new()
+        } else {
+            self.trigger_manager.process(text)
+        };
         
         // 預設路由目標
         let mut targets = if is_echo {
@@ -532,6 +548,7 @@ impl MudApp {
         };
         
         let mut gagged = false;
+        let mut pending_contexts = Vec::new();
 
         for (trigger, m) in matches {
             tracing::info!("[Trigger] 匹配觸發器: {}, 動作數: {}", trigger.name, trigger.actions.len());
@@ -562,47 +579,19 @@ impl MudApp {
                         }
                     }
                     TriggerAction::ExecuteScript(code) => {
-                        if let Ok(context) = self.script_engine.execute_inline(code, text, &m.captures) {
-                            if let Some(tx) = &self.command_tx {
-                                for cmd in context.commands {
-                                    let _ = tx.blocking_send(Command::Send(cmd.clone()));
-                                    self.window_manager.route_message(
-                                        "main",
-                                        WindowMessage {
-                                            content: format!("\n[SCRIPT] {}\n", cmd),
-                                            preserve_ansi: false,
-                                        },
-                                    );
-                                }
-                            }
-                            for echo_text in context.echos {
-                                self.window_manager.route_message(
-                                    "main",
-                                    WindowMessage {
-                                        content: format!(">>> {}\n", echo_text),
-                                        preserve_ansi: false,
-                                    },
-                                );
-                            }
-                            for (win_id, text) in context.window_outputs {
-                                self.window_manager.route_message(
-                                    &win_id,
-                                    WindowMessage {
-                                        content: format!("{}\n", text),
-                                        preserve_ansi: true,
-                                    },
-                                );
-                            }
-                            for log_msg in context.log_messages {
-                                let _ = self.logger.log(&format!("[Script] {}", log_msg));
-                            }
-                            if context.gag {
-                                gagged = true;
-                            }
+                        if let Ok(context) = self.script_engine.execute_inline(code, text, &m.captures, is_echo) {
+                            pending_contexts.push(context);
                         }
                     }
                     _ => {}
                 }
+            }
+        }
+
+        // 離開借用範圍後處理腳本結果
+        for context in pending_contexts {
+            if self.apply_script_context(context) {
+                gagged = true;
             }
         }
 
@@ -753,8 +742,92 @@ impl MudApp {
             }
         }
 
-        // 放回 message_rx
+        // 放放回 message_rx
         self.message_rx = Some(rx);
+    }
+
+    /// 核心：處理腳本執行後的副作用（命令、回顯、計時器等）
+    /// 回傳是否需要 gag (隱藏訊息)
+    fn apply_script_context(&mut self, context: mudcore::MudContext) -> bool {
+        // 1. 發送命令
+        if let Some(tx) = &self.command_tx {
+            for cmd in context.commands {
+                let _ = tx.blocking_send(Command::Send(cmd.clone()));
+                self.window_manager.route_message(
+                    "main",
+                    WindowMessage {
+                        content: format!("\n[SCRIPT] {}\n", cmd),
+                        preserve_ansi: false,
+                    },
+                );
+            }
+        }
+
+        // 2. 本地回顯
+        for echo_text in context.echos {
+            self.window_manager.route_message(
+                "main",
+                WindowMessage {
+                    content: format!(">>> {}\n", echo_text),
+                    preserve_ansi: false,
+                },
+            );
+        }
+
+        // 3. 子視窗輸出
+        for (win_id, text) in context.window_outputs {
+            self.window_manager.route_message(
+                &win_id,
+                WindowMessage {
+                    content: format!("{}\n", text),
+                    preserve_ansi: true,
+                },
+            );
+        }
+
+        // 4. 計時器註冊
+        let now = Instant::now();
+        for (delay_ms, code) in context.timers {
+            self.active_timers.push(ActiveTimer {
+                expires_at: now + Duration::from_millis(delay_ms),
+                lua_code: code,
+            });
+        }
+
+        // 5. 日誌記錄
+        for log_msg in context.log_messages {
+            let _ = self.logger.log(&format!("[Script] {}", log_msg));
+        }
+
+        context.gag
+    }
+
+    /// 檢查並執行到期的計時器
+    fn check_timers(&mut self) {
+        if self.active_timers.is_empty() {
+            return;
+        }
+
+        let now = Instant::now();
+        let mut expired = Vec::new();
+
+        // 分離已到期與未到期的
+        self.active_timers.retain(|timer| {
+            if now >= timer.expires_at {
+                expired.push(timer.lua_code.clone());
+                false
+            } else {
+                true
+            }
+        });
+
+        // 執行到期的腳本
+        for code in expired {
+            // 計時器觸發不帶 message/captures，且永遠不是回顯
+            if let Ok(context) = self.script_engine.execute_inline(&code, "TIMER_EXPIRED", &[], false) {
+                self.apply_script_context(context);
+            }
+        }
     }
 
     /// 繪製連線設定面板
@@ -1370,6 +1443,9 @@ impl eframe::App for MudApp {
 
         // 檢查自動重連
         self.check_reconnect(ctx);
+
+        // 檢查並執行計時器
+        self.check_timers();
 
         // 處理網路訊息
         self.process_messages();

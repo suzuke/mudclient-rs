@@ -90,13 +90,14 @@ impl ScriptEngine {
         script_name: &str,
         message: &str,
         captures: &[String],
+        is_echo: bool,
     ) -> Result<MudContext, ScriptError> {
         let code = self
             .scripts
             .get(script_name)
             .ok_or_else(|| ScriptError::NotFound(script_name.to_string()))?;
 
-        self.run_code(code, message, captures)
+        self.run_code(code, message, captures, is_echo)
     }
 
     /// 執行內聯代碼
@@ -105,8 +106,9 @@ impl ScriptEngine {
         code: &str,
         message: &str,
         captures: &[String],
+        is_echo: bool,
     ) -> Result<MudContext, ScriptError> {
-        self.run_code(code, message, captures)
+        self.run_code(code, message, captures, is_echo)
     }
 
     /// 運行 Lua 代碼
@@ -115,6 +117,7 @@ impl ScriptEngine {
         code: &str,
         message: &str,
         captures: &[String],
+        is_echo: bool,
     ) -> Result<MudContext, ScriptError> {
         let mut context = MudContext::new();
 
@@ -151,6 +154,9 @@ impl ScriptEngine {
             
             // gag 標記
             mud.set("gag", false)?;
+            
+            // 是否為回顯
+            mud.set("is_echo", is_echo)?;
             
             // mud.send(command) 函數
             let send_fn = scope.create_function_mut(|lua, cmd: String| {
@@ -291,6 +297,7 @@ impl ScriptEngine {
                 for pair in timers.pairs::<i64, mlua::Table>() {
                     if let Ok((_, tbl)) = pair {
                         if let (Ok(delay_ms), Ok(code)) = (tbl.get::<u64>(1), tbl.get::<String>(2)) {
+                            // 計時器觸發永遠不被視為回顯
                             context.timers.push((delay_ms, code));
                         }
                     }
@@ -338,6 +345,7 @@ end
 "#,
                 "這是一則廣告",
                 &[],
+                false,
             )
             .unwrap();
 
