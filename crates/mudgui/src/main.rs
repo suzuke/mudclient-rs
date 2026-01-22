@@ -41,7 +41,17 @@ fn load_icon() -> Option<eframe::egui::IconData> {
     let icon_bytes = include_bytes!("../assets/icon.png");
     let img = image::load_from_memory(icon_bytes).ok()?;
     let (width, height) = img.dimensions();
-    let rgba = img.to_rgba8().into_raw();
+    let mut rgba8 = img.to_rgba8();
+
+    // 去背處理：將白色背景設為透明
+    for pixel in rgba8.pixels_mut() {
+        let [r, g, b, _a] = pixel.0;
+        if r > 245 && g > 245 && b > 245 {
+            pixel.0[3] = 0;
+        }
+    }
+
+    let rgba = rgba8.into_raw();
     Some(eframe::egui::IconData {
         rgba,
         width,
