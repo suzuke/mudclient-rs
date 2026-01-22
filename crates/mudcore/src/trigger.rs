@@ -194,16 +194,44 @@ impl TriggerManager {
     /// 處理訊息，返回所有匹配的觸發器及其動作
     pub fn process(&self, message: &str) -> Vec<(&Trigger, TriggerMatch)> {
         let mut matches = Vec::new();
+        
+        // 剝離 ANSI 控制碼以支援純文字模式匹配帶色訊息
+        let stripped = Self::strip_ansi(message);
 
         for name in &self.order {
             if let Some(trigger) = self.triggers.get(name) {
-                if let Some(m) = trigger.try_match(message) {
+                if let Some(m) = trigger.try_match(&stripped) {
                     matches.push((trigger, m));
                 }
             }
         }
 
         matches
+    }
+
+    /// 移除 ANSI 轉義碼
+    fn strip_ansi(input: &str) -> String {
+        let mut result = String::with_capacity(input.len());
+        let mut chars = input.chars().peekable();
+
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                // 跳過 CSI 序列
+                if chars.peek() == Some(&'[') {
+                    chars.next();
+                    while let Some(&ch) = chars.peek() {
+                        chars.next();
+                        if ch.is_ascii_alphabetic() {
+                            break;
+                        }
+                    }
+                }
+            } else {
+                result.push(c);
+            }
+        }
+
+        result
     }
 
     /// 收集需要發送的命令
