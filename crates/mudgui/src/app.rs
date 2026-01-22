@@ -237,7 +237,7 @@ impl MudApp {
             logger: {
                 let mut logger = Logger::new();
                 // 自動啟動日誌記錄
-                let log_path = format!("mud_log_{}.txt", chrono_lite_timestamp());
+                let log_path = format!("logs/mud_log_{}.txt", chrono_lite_timestamp());
                 let _ = logger.start(&log_path);
                 tracing::info!("自動啟動日誌記錄：{}", log_path);
                 logger
@@ -549,12 +549,7 @@ impl MudApp {
         }
 
         // 處理所有匹配的觸發器動作
-        // 按照使用者要求：預設對本地回顯不產生觸發以避免重複
-        let matches = if is_echo {
-            Vec::new()
-        } else {
-            self.trigger_manager.process(text)
-        };
+        let matches = self.trigger_manager.process(text);
         
         // 預設路由目標：所有訊息預設都去主視窗，除非被 gag
         let mut targets = vec!["main".to_string()];
@@ -567,6 +562,11 @@ impl MudApp {
             for action in &trigger.actions {
                 match action {
                     TriggerAction::SendCommand(cmd) => {
+                        // 防止回顯導致的重複發送（除非是腳本主動控制）
+                        if is_echo {
+                            continue;
+                        }
+                        
                         let mut expanded = cmd.clone();
                         for (i, cap) in m.captures.iter().enumerate() {
                             expanded = expanded.replace(&format!("${}", i + 1), cap);
@@ -1121,7 +1121,7 @@ impl MudApp {
                 } else {
                     ui.label("狀態: 未啟動");
                     if ui.button("開始記錄").clicked() {
-                        let path = format!("mud_log_{}.txt", chrono_lite_timestamp());
+                        let path = format!("logs/mud_log_{}.txt", chrono_lite_timestamp());
                         let _ = self.logger.start(&path);
                     }
                 }
