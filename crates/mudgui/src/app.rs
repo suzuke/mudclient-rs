@@ -58,10 +58,7 @@ pub struct MudApp {
 
     /// 從網路執行緒接收訊息的 channel
     message_rx: Option<mpsc::Receiver<String>>,
- 
-    /// 訊息行緩衝
-    receive_buffer: String,
- 
+
     /// 連線設定
     host: String,
     port: String,
@@ -203,9 +200,22 @@ impl MudApp {
                 // 清理可能的 Debug 格式（舊配置檔相容）
                 let clean_pattern = clean_pattern_string(&trigger_cfg.pattern);
                 
+                // 自動偵測正則表達式模式
+                let pattern = if clean_pattern.contains("(.+)")
+                    || clean_pattern.contains("(.*)")
+                    || clean_pattern.contains("\\d")
+                    || clean_pattern.contains("[")
+                    || clean_pattern.contains("$")
+                    || clean_pattern.contains("^")
+                {
+                    TriggerPattern::Regex(clean_pattern)
+                } else {
+                    TriggerPattern::Contains(clean_pattern)
+                };
+                
                 let mut trigger = Trigger::new(
                     &trigger_cfg.name,
-                    TriggerPattern::Contains(clean_pattern),
+                    pattern,
                 );
                 if !trigger_cfg.action.is_empty() {
                     if trigger_cfg.is_script {
@@ -234,7 +244,6 @@ impl MudApp {
         Self {
             runtime,
             window_manager: WindowManager::new(),
-            receive_buffer: String::new(),
             alias_manager,
             trigger_manager,
             script_engine: ScriptEngine::new(),
@@ -547,22 +556,13 @@ impl MudApp {
 
     /// 處理接收到的（或本地回顯的）文字並執行觸發器
     fn handle_text_and_triggers(&mut self, text: &str, is_echo: bool) -> bool {
-        // 先生成一個乾淨（無 ANSI 代碼）的版本用於匹配與單字提取
-        let clean_text = Logger::strip_ansi(text);
-        
-        // [DEBUG] 輸出乾淨文字以便診斷匹配問題
-        if !is_echo && !clean_text.trim().is_empty() {
-            tracing::debug!("[TriggerDebug] 接收文字 (原始): {:?}", text);
-            tracing::debug!("[TriggerDebug] 接收文字 (乾淨): {:?}", clean_text);
-        }
-
-        // 觸發器處理 (對乾淨文字進行 gag 檢查)
-        if self.trigger_manager.should_gag(&clean_text) {
+        // 觸發器處理
+        if self.trigger_manager.should_gag(text) {
             return false; // 訊息被抑制
         }
 
-        // 處理所有匹配的觸發器動作 (對乾淨文字進行匹配)
-        let matches = self.trigger_manager.process(&clean_text);
+        // 處理所有匹配的觸發器動作
+        let matches = self.trigger_manager.process(text);
         
         // 預設路由目標：所有訊息預設都去主視窗，除非被 gag
         let mut targets = vec!["main".to_string()];
@@ -604,8 +604,7 @@ impl MudApp {
                         }
                     }
                     TriggerAction::ExecuteScript(code) => {
-                        // 腳本接收到的 text 也是乾淨的版本，以便 match 擷取
-                        if let Ok(context) = self.script_engine.execute_inline(code, &clean_text, &m.captures, is_echo) {
+                        if let Ok(context) = self.script_engine.execute_inline(code, text, &m.captures, is_echo) {
                             pending_contexts.push(context);
                         }
                     }
@@ -625,7 +624,7 @@ impl MudApp {
             return false;
         }
 
-        // 路由到視窗 (發送到視窗時保留原始 ANSI 以供渲染)
+        // 路由到視窗
         for target_id in targets {
             self.window_manager.route_message(
                 &target_id,
@@ -637,7 +636,12 @@ impl MudApp {
         }
 
         // 提取單字用於自動補齊 (僅限正面表列內容：生物行或房間敘述)
-        // 直接使用前面產生的 clean_text
+        let clean_text = if text.contains('\x1b') {
+            let re = regex::Regex::new(r"\x1b\[[0-9;]*[mK]").unwrap();
+            re.replace_all(text, "").to_string()
+        } else {
+            text.to_string()
+        };
 
         // 偵測房間敘述區塊的開始與結束
         // 典型的房間區塊：
@@ -742,15 +746,15 @@ impl MudApp {
         };
 
         while let Ok(msg) = rx.try_recv() {
-            // 將新資料加入緩衝區
-            self.receive_buffer.push_str(&msg);
+            // 統一生產與分發邏輯
+            self.handle_text_and_triggers(&msg, false);
 
-            // 處理連線狀態 (從原始訊息判斷，這通常包含換行)
-            if msg.contains(">>> 已連線到") {
+            // 更新連線狀態 (從原始訊息判斷)
+            if msg.contains("已連線到") {
                 let info = msg.replace(">>> 已連線到 ", "").replace("\n", "");
                 self.status = ConnectionStatus::Connected(info);
                 self.connected_at = Some(Instant::now());
-            } else if msg.contains(">>> 連線已關閉") || msg.contains(">>> 已斷開連線") {
+            } else if msg.contains("連線已關閉") || msg.contains("已斷開連線") {
                 self.connected_at = None;
                 // 自動重連邏輯
                 if self.auto_reconnect {
@@ -762,16 +766,6 @@ impl MudApp {
                 }
             }
         }
-
-        // 提取緩衝區中的完整行並處理
-        while let Some(pos) = self.receive_buffer.find('\n') {
-            let line = self.receive_buffer.drain(..=pos).collect::<String>();
-            self.handle_text_and_triggers(&line, false);
-        }
-
-        // [特殊處理] 如果剩餘緩衝區看起來像 Prompt (通常以 '(' 開頭且不含換行)
-        // 且一段時間沒有新資料了，或者是特定的 Prompt 格式，可以考慮即時處理。
-        // 目前暫時維持緩衝，直到下次 \n 出現，以確保正則匹配的穩定性。
 
         // 放放回 message_rx
         self.message_rx = Some(rx);
@@ -1238,9 +1232,21 @@ impl MudApp {
                         }
                     }
                     // 新增觸發器
+                    // 自動偵測正則表達式模式
+                    let pattern = if self.trigger_edit_pattern.contains("(.+)")
+                        || self.trigger_edit_pattern.contains("(.*)")
+                        || self.trigger_edit_pattern.contains("\\d")
+                        || self.trigger_edit_pattern.contains("[")
+                        || self.trigger_edit_pattern.contains("$")
+                        || self.trigger_edit_pattern.contains("^")
+                    {
+                        TriggerPattern::Regex(self.trigger_edit_pattern.clone())
+                    } else {
+                        TriggerPattern::Contains(self.trigger_edit_pattern.clone())
+                    };
                     let mut trigger = Trigger::new(
                         &self.trigger_edit_name,
-                        TriggerPattern::Contains(self.trigger_edit_pattern.clone()),
+                        pattern,
                     );
                     if !self.trigger_edit_action.is_empty() {
                         if self.trigger_edit_is_script {
