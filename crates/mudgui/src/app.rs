@@ -543,13 +543,16 @@ impl MudApp {
 
     /// 處理接收到的（或本地回顯的）文字並執行觸發器
     fn handle_text_and_triggers(&mut self, text: &str, is_echo: bool) -> bool {
-        // 觸發器處理
-        if self.trigger_manager.should_gag(text) {
+        // 先生成一個乾淨（無 ANSI 代碼）的版本用於匹配與單字提取
+        let clean_text = Logger::strip_ansi(text);
+
+        // 觸發器處理 (對乾淨文字進行 gag 檢查)
+        if self.trigger_manager.should_gag(&clean_text) {
             return false; // 訊息被抑制
         }
 
-        // 處理所有匹配的觸發器動作
-        let matches = self.trigger_manager.process(text);
+        // 處理所有匹配的觸發器動作 (對乾淨文字進行匹配)
+        let matches = self.trigger_manager.process(&clean_text);
         
         // 預設路由目標：所有訊息預設都去主視窗，除非被 gag
         let mut targets = vec!["main".to_string()];
@@ -591,7 +594,8 @@ impl MudApp {
                         }
                     }
                     TriggerAction::ExecuteScript(code) => {
-                        if let Ok(context) = self.script_engine.execute_inline(code, text, &m.captures, is_echo) {
+                        // 腳本接收到的 text 也是乾淨的版本，以便 match 擷取
+                        if let Ok(context) = self.script_engine.execute_inline(code, &clean_text, &m.captures, is_echo) {
                             pending_contexts.push(context);
                         }
                     }
@@ -611,7 +615,7 @@ impl MudApp {
             return false;
         }
 
-        // 路由到視窗
+        // 路由到視窗 (發送到視窗時保留原始 ANSI 以供渲染)
         for target_id in targets {
             self.window_manager.route_message(
                 &target_id,
@@ -623,12 +627,7 @@ impl MudApp {
         }
 
         // 提取單字用於自動補齊 (僅限正面表列內容：生物行或房間敘述)
-        let clean_text = if text.contains('\x1b') {
-            let re = regex::Regex::new(r"\x1b\[[0-9;]*[mK]").unwrap();
-            re.replace_all(text, "").to_string()
-        } else {
-            text.to_string()
-        };
+        // 直接使用前面產生的 clean_text
 
         // 偵測房間敘述區塊的開始與結束
         // 典型的房間區塊：
