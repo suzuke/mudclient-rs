@@ -58,7 +58,10 @@ pub struct MudApp {
 
     /// 從網路執行緒接收訊息的 channel
     message_rx: Option<mpsc::Receiver<String>>,
-
+ 
+    /// 訊息行緩衝
+    receive_buffer: String,
+ 
     /// 連線設定
     host: String,
     port: String,
@@ -231,6 +234,7 @@ impl MudApp {
         Self {
             runtime,
             window_manager: WindowManager::new(),
+            receive_buffer: String::new(),
             alias_manager,
             trigger_manager,
             script_engine: ScriptEngine::new(),
@@ -545,6 +549,12 @@ impl MudApp {
     fn handle_text_and_triggers(&mut self, text: &str, is_echo: bool) -> bool {
         // 先生成一個乾淨（無 ANSI 代碼）的版本用於匹配與單字提取
         let clean_text = Logger::strip_ansi(text);
+        
+        // [DEBUG] 輸出乾淨文字以便診斷匹配問題
+        if !is_echo && !clean_text.trim().is_empty() {
+            tracing::debug!("[TriggerDebug] 接收文字 (原始): {:?}", text);
+            tracing::debug!("[TriggerDebug] 接收文字 (乾淨): {:?}", clean_text);
+        }
 
         // 觸發器處理 (對乾淨文字進行 gag 檢查)
         if self.trigger_manager.should_gag(&clean_text) {
@@ -732,15 +742,15 @@ impl MudApp {
         };
 
         while let Ok(msg) = rx.try_recv() {
-            // 統一生產與分發邏輯
-            self.handle_text_and_triggers(&msg, false);
+            // 將新資料加入緩衝區
+            self.receive_buffer.push_str(&msg);
 
-            // 更新連線狀態 (從原始訊息判斷)
-            if msg.contains("已連線到") {
+            // 處理連線狀態 (從原始訊息判斷，這通常包含換行)
+            if msg.contains(">>> 已連線到") {
                 let info = msg.replace(">>> 已連線到 ", "").replace("\n", "");
                 self.status = ConnectionStatus::Connected(info);
                 self.connected_at = Some(Instant::now());
-            } else if msg.contains("連線已關閉") || msg.contains("已斷開連線") {
+            } else if msg.contains(">>> 連線已關閉") || msg.contains(">>> 已斷開連線") {
                 self.connected_at = None;
                 // 自動重連邏輯
                 if self.auto_reconnect {
@@ -752,6 +762,16 @@ impl MudApp {
                 }
             }
         }
+
+        // 提取緩衝區中的完整行並處理
+        while let Some(pos) = self.receive_buffer.find('\n') {
+            let line = self.receive_buffer.drain(..=pos).collect::<String>();
+            self.handle_text_and_triggers(&line, false);
+        }
+
+        // [特殊處理] 如果剩餘緩衝區看起來像 Prompt (通常以 '(' 開頭且不含換行)
+        // 且一段時間沒有新資料了，或者是特定的 Prompt 格式，可以考慮即時處理。
+        // 目前暫時維持緩衝，直到下次 \n 出現，以確保正則匹配的穩定性。
 
         // 放放回 message_rx
         self.message_rx = Some(rx);
