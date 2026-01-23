@@ -244,7 +244,7 @@ pub fn parse_ansi(input: &str) -> Vec<AnsiSpan> {
     spans
 }
 
-/// 移除 ANSI 轉義碼，只保留純文字
+/// 移除 ANSI 轉義碼和其他不可見字符，只保留純文字
 /// 用於清理從畫面複製的文字，避免發送帶有控制碼的訊息
 pub fn strip_ansi(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
@@ -273,14 +273,49 @@ pub fn strip_ansi(input: &str) -> String {
                     // 其他 ESC 序列，跳過 ESC 本身
                 }
             }
-        } else if c >= ' ' || c == '\n' || c == '\r' || c == '\t' {
-            // 只保留可見字元和基本空白字元
+        } else if is_visible_char(c) {
             result.push(c);
         }
         // 其他不可見控制字元被忽略
     }
 
     result
+}
+
+/// 判斷字符是否為可見字符（應該保留）
+fn is_visible_char(c: char) -> bool {
+    // 允許的字符：
+    // - 普通可見字符（>= 空格）
+    // - 換行、回車、Tab
+    // - 中文及其他語言字符
+    
+    // 排除的字符：
+    // - ASCII 控制字符 (0x00-0x1F)，除了 \n \r \t
+    // - DEL (0x7F)
+    // - Unicode 控制字符 (U+0080-U+009F)
+    // - 零寬度字符：
+    //   - U+200B Zero Width Space
+    //   - U+200C Zero Width Non-Joiner
+    //   - U+200D Zero Width Joiner
+    //   - U+FEFF Byte Order Mark / Zero Width No-Break Space
+    //   - U+2060 Word Joiner
+    // - 其他格式控制字符 (U+200E-U+200F, U+2028-U+202F, U+2066-U+206F)
+
+    match c {
+        // 允許基本空白字符
+        '\n' | '\r' | '\t' => true,
+        // 排除 ASCII 控制字符
+        '\x00'..='\x1f' | '\x7f' => false,
+        // 排除 C1 控制字符
+        '\u{0080}'..='\u{009f}' => false,
+        // 排除零寬度字符和格式控制字符
+        '\u{200b}'..='\u{200f}' | // Zero width chars, LRM, RLM
+        '\u{2028}'..='\u{202f}' | // Line/paragraph separators, embedding controls
+        '\u{2060}'..='\u{206f}' | // Word joiner, invisible operators
+        '\u{feff}' => false,      // BOM / ZWNBSP
+        // 其他字符都允許
+        _ => true,
+    }
 }
 
 #[cfg(test)]
