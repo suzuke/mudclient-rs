@@ -3,6 +3,7 @@
 mod ansi;
 mod app;
 mod config;
+mod session;
  
 use app::MudApp;
 use image::GenericImageView;
