@@ -1513,6 +1513,41 @@ impl MudApp {
                 self.show_settings_window = false;
                 self.show_alias_window = false;
                 self.show_trigger_window = false;
+                self.show_profile_window = false;
+            }
+
+            // === 分頁切換快捷鍵 ===
+            #[cfg(target_os = "macos")]
+            let cmd = i.modifiers.mac_cmd;
+            #[cfg(not(target_os = "macos"))]
+            let cmd = i.modifiers.ctrl;
+
+            if cmd && !i.modifiers.shift {
+                // Cmd+1~9 切換分頁
+                let num_keys = [
+                    egui::Key::Num1, egui::Key::Num2, egui::Key::Num3,
+                    egui::Key::Num4, egui::Key::Num5, egui::Key::Num6,
+                    egui::Key::Num7, egui::Key::Num8, egui::Key::Num9,
+                ];
+                for (idx, key) in num_keys.iter().enumerate() {
+                    if i.key_pressed(*key) {
+                        self.session_manager.switch_tab(idx);
+                    }
+                }
+
+                // Cmd+[ 上一個分頁
+                if i.key_pressed(egui::Key::OpenBracket) {
+                    self.session_manager.prev_tab();
+                }
+                // Cmd+] 下一個分頁
+                if i.key_pressed(egui::Key::CloseBracket) {
+                    self.session_manager.next_tab();
+                }
+
+                // Cmd+T 開啟連線管理
+                if i.key_pressed(egui::Key::T) {
+                    self.show_profile_window = true;
+                }
             }
         });
     }
@@ -1620,6 +1655,35 @@ impl eframe::App for MudApp {
                 ui.separator();
                 ui.checkbox(&mut self.auto_scroll, "自動捲動");
             });
+
+            // 第三行：Session 分頁列（僅當有多個 Session 時顯示）
+            if self.session_manager.len() > 0 {
+                ui.separator();
+                ui.horizontal(|ui| {
+                    // 收集分頁資訊以避免借用衝突
+                    let tabs: Vec<_> = self.session_manager.sessions().iter().enumerate().map(|(i, s)| {
+                        (i, s.id, s.tab_title())
+                    }).collect();
+                    let active_idx = self.session_manager.active_index();
+
+                    for (idx, _id, title) in tabs {
+                        let is_active = idx == active_idx;
+                        let btn = egui::Button::new(
+                            RichText::new(&title).color(if is_active { Color32::WHITE } else { Color32::GRAY })
+                        );
+                        if ui.add(btn).clicked() {
+                            self.session_manager.switch_tab(idx);
+                        }
+                    }
+
+                    ui.separator();
+                    
+                    // 新增分頁按鈕
+                    if ui.button("➕").on_hover_text("新增連線").clicked() {
+                        self.show_profile_window = true;
+                    }
+                });
+            }
         });
 
         // === 右側：工具欄 ===
