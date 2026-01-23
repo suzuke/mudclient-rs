@@ -12,7 +12,8 @@ use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 
 use crate::ansi::parse_ansi;
-use crate::config::{AppConfig, AliasConfig, TriggerConfig};
+use crate::config::{AppConfig, AliasConfig, TriggerConfig, GlobalConfig, Profile, ProfileManager};
+use crate::session::{SessionManager, SessionId};
 
 
 /// 連線狀態
@@ -141,6 +142,16 @@ pub struct MudApp {
 
     /// 當前設定頁面標籤
     settings_tab: SettingsTab,
+
+    // === 多帳號系統 ===
+    /// Profile 管理器
+    profile_manager: ProfileManager,
+    /// Session 管理器
+    session_manager: SessionManager,
+    /// 全域設定
+    global_config: GlobalConfig,
+    /// 是否顯示 Profile 選擇視窗
+    show_profile_window: bool,
 }
 
 /// 設定中心標籤頁
@@ -292,6 +303,11 @@ impl MudApp {
             auto_reconnect: true,
             reconnect_delay_until: None,
             ctx: None,
+            // 多帳號系統
+            profile_manager: ProfileManager::new(),
+            session_manager: SessionManager::new(),
+            global_config: GlobalConfig::load(),
+            show_profile_window: false,
         }
     }
 
@@ -604,6 +620,8 @@ impl MudApp {
                         }
                     }
                     TriggerAction::ExecuteScript(code) => {
+                        tracing::info!("[Script] 執行腳本觸發器: {}, 匹配: '{}', 捕獲數: {}, 捕獲內容: {:?}", 
+                            trigger.name, m.matched_text, m.captures.len(), m.captures);
                         if let Ok(context) = self.script_engine.execute_inline(code, text, &m.captures, is_echo) {
                             pending_contexts.push(context);
                         }
@@ -1627,6 +1645,9 @@ impl eframe::App for MudApp {
                 if ui.button("⚙ 設定中心").clicked() {
                     self.show_settings_window = true;
                 }
+                if ui.button("👤 連線管理").clicked() {
+                    self.show_profile_window = true;
+                }
 
                 ui.add_space(15.0);
                 ui.heading("日誌");
@@ -1816,6 +1837,115 @@ impl eframe::App for MudApp {
                     ui.add_space(10.0);
                     if ui.button("關閉").clicked() {
                         self.show_settings_window = false;
+                    }
+                });
+        }
+
+        // === Profile 管理視窗 ===
+        if self.show_profile_window {
+            egui::Window::new("連線管理")
+                .resizable(true)
+                .default_width(450.0)
+                .default_height(350.0)
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    ui.heading("Profile 列表");
+                    ui.separator();
+
+                    let profiles: Vec<_> = self.profile_manager.list().iter().map(|p| {
+                        (p.name.clone(), p.display_name.clone(), p.connection.host.clone(), p.connection.port.clone())
+                    }).collect();
+
+                    if profiles.is_empty() {
+                        ui.label("尚無任何 Profile。");
+                        ui.add_space(10.0);
+                        
+                        // 提供將目前設定建立為 Profile 的選項
+                        if ui.button("📝 將目前連線儲存為 Profile").clicked() {
+                            use crate::config::Profile;
+                            let profile = Profile {
+                                name: "default".to_string(),
+                                display_name: "預設連線".to_string(),
+                                connection: crate::config::ConnectionConfig {
+                                    host: self.host.clone(),
+                                    port: self.port.clone(),
+                                },
+                                aliases: self.alias_manager.list().iter().map(|a| AliasConfig {
+                                    name: a.name.clone(),
+                                    pattern: a.pattern.clone(),
+                                    replacement: a.replacement.clone(),
+                                    enabled: a.enabled,
+                                }).collect(),
+                                triggers: self.trigger_manager.list().iter().map(|t| {
+                                    let pattern_str = match &t.pattern {
+                                        TriggerPattern::Contains(s) => s.clone(),
+                                        TriggerPattern::StartsWith(s) => s.clone(),
+                                        TriggerPattern::EndsWith(s) => s.clone(),
+                                        TriggerPattern::Regex(s) => s.clone(),
+                                    };
+                                    let (action_str, is_script) = t.actions.iter().find_map(|a| {
+                                        match a {
+                                            TriggerAction::SendCommand(cmd) => Some((cmd.clone(), false)),
+                                            TriggerAction::ExecuteScript(code) => Some((code.clone(), true)),
+                                            _ => None,
+                                        }
+                                    }).unwrap_or_default();
+                                    TriggerConfig {
+                                        name: t.name.clone(),
+                                        pattern: pattern_str,
+                                        action: action_str,
+                                        is_script,
+                                        enabled: t.enabled,
+                                    }
+                                }).collect(),
+                                script_paths: Vec::new(),
+                                created_at: std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_secs())
+                                    .unwrap_or(0),
+                                last_connected: None,
+                            };
+                            let _ = self.profile_manager.save(profile);
+                        }
+                    } else {
+                        egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                            for (name, display_name, host, port) in &profiles {
+                                ui.group(|ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new(display_name).strong());
+                                        ui.label(format!("({}:{})", host, port));
+                                        
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            // TODO: 連線到此 Profile
+                                            if ui.button("🔌 連線").clicked() {
+                                                // 未來會使用 SessionManager 建立新 Session
+                                                tracing::info!("TODO: 連線到 Profile: {}", name);
+                                            }
+                                        });
+                                    });
+                                });
+                            }
+                        });
+                    }
+
+                    ui.add_space(15.0);
+                    ui.separator();
+
+                    // 活躍連線列表
+                    ui.heading("活躍連線");
+                    ui.separator();
+                    
+                    let session_count = self.session_manager.len();
+                    if session_count == 0 {
+                        ui.label("目前無多帳號連線。");
+                        ui.label(RichText::new("（目前使用傳統單連線模式）").weak());
+                    } else {
+                        ui.label(format!("活躍 Session 數量: {}", session_count));
+                    }
+
+                    ui.add_space(15.0);
+                    if ui.button("關閉").clicked() {
+                        self.show_profile_window = false;
                     }
                 });
         }
