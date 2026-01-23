@@ -244,6 +244,45 @@ pub fn parse_ansi(input: &str) -> Vec<AnsiSpan> {
     spans
 }
 
+/// 移除 ANSI 轉義碼，只保留純文字
+/// 用於清理從畫面複製的文字，避免發送帶有控制碼的訊息
+pub fn strip_ansi(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // 跳過 ANSI 序列
+            match chars.peek() {
+                Some(&'[') => {
+                    chars.next(); // 消耗 '['
+                    // 跳過直至終止符 (0x40-0x7E)
+                    while let Some(&ch) = chars.peek() {
+                        let b = ch as u8;
+                        chars.next();
+                        if (0x40..=0x7E).contains(&b) {
+                            break;
+                        }
+                    }
+                }
+                Some(&'(') | Some(&')') => {
+                    chars.next(); // 消耗 '(' 或 ')'
+                    chars.next(); // 消耗字集識別碼
+                }
+                _ => {
+                    // 其他 ESC 序列，跳過 ESC 本身
+                }
+            }
+        } else if c >= ' ' || c == '\n' || c == '\r' || c == '\t' {
+            // 只保留可見字元和基本空白字元
+            result.push(c);
+        }
+        // 其他不可見控制字元被忽略
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

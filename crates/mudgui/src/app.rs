@@ -11,7 +11,7 @@ use mudcore::{
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 
-use crate::ansi::parse_ansi;
+use crate::ansi::{parse_ansi, strip_ansi};
 use crate::config::{AppConfig, AliasConfig, TriggerConfig, GlobalConfig, Profile, ProfileManager};
 use crate::session::{SessionManager, SessionId};
 
@@ -544,8 +544,9 @@ impl MudApp {
         }
         self.history_index = None;
 
-        // 別名處理
-        let expanded = self.alias_manager.process(&text);
+        // 別名處理（先清理 ANSI 控制碼，避免複製的文字帶有不可見字元）
+        let clean_text = strip_ansi(&text);
+        let expanded = self.alias_manager.process(&clean_text);
 
         // 處理本地回顯與觸發 (這需要 &mut self)
         if expanded.is_empty() {
