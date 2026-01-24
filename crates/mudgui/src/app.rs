@@ -718,17 +718,7 @@ impl MudApp {
                 session.history_index = None;
                 
                 for cmd in cmds {
-                    let cmd_string = cmd.to_string();
-                    
-                    // 恢復回顯
-                    session.window_manager.route_message("main", mudcore::window::WindowMessage {
-                        content: format!("{}{}\n", if cmd_string.is_empty() { "" } else { "\n" }, cmd_string), 
-                        preserve_ansi: true,
-                    });
-
-                    if let Some(tx) = &session.command_tx {
-                        let _ = tx.blocking_send(crate::session::Command::Send(cmd_string));
-                    }
+                    session.handle_user_input(&cmd.to_string());
                 }
                 
                 // 不清除輸入，而是全選 (方便重複發送)

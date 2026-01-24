@@ -588,6 +588,122 @@ impl Session {
         true
     }
 
+    /// 處理使用者輸入的指令 (包含特殊指令如 #loop, #delay, /lua)
+    pub fn handle_user_input(&mut self, input: &str) {
+        let input = input.trim();
+        if input.is_empty() {
+            return;
+        }
+
+        // 1. 處理特殊指令
+        if input.starts_with("#") || input.starts_with("/") {
+            let parts: Vec<&str> = input.split_whitespace().collect();
+            let cmd = parts[0];
+
+            match cmd {
+                "#loop" => {
+                    if parts.len() >= 3 {
+                        if let Ok(count) = parts[1].parse::<usize>() {
+                            let sub_cmd = parts[2..].join(" ");
+                            for _ in 0..count {
+                                // 遞迴呼叫以支援巢狀或後續處理
+                                self.handle_user_input(&sub_cmd);
+                            }
+                            return;
+                        }
+                    }
+                    self.system_message("Usage: #loop <count> <command>");
+                    return;
+                }
+                "#delay" => {
+                    if parts.len() >= 3 {
+                        if let Ok(ms) = parts[1].parse::<u64>() {
+                            let sub_cmd = parts[2..].join(" ");
+                            let lua_code = format!("mud.send(\"{}\")", sub_cmd.replace("\"", "\\\""));
+                            
+                            self.active_timers.push(ActiveTimer {
+                                expires_at: Instant::now() + std::time::Duration::from_millis(ms),
+                                lua_code,
+                            });
+                            self.system_message(&format!("Delayed execution of '{}' by {}ms", sub_cmd, ms));
+                            return;
+                        }
+                    }
+                    self.system_message("Usage: #delay <ms> <command>");
+                    return;
+                }
+                "/lua" => {
+                    if parts.len() >= 2 {
+                        let code = parts[1..].join(" ");
+                        match self.script_engine.execute_inline(&code, "CLI", &[], true) {
+                            Ok(ctx) => self.apply_script_context(ctx),
+                            Err(e) => self.system_message(&format!("Lua Error: {}", e)),
+                        }
+                        return;
+                    }
+                    self.system_message("Usage: /lua <code>");
+                    return;
+                }
+                "#var" => {
+                    if parts.len() >= 3 {
+                        let key = parts[1];
+                        let value = parts[2..].join(" ");
+                        let code = format!("mud.variables['{}'] = \"{}\"", key, value.replace("\"", "\\\""));
+                        if let Err(e) = self.script_engine.execute_inline(&code, "CLI", &[], false) {
+                            self.system_message(&format!("Failed to set variable: {}", e));
+                        } else {
+                            self.system_message(&format!("Variable '{}' set to '{}'", key, value));
+                        }
+                        return;
+                    }
+                    self.system_message("Usage: #var <key> <value>");
+                    return;
+                }
+                "#unvar" => {
+                    if parts.len() >= 2 {
+                        let key = parts[1];
+                        let code = format!("mud.variables['{}'] = nil", key);
+                        if let Err(e) = self.script_engine.execute_inline(&code, "CLI", &[], false) {
+                            self.system_message(&format!("Failed to unset variable: {}", e));
+                        } else {
+                            self.system_message(&format!("Variable '{}' unset", key));
+                        }
+                        return;
+                    }
+                    self.system_message("Usage: #unvar <key>");
+                    return;
+                }
+                _ => {
+                    // 如果不是已知指令，則視為普通內容發送
+                    // 但通常以 # 開頭的可能是誤打，這裡選擇直接發送
+                }
+            }
+        }
+
+        // 2. 標準指令處理 (本地回顯 + 發送)
+        let expanded = self.script_engine.expand_variables(input);
+
+        // 恢復回顯：
+        self.window_manager.route_message("main", mudcore::window::WindowMessage {
+            content: format!("{}{}\n", if expanded.is_empty() { "" } else { "\n" }, expanded), 
+            preserve_ansi: true,
+        });
+
+        if let Some(tx) = &self.command_tx {
+            let _ = tx.blocking_send(crate::session::Command::Send(expanded));
+        }
+    }
+
+    /// 顯示系統訊息
+    fn system_message(&mut self, msg: &str) {
+        self.window_manager.route_message("main", mudcore::window::WindowMessage {
+            content: format!("\n[System] {}\n", msg),
+            preserve_ansi: true,
+        });
+    }
+
+
+
 
     /// 取得分頁標題
     pub fn tab_title(&self) -> String {

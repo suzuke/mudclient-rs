@@ -84,6 +84,21 @@ impl ScriptEngine {
         self.scripts.remove(name).is_some()
     }
 
+    /// 展開變數 (將 $var 替換為變數值)
+    pub fn expand_variables(&self, text: &str) -> String {
+        let mut result = text.to_string();
+        // 簡單的替換：尋找 $ 開頭的單字
+        // TODO: 使用 regex 支援更複雜的變數名或 ${var} 格式
+        let vars = self.persistent_vars.borrow();
+        for (key, value) in vars.iter() {
+            let placeholder = format!("${}", key);
+            if result.contains(&placeholder) {
+                result = result.replace(&placeholder, value);
+            }
+        }
+        result
+    }
+
     /// 執行腳本
     pub fn execute(
         &self,
