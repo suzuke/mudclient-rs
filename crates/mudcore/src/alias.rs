@@ -10,6 +10,8 @@ use std::collections::HashMap;
 pub struct Alias {
     /// 別名名稱（用於識別）
     pub name: String,
+    /// 分類
+    pub category: Option<String>,
     /// 匹配模式（支援 $1, $2 等參數佔位符）
     pub pattern: String,
     /// 展開後的命令
@@ -29,11 +31,18 @@ impl Alias {
         
         Self {
             name: name.into(),
+            category: None,
             pattern,
             replacement: replacement.into(),
             enabled: true,
             compiled_regex: regex,
         }
+    }
+
+    /// 設定分類
+    pub fn with_category(mut self, category: impl Into<String>) -> Self {
+        self.category = Some(category.into());
+        self
     }
 
     /// 將別名模式編譯為正則表達式

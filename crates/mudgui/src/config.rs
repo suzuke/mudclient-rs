@@ -20,6 +20,8 @@ pub struct AliasConfig {
     pub name: String,
     pub pattern: String,
     pub replacement: String,
+    #[serde(default)]
+    pub category: Option<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
 }
@@ -30,6 +32,8 @@ pub struct TriggerConfig {
     pub name: String,
     pub pattern: String,
     pub action: String,
+    #[serde(default)]
+    pub category: Option<String>,
     #[serde(default)]
     pub is_script: bool,
     #[serde(default = "default_true")]
@@ -93,6 +97,7 @@ impl Default for Profile {
     }
 }
 
+#[allow(dead_code)]
 impl Profile {
     /// 建立新 Profile
     pub fn new(name: &str, display_name: &str) -> Self {
@@ -219,6 +224,7 @@ pub struct ProfileManager {
     profiles: HashMap<String, Profile>,
 }
 
+#[allow(dead_code)]
 impl ProfileManager {
     /// 建立新的 ProfileManager 並載入所有 Profile
     pub fn new() -> Self {
@@ -341,6 +347,7 @@ impl Default for ProfileManager {
 
 /// 舊版應用程式設定（用於遷移）
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[allow(dead_code)]
 pub struct LegacyAppConfig {
     pub connection: ConnectionConfig,
     pub aliases: Vec<AliasConfig>,
@@ -349,8 +356,10 @@ pub struct LegacyAppConfig {
 
 /// 向後相容的類型別名（app.rs 目前仍使用此結構）
 /// TODO: 在 Session 系統完成後移除
+#[allow(dead_code)]
 pub type AppConfig = LegacyAppConfig;
 
+#[allow(dead_code)]
 impl LegacyAppConfig {
     /// 設定檔路徑（與舊版相容）
     pub fn config_path() -> PathBuf {
@@ -409,6 +418,7 @@ impl LegacyAppConfig {
 
 /// 遷移結果
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct MigrationResult {
     pub migrated: bool,
     pub profile_name: Option<String>,
@@ -416,6 +426,7 @@ pub struct MigrationResult {
 }
 
 /// 執行設定遷移
+#[allow(dead_code)]
 pub fn migrate_legacy_config() -> MigrationResult {
     // 檢查是否需要遷移
     if !LegacyAppConfig::exists() {

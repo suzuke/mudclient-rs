@@ -1,144 +1,25 @@
 //! MUD Client 主要 UI 邏輯
 
-use std::time::{Instant, Duration};
+use std::time::Instant;
 
 use eframe::egui::{self, Color32, FontId, RichText, ScrollArea, TextEdit};
 use eframe::egui::text::LayoutJob;
 use mudcore::{
-    Alias, AliasManager, Logger, ScriptEngine, TelnetClient, Trigger, TriggerAction,
-    TriggerManager, TriggerPattern, WindowManager, WindowMessage,
+    Alias, TelnetClient, Trigger, TriggerAction,
+    TriggerPattern,
 };
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 
-use crate::ansi::{parse_ansi, strip_ansi};
-use crate::config::{AppConfig, AliasConfig, TriggerConfig, GlobalConfig, Profile, ProfileManager};
-use crate::session::{SessionManager, SessionId};
+use crate::ansi::parse_ansi;
+use crate::config::{GlobalConfig, ProfileManager, TriggerConfig};
+use crate::session::SessionManager;
 
-
-/// 連線狀態
-#[derive(Debug, Clone, PartialEq)]
-enum ConnectionStatus {
-    Disconnected,
-    Connecting,
-    Connected(String), // 包含伺服器資訊
-    Reconnecting,      // 正在等待重連
-}
-
-/// 畫面單字的中繼資料，用於智慧補齊排序
-#[derive(Debug, Clone)]
-struct WordMetadata {
-    /// 最後一次出現在畫面的時間
-    last_seen: Instant,
-    /// 是否出現在 Mob/NPC 的名稱標籤中
-    is_mob: bool,
-}
-
-/// 正在運行的計時器
-struct ActiveTimer {
-    /// 到期時間
-    expires_at: Instant,
-    /// 到期時要執行的 Lua 代碼
-    lua_code: String,
-}
 
 /// MUD 客戶端 GUI 應用程式
 pub struct MudApp {
-#[allow(dead_code)]
     /// Tokio 運行時
     runtime: Runtime,
-
-    /// 輸入框內容
-    input: String,
-
-    /// 連線狀態
-    status: ConnectionStatus,
-
-    /// 發送訊息到網路執行緒的 channel
-    command_tx: Option<mpsc::Sender<Command>>,
-
-    /// 從網路執行緒接收訊息的 channel
-    message_rx: Option<mpsc::Receiver<String>>,
-
-    /// 連線設定
-    host: String,
-    port: String,
-
-    /// 是否自動滾動到底部
-    auto_scroll: bool,
-
-    /// 是否需要在下一幀捲動到底部（發送指令時觸發）
-    scroll_to_bottom_on_next_frame: bool,
-
-    /// 視窗管理器（包含主視窗與子視窗）
-    window_manager: WindowManager,
-
-    /// 別名管理器
-    alias_manager: AliasManager,
-
-    /// 觸發器管理器
-    trigger_manager: TriggerManager,
-
-    /// 腳本引擎
-    script_engine: ScriptEngine,
-
-    /// 日誌記錄器
-    logger: Logger,
-
-    /// 輸入歷史
-    input_history: Vec<String>,
-    history_index: Option<usize>,
-    
-    /// Tab 補齊狀態
-    tab_completion_prefix: Option<String>,
-    tab_completion_index: usize,
-
-    /// 當前選中的視窗 ID
-    active_window_id: String,
-
-    /// 連線開始時間
-    connected_at: Option<Instant>,
-
-    // === 別名編輯狀態 ===
-    /// 是否顯示別名編輯視窗
-    show_alias_window: bool,
-    /// 正在編輯的別名名稱（None = 新增）
-    editing_alias_name: Option<String>,
-    /// 別名編輯框：觸發詞
-    alias_edit_pattern: String,
-    /// 別名編輯框：替換內容
-    alias_edit_replacement: String,
-
-    // === 觸發器編輯狀態 ===
-    /// 是否顯示觸發器編輯視窗
-    show_trigger_window: bool,
-    editing_trigger_name: Option<String>,
-    trigger_edit_name: String,
-    trigger_edit_pattern: String,
-    trigger_edit_action: String,
-    /// 是否使用 Lua 腳本模式
-    trigger_edit_is_script: bool,
-
-    /// 畫面單字字典與其數據（用於智慧補齊排序）
-    screen_words: std::collections::HashMap<String, WordMetadata>,
-    /// 待執行的計時器隊列
-    active_timers: Vec<ActiveTimer>,
-    /// 是否正在接收房間敘述內容
-    in_room_description: bool,
-
-    // === 設定視窗狀態 ===
-    /// 是否顯示設定中心視窗
-    show_settings_window: bool,
-
-    // === 自動重連 ===
-    /// 是否啟用自動重連
-    auto_reconnect: bool,
-    /// 重連等待時間點
-    reconnect_delay_until: Option<Instant>,
-    /// egui Context 的參照（用於自動重連時觸發連線）
-    ctx: Option<egui::Context>,
-    /// 是否發生了 Tab 補齊（用於修正游標位置）
-    tab_completed: bool,
 
     /// 當前設定頁面標籤
     settings_tab: SettingsTab,
@@ -152,6 +33,31 @@ pub struct MudApp {
     global_config: GlobalConfig,
     /// 是否顯示 Profile 選擇視窗
     show_profile_window: bool,
+    /// 待連線的 Profile 名稱（用於在 UI 循環外處理連線）
+    pending_connect_profile: Option<String>,
+
+    // === UI 臨時狀態 ===
+    /// 當前選中的視窗 ID
+    active_window_id: String,
+    
+    // === 別名編輯狀態 ===
+    show_alias_window: bool,
+    editing_alias_name: Option<String>,
+    alias_edit_pattern: String,
+    alias_edit_replacement: String,
+    alias_edit_category: String,
+
+    // === 觸發器編輯狀態 ===
+    show_trigger_window: bool,
+    editing_trigger_name: Option<String>,
+    trigger_edit_name: String,
+    trigger_edit_pattern: String,
+    trigger_edit_action: String,
+    trigger_edit_category: String,
+    trigger_edit_is_script: bool,
+
+    /// 設定視窗開關
+    show_settings_window: bool,
 }
 
 /// 設定中心標籤頁
@@ -165,6 +71,7 @@ enum SettingsTab {
 
 /// 發送給網路執行緒的命令
 #[derive(Debug)]
+#[allow(dead_code)]
 enum Command {
     Connect(String, u16),
     Send(String),
@@ -181,176 +88,44 @@ impl MudApp {
         // 創建 Tokio 運行時
         let runtime = Runtime::new().expect("無法創建 Tokio 運行時");
 
-        // 載入設定
-        let config = AppConfig::load();
-        
-        // 從設定初始化別名管理器
-        let mut alias_manager = AliasManager::new();
-        if config.aliases.is_empty() {
-            // 無設定時使用預設範例
-            alias_manager.add(Alias::new("kk", "kk", "kill kobold"));
-            alias_manager.add(Alias::new("h", "h", "help"));
-        } else {
-            for alias_cfg in &config.aliases {
-                let mut alias = Alias::new(&alias_cfg.name, &alias_cfg.pattern, &alias_cfg.replacement);
-                alias.enabled = alias_cfg.enabled;
-                alias_manager.add(alias);
-            }
-        }
-
-        // 從設定初始化觸發器管理器
-        let mut trigger_manager = TriggerManager::new();
-        if config.triggers.is_empty() {
-            // 無設定時使用預設範例
-            trigger_manager.add(
-                Trigger::new("系統公告", TriggerPattern::Contains("系統公告".to_string()))
-                    .add_action(TriggerAction::Highlight { r: 255, g: 255, b: 0 }),
-            );
-        } else {
-            for trigger_cfg in &config.triggers {
-                // 清理可能的 Debug 格式（舊配置檔相容）
-                let clean_pattern = clean_pattern_string(&trigger_cfg.pattern);
-                
-                // 自動偵測正則表達式模式
-                let pattern = if clean_pattern.contains("(.+)")
-                    || clean_pattern.contains("(.*)")
-                    || clean_pattern.contains("\\d")
-                    || clean_pattern.contains("[")
-                    || clean_pattern.contains("$")
-                    || clean_pattern.contains("^")
-                {
-                    TriggerPattern::Regex(clean_pattern)
-                } else {
-                    TriggerPattern::Contains(clean_pattern)
-                };
-                
-                let mut trigger = Trigger::new(
-                    &trigger_cfg.name,
-                    pattern,
-                );
-                if !trigger_cfg.action.is_empty() {
-                    if trigger_cfg.is_script {
-                        trigger = trigger.add_action(TriggerAction::ExecuteScript(trigger_cfg.action.clone()));
-                    } else {
-                        trigger = trigger.add_action(TriggerAction::SendCommand(trigger_cfg.action.clone()));
-                    }
-                }
-                trigger.enabled = trigger_cfg.enabled;
-                trigger_manager.add(trigger);
-            }
-        }
-
-        // 連線設定
-        let host = if config.connection.host.is_empty() {
-            "void7777.ddns.net".to_string()
-        } else {
-            config.connection.host.clone()
-        };
-        let port = if config.connection.port.is_empty() {
-            "7777".to_string()
-        } else {
-            config.connection.port.clone()
-        };
-
         Self {
             runtime,
-            window_manager: WindowManager::new(),
-            alias_manager,
-            trigger_manager,
-            script_engine: ScriptEngine::new(),
-            logger: {
-                let mut logger = Logger::new();
-                // 自動啟動日誌記錄
-                let log_path = format!("logs/mud_log_{}.txt", chrono_lite_timestamp());
-                let _ = logger.start(&log_path);
-                tracing::info!("自動啟動日誌記錄：{}", log_path);
-                logger
-            },
-            input: String::new(),
-            status: ConnectionStatus::Disconnected,
-            command_tx: None,
-            message_rx: None,
-            host,
-            port,
-            auto_scroll: true,
-            scroll_to_bottom_on_next_frame: false,
-            input_history: Vec::new(),
-            history_index: None,
-            tab_completion_prefix: None,
-            tab_completion_index: 0,
-            active_window_id: "main".to_string(),
-            tab_completed: false,
-            connected_at: None,
-            // 別名編輯狀態
-            show_alias_window: false,
-            editing_alias_name: None,
-            alias_edit_pattern: String::new(),
-            alias_edit_replacement: String::new(),
-            // 觸發器編輯狀態
-            show_trigger_window: false,
-            editing_trigger_name: None,
-            trigger_edit_name: String::new(),
-            trigger_edit_pattern: String::new(),
-            trigger_edit_action: String::new(),
-            trigger_edit_is_script: false,
-            screen_words: std::collections::HashMap::new(),
-            active_timers: Vec::new(),
-            in_room_description: false,
-            // 設定視窗狀態
-            show_settings_window: false,
             settings_tab: SettingsTab::Alias,
-            // 自動重連
-            auto_reconnect: true,
-            reconnect_delay_until: None,
-            ctx: None,
             // 多帳號系統
             profile_manager: ProfileManager::new(),
             session_manager: SessionManager::new(),
             global_config: GlobalConfig::load(),
             show_profile_window: false,
+            pending_connect_profile: None,
+
+            // UI 狀態
+            active_window_id: "main".to_string(),
+            show_alias_window: false,
+            editing_alias_name: None,
+            alias_edit_pattern: String::new(),
+            alias_edit_replacement: String::new(),
+            alias_edit_category: String::new(),
+            show_trigger_window: false,
+            editing_trigger_name: None,
+            trigger_edit_name: String::new(),
+            trigger_edit_pattern: String::new(),
+            trigger_edit_action: String::new(),
+            trigger_edit_category: String::new(),
+            trigger_edit_is_script: false,
+            show_settings_window: false,
         }
     }
 
     /// 儲存設定到檔案
-    fn save_config(&self) {
-        let config = AppConfig {
-            connection: crate::config::ConnectionConfig {
-                host: self.host.clone(),
-                port: self.port.clone(),
-            },
-            aliases: self.alias_manager.list().iter().map(|a| AliasConfig {
-                name: a.name.clone(),
-                pattern: a.pattern.clone(),
-                replacement: a.replacement.clone(),
-                enabled: a.enabled,
-            }).collect(),
-            triggers: self.trigger_manager.list().iter().map(|t| {
-                // 提取 pattern 字串
-                let pattern_str = match &t.pattern {
-                    TriggerPattern::Contains(s) => s.clone(),
-                    TriggerPattern::StartsWith(s) => s.clone(),
-                    TriggerPattern::EndsWith(s) => s.clone(),
-                    TriggerPattern::Regex(s) => s.clone(),
-                };
-                // 提取第一個 SendCommand 或 ExecuteScript 動作
-                let (action_str, is_script) = t.actions.iter().find_map(|a| {
-                    match a {
-                        TriggerAction::SendCommand(cmd) => Some((cmd.clone(), false)),
-                        TriggerAction::ExecuteScript(code) => Some((code.clone(), true)),
-                        _ => None,
-                    }
-                }).unwrap_or_default();
-                
-                TriggerConfig {
-                    name: t.name.clone(),
-                    pattern: pattern_str,
-                    action: action_str,
-                    is_script: is_script,
-                    enabled: t.enabled,
-                }
-            }).collect(),
-        };
-        let _ = config.save();
+    fn save_config(&mut self) {
+        // 如果有活躍 Session，將其目前狀態同步回 Profile
+        if let Some(session) = self.session_manager.active_session() {
+            // 這裡可以透過 ProfileManager 進行更新
+            // 目前 ProfileManager 儲存的是靜態資料，實作上應將 Session 內容導出回 Profile
+            tracing::info!("儲存活躍 Session 配置: {}", session.profile_name);
+        }
+        
+        let _ = self.global_config.save();
     }
 
     /// 設定字型（支援中文）
@@ -444,18 +219,67 @@ impl MudApp {
         None
     }
 
-    /// 啟動網路連線
-    fn start_connection(&mut self, ctx: egui::Context) {
-        let host = self.host.clone();
-        let port: u16 = self.port.parse().unwrap_or(7777);
+    /// 從 Profile 建立連線
+    fn connect_to_profile(&mut self, profile_name: &str, ctx: egui::Context) {
+        // 從 ProfileManager 取得 Profile
+        if let Some(profile) = self.profile_manager.get(profile_name) {
+            tracing::info!("建立 Profile 連線: {}", profile_name);
+            
+            // 建立新的 Session
+            let session_id = self.session_manager.create_session(profile);
+            
+            // 啟動連線
+            self.start_connection(session_id, ctx);
+            
+            // 顯示本地訊息
+            if let Some(session) = self.session_manager.get_mut(session_id) {
+                session.handle_text(&format!(">>> 已建立 Profile 會話: {} ({}:{})\n", profile_name, session.host, session.port), true);
+            }
+        } else {
+            tracing::warn!("找不到 Profile: {}", profile_name);
+        }
+    }
+
+    /// 從 Profile 設定建立 Trigger
+    fn create_trigger_from_profile_config(config: &TriggerConfig) -> Option<Trigger> {        
+        // 建立 Pattern
+        let pattern = TriggerPattern::Regex(config.pattern.clone());
+        
+        // 建立 Trigger
+        let mut trigger = Trigger::new(config.name.clone(), pattern);
+        trigger.enabled = config.enabled;
+        
+        // 根據 is_script 判斷 action 類型
+        let action = if config.is_script {
+            TriggerAction::ExecuteScript(config.action.clone())
+        } else {
+            TriggerAction::SendCommand(config.action.clone())
+        };
+        trigger.actions.push(action);
+        
+        Some(trigger)
+    }
+
+    /// 啟動指定 Session 的網路連線
+    fn start_connection(&mut self, session_id: crate::session::SessionId, ctx: egui::Context) {
+        let (host, port) = {
+            let session = match self.session_manager.get(session_id) {
+                Some(s) => s,
+                None => return,
+            };
+            (session.host.clone(), session.port.parse::<u16>().unwrap_or(7777))
+        };
 
         // 創建 channels
-        let (cmd_tx, mut cmd_rx) = mpsc::channel::<Command>(32);
+        use crate::session::Command as SessionCommand;
+        let (cmd_tx, mut cmd_rx) = mpsc::channel::<SessionCommand>(32);
         let (msg_tx, msg_rx) = mpsc::channel::<String>(1024);
 
-        self.command_tx = Some(cmd_tx.clone());
-        self.message_rx = Some(msg_rx);
-        self.status = ConnectionStatus::Connecting;
+        if let Some(session) = self.session_manager.get_mut(session_id) {
+            session.command_tx = Some(cmd_tx.clone());
+            session.message_rx = Some(msg_rx);
+            session.status = crate::session::ConnectionStatus::Connecting;
+        }
 
         // 啟動網路執行緒
         self.runtime.spawn(async move {
@@ -466,7 +290,7 @@ impl MudApp {
                 tokio::select! {
                     Some(cmd) = cmd_rx.recv() => {
                         match cmd {
-                            Command::Connect(h, p) => {
+                            SessionCommand::Connect(h, p) => {
                                 match client.connect(&h, p).await {
                                     Ok(_) => {
                                         let _ = msg_tx.send(format!(">>> 已連線到 {}:{}\n", h, p)).await;
@@ -477,7 +301,6 @@ impl MudApp {
                                                 result = client.read() => {
                                                     match result {
                                                         Ok(text) if !text.is_empty() => {
-                                                            // 只通過 channel 發送，不在這裡 push
                                                             let _ = msg_tx.send(text).await;
                                                             ctx.request_repaint();
                                                         }
@@ -493,12 +316,12 @@ impl MudApp {
                                                 }
                                                 Some(cmd) = cmd_rx.recv() => {
                                                     match cmd {
-                                                        Command::Send(text) => {
+                                                        SessionCommand::Send(text) => {
                                                             if let Err(e) = client.send(&text).await {
                                                                 let _ = msg_tx.send(format!(">>> 發送失敗: {}\n", e)).await;
                                                             }
                                                         }
-                                                        Command::Disconnect => {
+                                                        SessionCommand::Disconnect => {
                                                             client.disconnect().await;
                                                             let _ = msg_tx.send(">>> 已斷開連線\n".to_string()).await;
                                                             break;
@@ -514,7 +337,7 @@ impl MudApp {
                                     }
                                 }
                             }
-                            Command::Disconnect => break,
+                            SessionCommand::Disconnect => break,
                             _ => {}
                         }
                     }
@@ -523,400 +346,126 @@ impl MudApp {
             }
         });
 
-        // 發送連線命令
-        if let Some(tx) = &self.command_tx {
-            let _ = tx.blocking_send(Command::Connect(host, port));
-        }
+        // 發送初始連線命令
+        let _ = cmd_tx.blocking_send(SessionCommand::Connect(host, port));
     }
 
-    /// 發送訊息（允許空訊息以發送純 Enter）
-    fn send_message(&mut self) {
+    /// 發送訊息（針對指定 Session）
+    fn send_message_for_session(&mut self, session: &mut crate::session::Session) {
         // 發送指令時自動捲到最底
-        self.scroll_to_bottom_on_next_frame = true;
+        session.scroll_to_bottom_on_next_frame = true;
         
-        let text = self.input.clone();
-        // zMUD 風格：發送後不清除內容，改在 UI 端全選
-        // self.input.clear();
+        let text = session.input.clone();
 
         // 只有非空訊息才儲存到歷史
         if !text.is_empty() {
-            self.input_history.push(text.clone());
+            session.input_history.push(text.clone());
         }
-        self.history_index = None;
+        session.history_index = None;
 
-        // 別名處理（先清理 ANSI 控制碼，避免複製的文字帶有不可見字元）
-        let clean_text = strip_ansi(&text);
-        let expanded = self.alias_manager.process(&clean_text);
+        // 別名處理
+        let clean_text = crate::ansi::strip_ansi(&text);
+        let expanded = session.alias_manager.process(&clean_text);
 
-        // 處理本地回顯與觸發 (這需要 &mut self)
+        // 處理本地回顯與觸發
         if expanded.is_empty() {
-            self.handle_text_and_triggers("\n", true);
+            session.handle_text("\n", true);
         } else {
-            self.handle_text_and_triggers(&format!("{}\n", text), true);
+            session.handle_text(&format!("{}\n", text), true);
         }
 
-        // 最後才處理發送 (這需要持有租用 self.command_tx)
-        if let Some(tx) = &self.command_tx {
+        // 最後處理發送 (這需要持有租用 session.command_tx)
+        if let Some(tx) = &session.command_tx {
             if expanded.is_empty() {
-                let _ = tx.blocking_send(Command::Send(String::new()));
+                let _ = tx.blocking_send(crate::session::Command::Send(String::new()));
             } else {
                 // 如果別名展開後包含多個命令（以分號分隔），則分開發送
                 for cmd in expanded.split(';') {
                     let cmd = cmd.trim();
                     if !cmd.is_empty() {
-                        let _ = tx.blocking_send(Command::Send(cmd.to_string()));
+                        let _ = tx.blocking_send(crate::session::Command::Send(cmd.to_string()));
                     }
                 }
             }
         }
     }
 
-    /// 處理接收到的（或本地回顯的）文字並執行觸發器
-    fn handle_text_and_triggers(&mut self, text: &str, is_echo: bool) -> bool {
-        // 觸發器處理
-        if self.trigger_manager.should_gag(text) {
-            return false; // 訊息被抑制
+    /// 檢查所有 Session 並執行自動重連
+    fn check_reconnect(&mut self, ctx: &egui::Context) {
+        let mut to_reconnect = Vec::new();
+        
+        for session in self.session_manager.sessions() {
+            if let crate::session::ConnectionStatus::Reconnecting = session.status {
+                if let Some(until) = session.reconnect_delay_until {
+                    if Instant::now() >= until {
+                        to_reconnect.push(session.id);
+                    } else {
+                        // 持續刷新 UI 以更新倒數顯示
+                        ctx.request_repaint();
+                    }
+                }
+            }
         }
-
-        // 處理所有匹配的觸發器動作
-        let matches = self.trigger_manager.process(text);
         
-        // 預設路由目標：所有訊息預設都去主視窗，除非被 gag
-        let mut targets = vec!["main".to_string()];
-        
-        let mut gagged = false;
-        let mut pending_contexts = Vec::new();
+        for id in to_reconnect {
+            self.start_connection(id, ctx.clone());
+        }
+    }
 
-        for (trigger, m) in matches {
-            tracing::info!("[Trigger] 匹配觸發器: {}, 動作數: {}", trigger.name, trigger.actions.len());
-            for action in &trigger.actions {
-                match action {
-                    TriggerAction::SendCommand(cmd) => {
-                        // 防止回顯導致的重複發送（除非是腳本主動控制）
-                        if is_echo {
-                            continue;
-                        }
-                        
-                        let mut expanded = cmd.clone();
-                        for (i, cap) in m.captures.iter().enumerate() {
-                            expanded = expanded.replace(&format!("${}", i + 1), cap);
-                        }
-                        let commands: Vec<&str> = expanded.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
-                        if let Some(tx) = &self.command_tx {
-                            for single_cmd in commands {
-                                let _ = tx.blocking_send(Command::Send(single_cmd.to_string()));
-                                self.window_manager.route_message(
-                                    "main",
-                                    WindowMessage {
-                                        content: format!("\n[AUTO] {}\n", single_cmd),
-                                        preserve_ansi: false,
-                                    },
-                                );
+    /// 處理所有活躍 Session 的網路訊息
+    fn process_messages(&mut self) {
+        let session_ids: Vec<_> = self.session_manager.sessions().iter().map(|s| s.id).collect();
+
+        for id in session_ids {
+            // 首先收集訊息，避免借用衝突
+            let messages = if let Some(session) = self.session_manager.get_mut(id) {
+                if let Some(ref mut rx) = session.message_rx {
+                    let mut msgs = Vec::new();
+                    while let Ok(msg) = rx.try_recv() {
+                        msgs.push(msg);
+                    }
+                    msgs
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
+
+            // 處理收集到的訊息
+            if !messages.is_empty() {
+                if let Some(session) = self.session_manager.get_mut(id) {
+                    for msg in messages {
+                        session.handle_text(&msg, false);
+
+                        use crate::session::ConnectionStatus as SessionStatus;
+                        if msg.contains("已連線到") {
+                            let info = msg.replace(">>> 已連線到 ", "").replace("\n", "");
+                            session.status = SessionStatus::Connected(info);
+                            session.connected_at = Some(Instant::now());
+                        } else if msg.contains("連線已關閉") || msg.contains("已斷開連線") {
+                            session.connected_at = None;
+                            if session.auto_reconnect {
+                                use std::time::Duration;
+                                session.reconnect_delay_until = Some(Instant::now() + Duration::from_secs(3));
+                                session.status = SessionStatus::Reconnecting;
+                            } else {
+                                session.status = SessionStatus::Disconnected;
                             }
                         }
                     }
-                    TriggerAction::RouteToWindow(win_id) => {
-                        if !targets.contains(win_id) {
-                            targets.push(win_id.clone());
-                        }
-                    }
-                    TriggerAction::ExecuteScript(code) => {
-                        tracing::info!("[Script] 執行腳本觸發器: {}, 匹配: '{}', 捕獲數: {}, 捕獲內容: {:?}", 
-                            trigger.name, m.matched_text, m.captures.len(), m.captures);
-                        if let Ok(context) = self.script_engine.execute_inline(code, text, &m.captures, is_echo) {
-                            pending_contexts.push(context);
-                        }
-                    }
-                    _ => {}
                 }
             }
         }
-
-        // 離開借用範圍後處理腳本結果
-        for context in pending_contexts {
-            if self.apply_script_context(context) {
-                gagged = true;
-            }
-        }
-
-        if gagged {
-            return false;
-        }
-
-        // 路由到視窗
-        for target_id in targets {
-            self.window_manager.route_message(
-                &target_id,
-                WindowMessage {
-                    content: text.to_string(),
-                    preserve_ansi: !is_echo, // 回顯通常不需要 ANSI
-                },
-            );
-        }
-
-        // 提取單字用於自動補齊 (僅限正面表列內容：生物行或房間敘述)
-        let clean_text = if text.contains('\x1b') {
-            let re = regex::Regex::new(r"\x1b\[[0-9;]*[mK]").unwrap();
-            re.replace_all(text, "").to_string()
-        } else {
-            text.to_string()
-        };
-
-        // 偵測房間敘述區塊的開始與結束
-        // 典型的房間區塊：
-        // 1. 本地回顯 'l' 或移動指令後
-        // 2. 出現 [出口: ...] 行
-        // 3. 出現 Prompt 行 (H... M... V...) 則視為區塊結束
-        let is_prompt = clean_text.contains('(') && clean_text.contains('/') && 
-                        (clean_text.contains('H') || clean_text.contains('M') || clean_text.contains('V'));
-        
-        if is_echo && (text.trim() == "l" || ["n", "s", "e", "w", "u", "d", "nw", "ne", "sw", "se"].contains(&text.trim())) {
-            self.in_room_description = true;
-        }
-
-        if is_prompt {
-            self.in_room_description = false;
-        }
-
-        let is_exit_line = clean_text.contains("[出口:");
-        let has_mob_brackets = clean_text.contains('(') && clean_text.contains(')');
-
-        // 正面表列提取邏輯：僅提取「生物行」或「正在接收的房間敘述/出口行」
-        if has_mob_brackets || self.in_room_description || is_exit_line {
-            let now = Instant::now();
-            
-            // 識別並高權重提取 Mob (括弧內容)
-            let mob_re = regex::Regex::new(r"\(([^)]+)\)").unwrap();
-            for cap in mob_re.captures_iter(&clean_text) {
-                let content = &cap[1];
-                for word in content.split(|c: char| !c.is_alphanumeric()) {
-                    // 只提取純英文單字，排除雜訊
-                    if word.len() >= 3 && word.chars().all(|c| c.is_ascii_alphabetic()) {
-                        self.screen_words.insert(word.to_string(), WordMetadata {
-                            last_seen: now,
-                            is_mob: true,
-                        });
-                    }
-                }
-            }
-
-            // 提取目前行中的其他單字 (作為普通畫面單字)
-            for word in clean_text.split(|c: char| !c.is_alphanumeric()) {
-                if word.len() >= 3 && word.chars().all(|c| c.is_ascii_alphabetic()) {
-                    let entry = self.screen_words.entry(word.to_string()).or_insert(WordMetadata {
-                        last_seen: now,
-                        is_mob: false,
-                    });
-                    entry.last_seen = now;
-                }
-            }
-        }
-
-        // 限制字典大小
-        if self.screen_words.len() > 1000 {
-            let mut items: Vec<_> = self.screen_words.iter().collect();
-            items.sort_by_key(|(_, meta)| meta.last_seen);
-            let to_remove: Vec<String> = items.iter().take(200).map(|(k, _)| (*k).clone()).collect();
-            for k in to_remove {
-                self.screen_words.remove(&k);
-            }
-        }
-
-        // 日誌記錄
-        let _ = self.logger.log(text);
-
-        true
-    }
-
-    /// 斷開連線
-    fn disconnect(&mut self) {
-        if let Some(tx) = &self.command_tx {
-            let _ = tx.blocking_send(Command::Disconnect);
-        }
-        self.command_tx = None;
-        self.message_rx = None;
-        self.status = ConnectionStatus::Disconnected;
-        // 手動斷線時停止自動重連
-        self.reconnect_delay_until = None;
-    }
-
-    /// 檢查並執行自動重連
-    fn check_reconnect(&mut self, ctx: &egui::Context) {
-        if let ConnectionStatus::Reconnecting = self.status {
-            if let Some(until) = self.reconnect_delay_until {
-                if Instant::now() >= until {
-                    // 時間到，執行重連
-                    self.reconnect_delay_until = None;
-                    self.start_connection(ctx.clone());
-                } else {
-                    // 持續刷新 UI 以更新倒數顯示
-                    ctx.request_repaint();
-                }
-            }
-        }
-    }
-
-    /// 處理接收到的訊息
-    fn process_messages(&mut self) {
-        // 先將 message_rx 取出以避免借用衝突
-        let mut rx = match self.message_rx.take() {
-            Some(rx) => rx,
-            None => return,
-        };
-
-        while let Ok(msg) = rx.try_recv() {
-            // 統一生產與分發邏輯
-            self.handle_text_and_triggers(&msg, false);
-
-            // 更新連線狀態 (從原始訊息判斷)
-            if msg.contains("已連線到") {
-                let info = msg.replace(">>> 已連線到 ", "").replace("\n", "");
-                self.status = ConnectionStatus::Connected(info);
-                self.connected_at = Some(Instant::now());
-            } else if msg.contains("連線已關閉") || msg.contains("已斷開連線") {
-                self.connected_at = None;
-                // 自動重連邏輯
-                if self.auto_reconnect {
-                    use std::time::Duration;
-                    self.reconnect_delay_until = Some(Instant::now() + Duration::from_secs(3));
-                    self.status = ConnectionStatus::Reconnecting;
-                } else {
-                    self.status = ConnectionStatus::Disconnected;
-                }
-            }
-        }
-
-        // 放放回 message_rx
-        self.message_rx = Some(rx);
-    }
-
-    /// 核心：處理腳本執行後的副作用（命令、回顯、計時器等）
-    /// 回傳是否需要 gag (隱藏訊息)
-    fn apply_script_context(&mut self, context: mudcore::MudContext) -> bool {
-        // 1. 發送命令
-        if let Some(tx) = &self.command_tx {
-            for cmd in context.commands {
-                let _ = tx.blocking_send(Command::Send(cmd.clone()));
-                self.window_manager.route_message(
-                    "main",
-                    WindowMessage {
-                        content: format!("\n[SCRIPT] {}\n", cmd),
-                        preserve_ansi: false,
-                    },
-                );
-            }
-        }
-
-        // 2. 本地回顯
-        for echo_text in context.echos {
-            self.window_manager.route_message(
-                "main",
-                WindowMessage {
-                    content: format!(">>> {}\n", echo_text),
-                    preserve_ansi: false,
-                },
-            );
-        }
-
-        // 3. 子視窗輸出
-        for (win_id, text) in context.window_outputs {
-            self.window_manager.route_message(
-                &win_id,
-                WindowMessage {
-                    content: format!("{}\n", text),
-                    preserve_ansi: true,
-                },
-            );
-        }
-
-        // 4. 計時器註冊
-        let now = Instant::now();
-        for (delay_ms, code) in context.timers {
-            self.active_timers.push(ActiveTimer {
-                expires_at: now + Duration::from_millis(delay_ms),
-                lua_code: code,
-            });
-        }
-
-        // 5. 日誌記錄
-        for log_msg in context.log_messages {
-            let _ = self.logger.log(&format!("[Script] {}", log_msg));
-        }
-
-        context.gag
-    }
-
-    /// 檢查並執行到期的計時器
-    fn check_timers(&mut self) {
-        if self.active_timers.is_empty() {
-            return;
-        }
-
-        let now = Instant::now();
-        let mut expired = Vec::new();
-
-        // 分離已到期與未到期的
-        self.active_timers.retain(|timer| {
-            if now >= timer.expires_at {
-                expired.push(timer.lua_code.clone());
-                false
-            } else {
-                true
-            }
-        });
-
-        // 執行到期的腳本
-        for code in expired {
-            // 計時器觸發不帶 message/captures，且永遠不是回顯
-            if let Ok(context) = self.script_engine.execute_inline(&code, "TIMER_EXPIRED", &[], false) {
-                self.apply_script_context(context);
-            }
-        }
-    }
-
-    /// 繪製連線設定面板
-    fn render_connection_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.horizontal(|ui| {
-            ui.label("主機:");
-            ui.add(TextEdit::singleline(&mut self.host).desired_width(200.0));
-            ui.label("連接埠:");
-            ui.add(TextEdit::singleline(&mut self.port).desired_width(60.0));
-
-            match &self.status {
-                ConnectionStatus::Disconnected => {
-                    if ui.button("連線").clicked() {
-                        self.start_connection(ctx.clone());
-                    }
-                }
-                ConnectionStatus::Connecting => {
-                    ui.spinner();
-                    ui.label("連線中...");
-                }
-                ConnectionStatus::Connected(info) => {
-                    ui.label(RichText::new(format!("● 已連線 ({})", info)).color(Color32::GREEN));
-                    if ui.button("斷線").clicked() {
-                        self.disconnect();
-                    }
-                }
-                ConnectionStatus::Reconnecting => {
-                    ui.spinner();
-                    ui.label("重連中...");
-                    if ui.button("取消").clicked() {
-                        self.reconnect_delay_until = None;
-                        self.status = ConnectionStatus::Disconnected;
-                    }
-                }
-            }
-        });
     }
 
     /// 繪製訊息顯示區（支援 ANSI 顏色）
-    fn render_message_area(&mut self, ui: &mut egui::Ui) {
+    fn render_message_area(ui: &mut egui::Ui, session: &mut crate::session::Session, active_window_id: &str) {
         let available_height = ui.available_height() - 40.0; // 保留輸入區空間
 
         // 檢查是否需要強制捲到底部
-        let force_scroll_to_bottom = self.scroll_to_bottom_on_next_frame;
-        self.scroll_to_bottom_on_next_frame = false;
+        let force_scroll_to_bottom = session.scroll_to_bottom_on_next_frame;
+        session.scroll_to_bottom_on_next_frame = false;
 
         // 使用固定 ID 以便後續操作 State
         let scroll_area_id = egui::Id::new("main_message_scroll_area");
@@ -925,11 +474,11 @@ impl MudApp {
             .id_salt(scroll_area_id)
             .auto_shrink([false, false])
             .max_height(available_height)
-            .stick_to_bottom(self.auto_scroll)
+            .stick_to_bottom(true)
             .show(ui, |ui| {
                 let font_id = FontId::monospace(14.0);
 
-                if let Some(window) = self.window_manager.get(&self.active_window_id) {
+                if let Some(window) = session.window_manager.get(active_window_id) {
                     for msg in window.messages() {
                         // 解析 ANSI 顏色碼
                         let spans = parse_ansi(&msg.content);
@@ -974,437 +523,311 @@ impl MudApp {
         }
     }
 
-    /// 繪製側邊欄
-    fn render_sidebar(&mut self, ui: &mut egui::Ui) {
-        ui.heading("視窗");
-        ui.separator();
-
-        for window in self.window_manager.windows() {
-            let is_active = window.id == self.active_window_id;
-            if ui.selectable_label(is_active, &window.title).clicked() {
-                self.active_window_id = window.id.clone();
-            }
-        }
-
-        ui.add_space(20.0);
-        ui.heading("工具");
-        ui.separator();
-        
-        if ui.button("中心管理").clicked() {
-            self.show_settings_window = true;
-        }
-
-
-        ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-            ui.checkbox(&mut self.auto_scroll, "自動捲動");
-        });
-    }
-
-    /// 繪製設定與管理介面
-    fn render_settings(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.settings_tab, SettingsTab::Alias, "別名 (Alias)");
-            ui.selectable_value(&mut self.settings_tab, SettingsTab::Trigger, "觸發器 (Trigger)");
-            ui.selectable_value(&mut self.settings_tab, SettingsTab::Logger, "日誌 (Logger)");
-            ui.selectable_value(&mut self.settings_tab, SettingsTab::General, "一般 (General)");
-        });
-        ui.separator();
-
-        match self.settings_tab {
-            SettingsTab::Alias => {
-                ui.horizontal(|ui| {
-                    ui.heading("別名管理");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("➕ 新增別名").clicked() {
-                            self.editing_alias_name = Some(String::new());
-                            self.alias_edit_pattern = String::new();
-                            self.alias_edit_replacement = String::new();
-                            self.show_alias_window = true;
-                        }
-                    });
-                });
-                ui.add_space(5.0);
-
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    let mut to_delete: Option<String> = None;
-                    let mut to_edit: Option<(String, String, String)> = None;
-                    let mut needs_save = false;
-
-                    for alias_name in &self.alias_manager.sorted_aliases {
-                        if let Some(alias) = self.alias_manager.aliases.get_mut(alias_name) {
-                            ui.horizontal(|ui| {
-                                if ui.checkbox(&mut alias.enabled, "").changed() {
-                                    needs_save = true;
-                                }
-                                ui.label(format!("{} → {}", alias.pattern, alias.replacement));
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if ui.small_button("🗑️").clicked() {
-                                        to_delete = Some(alias_name.clone());
-                                    }
-                                    if ui.small_button("✏️").clicked() {
-                                        to_edit = Some((alias.name.clone(), alias.pattern.clone(), alias.replacement.clone()));
-                                    }
-                                });
-                            });
-                        }
-                    }
-
-                    if self.alias_manager.sorted_aliases.is_empty() {
-                        ui.label("尚無別名");
-                    }
-
-                    if needs_save { self.save_config(); }
-                    if let Some(name) = to_delete {
-                        self.alias_manager.remove(&name);
-                        self.save_config();
-                    }
-                    if let Some((name, pattern, replacement)) = to_edit {
-                        self.editing_alias_name = Some(name);
-                        self.alias_edit_pattern = pattern;
-                        self.alias_edit_replacement = replacement;
-                        self.show_alias_window = true;
-                    }
-                });
-            }
-            SettingsTab::Trigger => {
-                ui.horizontal(|ui| {
-                    ui.heading("觸發器管理");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("➕ 新增觸發器").clicked() {
-                            self.editing_trigger_name = Some(String::new());
-                            self.trigger_edit_name = String::new();
-                            self.trigger_edit_pattern = String::new();
-                            self.trigger_edit_action = String::new();
-                            self.show_trigger_window = true;
-                        }
-                    });
-                });
-                ui.add_space(5.0);
-
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    let mut to_delete: Option<String> = None;
-                    let mut to_edit: Option<(String, String, String, bool)> = None;
-                    let mut needs_save = false;
-
-                    for name in &self.trigger_manager.order {
-                        if let Some(trigger) = self.trigger_manager.triggers.get_mut(name) {
-                            ui.horizontal(|ui| {
-                                if ui.checkbox(&mut trigger.enabled, "").changed() {
-                                    needs_save = true;
-                                }
-                                let pattern_text = match &trigger.pattern {
-                                    TriggerPattern::Contains(s) => format!("包含: {}", s),
-                                    TriggerPattern::StartsWith(s) => format!("開頭: {}", s),
-                                    TriggerPattern::EndsWith(s) => format!("結尾: {}", s),
-                                    TriggerPattern::Regex(s) => format!("正則: {}", s),
-                                };
-                                ui.label(format!("{} [{}]", trigger.name, pattern_text));
-
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if ui.small_button("🗑️").clicked() {
-                                        to_delete = Some(trigger.name.clone());
-                                    }
-                                    if ui.small_button("✏️").clicked() {
-                                        let clean_pattern = match &trigger.pattern {
-                                            TriggerPattern::Contains(s) | TriggerPattern::StartsWith(s) | 
-                                            TriggerPattern::EndsWith(s) | TriggerPattern::Regex(s) => s.clone(),
-                                        };
-                                        let (action_str, is_script) = trigger.actions.iter().find_map(|a| {
-                                            match a {
-                                                TriggerAction::SendCommand(cmd) => Some((cmd.clone(), false)),
-                                                TriggerAction::ExecuteScript(code) => Some((code.clone(), true)),
-                                                _ => None,
-                                            }
-                                        }).unwrap_or_default();
-                                        to_edit = Some((trigger.name.clone(), clean_pattern, action_str, is_script));
-                                    }
-                                });
-                            });
-                        }
-                    }
-
-                    if self.trigger_manager.order.is_empty() {
-                        ui.label("尚無觸發器");
-                    }
-
-                    if needs_save { self.save_config(); }
-                    if let Some(name) = to_delete {
-                        self.trigger_manager.remove(&name);
-                        self.save_config();
-                    }
-                    if let Some((name, pattern, action, is_script)) = to_edit {
-                        self.editing_trigger_name = Some(name.clone());
-                        self.trigger_edit_name = name;
-                        self.trigger_edit_pattern = pattern;
-                        self.trigger_edit_action = action;
-                        self.trigger_edit_is_script = is_script;
-                        self.show_trigger_window = true;
-                    }
-                });
-            }
-            SettingsTab::Logger => {
-                ui.heading("日誌控制");
-                ui.add_space(10.0);
-                if self.logger.is_recording() {
-                    ui.label(format!("狀態: 正在記錄中 ({:?})", self.logger.path().unwrap_or(std::path::Path::new(""))));
-                    if ui.button("停止記錄").clicked() {
-                        let _ = self.logger.stop();
-                    }
-                } else {
-                    ui.label("狀態: 未啟動");
-                    if ui.button("開始記錄").clicked() {
-                        let path = format!("logs/mud_log_{}.txt", chrono_lite_timestamp());
-                        let _ = self.logger.start(&path);
-                    }
-                }
-            }
-            SettingsTab::General => {
-                ui.heading("一般設定");
-                ui.add_space(10.0);
-                ui.checkbox(&mut self.auto_scroll, "自動捲動畫面");
-                ui.label("更多設定即將推出...");
-            }
-        }
-    }
 
     /// 繪製別名編輯介面
-    fn render_alias_edit(&mut self, ui: &mut egui::Ui) {
-        let is_new = self.editing_alias_name.as_ref().map_or(true, |n| n.is_empty());
-        ui.heading(if is_new { "新增別名" } else { "編輯別名" });
-        ui.separator();
+    fn render_alias_edit(
+        ctx: &egui::Context,
+        session_opt: Option<&mut crate::session::Session>,
+        editing_alias_name: &mut Option<String>,
+        alias_edit_pattern: &mut String,
+        alias_edit_replacement: &mut String,
+        alias_edit_category: &mut String,
+        show_alias_window: &mut bool,
+        needs_save_flag: &mut bool,
+    ) {
+        egui::Window::new(if editing_alias_name.as_ref().map_or(true, |n| n.is_empty()) { "➕ 新增別名" } else { "✏️ 編輯別名" })
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("觸發詞:");
+                    ui.text_edit_singleline(alias_edit_pattern);
+                });
 
-        ui.horizontal(|ui| {
-            ui.label("觸發詞:");
-            ui.text_edit_singleline(&mut self.alias_edit_pattern);
-        });
+                ui.horizontal(|ui| {
+                    ui.label("替換為:");
+                    ui.text_edit_singleline(alias_edit_replacement);
+                });
 
-        ui.horizontal(|ui| {
-            ui.label("替換為:");
-            ui.text_edit_singleline(&mut self.alias_edit_replacement);
-        });
+                ui.horizontal(|ui| {
+                    ui.label("分類:");
+                    ui.text_edit_singleline(alias_edit_category);
+                });
 
-        ui.add_space(10.0);
-        ui.label("提示: 使用 $1, $2 等作為參數佔位符");
-        ui.label("範例: 觸發詞「go $1」替換為「walk $1;look」");
+                ui.add_space(10.0);
+                ui.label("提示: 使用 $1, $2 等作為參數佔位符");
 
-        ui.add_space(20.0);
+                ui.add_space(20.0);
 
-        ui.horizontal(|ui| {
-            if ui.button("💾 儲存").clicked() {
-                if !self.alias_edit_pattern.is_empty() {
-                    // 如果是編輯模式，先刪除舊的
-                    if let Some(ref old_name) = self.editing_alias_name {
-                        if !old_name.is_empty() {
-                            self.alias_manager.remove(old_name);
+                ui.horizontal(|ui| {
+                    if ui.button("💾 儲存").clicked() {
+                        if !alias_edit_pattern.is_empty() {
+                            if let Some(session) = session_opt {
+                                // 如果是編輯模式，先刪除舊的
+                                if let Some(ref old_name) = editing_alias_name {
+                                    if !old_name.is_empty() {
+                                        session.alias_manager.remove(old_name);
+                                    }
+                                }
+                                // 新增別名
+                                let mut alias = Alias::new(
+                                    alias_edit_pattern.clone(),
+                                    alias_edit_pattern.clone(),
+                                    alias_edit_replacement.clone(),
+                                );
+                                if !alias_edit_category.is_empty() {
+                                    alias.category = Some(alias_edit_category.clone());
+                                }
+                                session.alias_manager.add(alias);
+                                *needs_save_flag = true;
+                            }
+                            *show_alias_window = false;
                         }
                     }
-                    // 新增別名
-                    self.alias_manager.add(Alias::new(
-                        &self.alias_edit_pattern,
-                        &self.alias_edit_pattern,
-                        &self.alias_edit_replacement,
-                    ));
-                    self.save_config();
-                    self.show_settings_window = true;
-                }
-            }
 
-            if ui.button("取消").clicked() {
-                self.show_settings_window = true;
-            }
-        });
+                    if ui.button("取消").clicked() {
+                        *show_alias_window = false;
+                    }
+                });
+            });
     }
 
     /// 繪製觸發器編輯介面
-    fn render_trigger_edit(&mut self, ui: &mut egui::Ui) {
-        let is_new = self.editing_trigger_name.as_ref().map_or(true, |n| n.is_empty());
-        ui.heading(if is_new { "新增觸發器" } else { "編輯觸發器" });
-        ui.separator();
+    fn render_trigger_edit(
+        ctx: &egui::Context,
+        session_opt: Option<&mut crate::session::Session>,
+        editing_trigger_name: &mut Option<String>,
+        trigger_edit_name: &mut String,
+        trigger_edit_pattern: &mut String,
+        trigger_edit_action: &mut String,
+        trigger_edit_category: &mut String,
+        trigger_edit_is_script: bool,
+        show_trigger_window: &mut bool,
+        needs_save_flag: &mut bool,
+    ) {
+        egui::Window::new(if editing_trigger_name.as_ref().map_or(true, |n| n.is_empty()) { "➕ 新增觸發器" } else { "✏️ 編輯觸發器" })
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("名稱:");
+                    ui.text_edit_singleline(trigger_edit_name);
+                });
 
-        ui.horizontal(|ui| {
-            ui.label("名稱:");
-            ui.text_edit_singleline(&mut self.trigger_edit_name);
-        });
+                ui.horizontal(|ui| {
+                    ui.label("匹配文字:");
+                    ui.text_edit_singleline(trigger_edit_pattern);
+                });
 
-        ui.horizontal(|ui| {
-            ui.label("匹配文字:");
-            ui.text_edit_singleline(&mut self.trigger_edit_pattern);
-        });
+                ui.horizontal(|ui| {
+                    ui.label("執行命令:");
+                    ui.text_edit_singleline(trigger_edit_action);
+                });
 
-        ui.horizontal(|ui| {
-            ui.label("執行命令:");
-            ui.text_edit_singleline(&mut self.trigger_edit_action);
-        });
+                ui.horizontal(|ui| {
+                    ui.label("分類:");
+                    ui.text_edit_singleline(trigger_edit_category);
+                });
 
-        ui.add_space(10.0);
-        ui.label("當收到包含「匹配文字」的訊息時，自動發送「執行命令」");
+                ui.add_space(10.0);
+                ui.label("提示: 支援正則表達式偵測");
 
-        ui.add_space(20.0);
+                ui.add_space(20.0);
 
-        ui.horizontal(|ui| {
-            if ui.button("💾 儲存").clicked() {
-                if !self.trigger_edit_name.is_empty() && !self.trigger_edit_pattern.is_empty() {
-                    // 如果是編輯模式，先刪除舊的
-                    if let Some(ref old_name) = self.editing_trigger_name {
-                        if !old_name.is_empty() {
-                            self.trigger_manager.remove(old_name);
+                ui.horizontal(|ui| {
+                    if ui.button("💾 儲存").clicked() {
+                        if !trigger_edit_name.is_empty() && !trigger_edit_pattern.is_empty() {
+                            if let Some(session) = session_opt {
+                                // 如果是編輯模式，先刪除舊的
+                                if let Some(ref old_name) = editing_trigger_name {
+                                    if !old_name.is_empty() {
+                                        session.trigger_manager.remove(old_name);
+                                    }
+                                }
+                                // 新增觸發器
+                                let pattern = if trigger_edit_pattern.contains("(.+)")
+                                    || trigger_edit_pattern.contains("(.*)")
+                                    || trigger_edit_pattern.contains("\\d")
+                                    || trigger_edit_pattern.contains("[")
+                                    || trigger_edit_pattern.contains("$")
+                                    || trigger_edit_pattern.contains("^")
+                                {
+                                    TriggerPattern::Regex(trigger_edit_pattern.clone())
+                                } else {
+                                    TriggerPattern::Contains(trigger_edit_pattern.clone())
+                                };
+                                let mut trigger = Trigger::new(
+                                    trigger_edit_name.clone(),
+                                    pattern,
+                                );
+                                if !trigger_edit_action.is_empty() {
+                                    if trigger_edit_is_script {
+                                        trigger = trigger.add_action(TriggerAction::ExecuteScript(trigger_edit_action.clone()));
+                                    } else {
+                                        trigger = trigger.add_action(TriggerAction::SendCommand(trigger_edit_action.clone()));
+                                    }
+                                }
+                                if !trigger_edit_category.is_empty() {
+                                    trigger.category = Some(trigger_edit_category.clone());
+                                }
+                                session.trigger_manager.add(trigger);
+                                *needs_save_flag = true;
+                            }
+                            *show_trigger_window = false;
                         }
                     }
-                    // 新增觸發器
-                    // 自動偵測正則表達式模式
-                    let pattern = if self.trigger_edit_pattern.contains("(.+)")
-                        || self.trigger_edit_pattern.contains("(.*)")
-                        || self.trigger_edit_pattern.contains("\\d")
-                        || self.trigger_edit_pattern.contains("[")
-                        || self.trigger_edit_pattern.contains("$")
-                        || self.trigger_edit_pattern.contains("^")
-                    {
-                        TriggerPattern::Regex(self.trigger_edit_pattern.clone())
-                    } else {
-                        TriggerPattern::Contains(self.trigger_edit_pattern.clone())
-                    };
-                    let mut trigger = Trigger::new(
-                        &self.trigger_edit_name,
-                        pattern,
-                    );
-                    if !self.trigger_edit_action.is_empty() {
-                        if self.trigger_edit_is_script {
-                            trigger = trigger.add_action(TriggerAction::ExecuteScript(self.trigger_edit_action.clone()));
-                        } else {
-                            trigger = trigger.add_action(TriggerAction::SendCommand(self.trigger_edit_action.clone()));
-                        }
-                    }
-                    self.trigger_manager.add(trigger);
-                    self.save_config();
-                    self.show_settings_window = true;
-                }
-            }
 
-            if ui.button("取消").clicked() {
-                self.show_settings_window = true;
-            }
-        });
+                    if ui.button("取消").clicked() {
+                        *show_trigger_window = false;
+                    }
+                });
+            });
     }
 
     /// 繪製輸入區
-    fn render_input_area(&mut self, ui: &mut egui::Ui) {
+    fn render_input_area(ui: &mut egui::Ui, session: &mut crate::session::Session, any_popup_open: bool) {
         ui.horizontal(|ui| {
             let response = ui.add(
-                TextEdit::singleline(&mut self.input)
+                TextEdit::singleline(&mut session.input)
                     .desired_width(ui.available_width())
                     .font(FontId::monospace(14.0))
                     .hint_text("輸入指令..."),
             );
 
-            // 只在沒有彈出視窗時才強制 focus 輸入框
-            let any_popup_open = self.show_settings_window || self.show_alias_window || self.show_trigger_window;
             if !any_popup_open && !response.has_focus() {
                 response.request_focus();
             }
 
-            // 按 Enter 發送（當輸入框有 focus 時，或沒有彈出視窗開啟時）
-            let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
-            if enter_pressed && (response.has_focus() || !any_popup_open) {
-                self.send_message();
+            // 按 Enter 發送
+            // 按 Enter 發送
+            if ui.input(|i| i.key_pressed(egui::Key::Enter)) && response.has_focus() {
+                // 發送訊息 (即使是空字串也發送，以便在 MUD 中執行重複動作或保持連線)
+                let raw_input = session.input.clone();
+                let cmds: Vec<&str> = raw_input.split(';').map(|s| s.trim()).collect();
                 
-                // zMUD 風格：發送後全選文字且保持 focus
+                // 如果是空字串，也當作一個空指令發送
+                let cmds = if cmds.is_empty() { vec![""] } else { cmds };
+
+                // 記錄歷史 (原始輸入)
+                if !raw_input.is_empty() {
+                    session.input_history.push(raw_input.clone());
+                    if session.input_history.len() > 1000 {
+                        session.input_history.remove(0);
+                    }
+                }
+                session.history_index = None;
+                
+                for cmd in cmds {
+                    let cmd_string = cmd.to_string();
+                    
+                    // 恢復回顯
+                    session.window_manager.route_message("main", mudcore::window::WindowMessage {
+                        content: format!("{}{}\n", if cmd_string.is_empty() { "" } else { "\n" }, cmd_string), 
+                        preserve_ansi: true,
+                    });
+
+                    if let Some(tx) = &session.command_tx {
+                        let _ = tx.blocking_send(crate::session::Command::Send(cmd_string));
+                    }
+                }
+                
+                // 不清除輸入，而是全選 (方便重複發送)
+                // session.input.clear(); 
+                
                 response.request_focus();
                 
-                // 手動設置全選
+                // 強制全選
                 if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), response.id) {
                     state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
                         egui::text::CCursor::new(0),
-                        egui::text::CCursor::new(self.input.chars().count()),
+                        egui::text::CCursor::new(session.input.chars().count()),
                     )));
                     egui::TextEdit::store_state(ui.ctx(), response.id, state);
                 }
+
+                // 強制捲動到底部
+                session.scroll_to_bottom_on_next_frame = true;
             }
 
             // 處理 Tab 補齊後的游標移動
-            if self.tab_completed {
+            if session.tab_completed {
                 if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), response.id) {
-                    let char_count = self.input.chars().count();
+                    let char_count = session.input.chars().count();
                     state.cursor.set_char_range(Some(egui::text::CCursorRange::one(
                         egui::text::CCursor::new(char_count)
                     )));
                     egui::TextEdit::store_state(ui.ctx(), response.id, state);
                 }
-                self.tab_completed = false;
+                session.tab_completed = false;
             }
             
-            // 設定視窗狀態
-            // 歷史導航（上/下箭頭）
-            if response.has_focus() {
+            // 歷史導航（上/下箭頭）與 Tab 補齊
+            if response.has_focus() || response.lost_focus() {
                 if ui.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
-                    self.navigate_history(-1);
-                    self.tab_completion_prefix = None; // 清除 Tab 補齊狀態
+                    Self::navigate_history_for_session(session, -1);
+                    session.tab_completion_prefix = None;
                 }
                 if ui.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
-                    self.navigate_history(1);
-                    self.tab_completion_prefix = None; // 清除 Tab 補齊狀態
+                    Self::navigate_history_for_session(session, 1);
+                    session.tab_completion_prefix = None;
                 }
-                // Tab 補齊歷史指令
-                if ui.input(|i| i.key_pressed(egui::Key::Tab)) {
-                    self.tab_complete();
+                // Tab 補齊
+                if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab)) {
+                    Self::tab_complete_for_session(session);
+                    ui.ctx().request_repaint();
                 }
             }
         });
     }
 
     /// 導航輸入歷史
-    fn navigate_history(&mut self, direction: i32) {
-        if self.input_history.is_empty() {
+    fn navigate_history_for_session(session: &mut crate::session::Session, direction: i32) {
+        if session.input_history.is_empty() {
             return;
         }
 
-        let new_index = match self.history_index {
+        let new_index = match session.history_index {
             Some(idx) => {
                 let new = idx as i32 + direction;
                 if new < 0 {
                     0
-                } else if new >= self.input_history.len() as i32 {
-                    self.history_index = None;
-                    self.input.clear();
+                } else if new >= session.input_history.len() as i32 {
+                    session.history_index = None;
+                    session.input.clear();
                     return;
                 } else {
                     new as usize
                 }
             }
-            None if direction < 0 => self.input_history.len() - 1,
+            None if direction < 0 => session.input_history.len() - 1,
             None => return,
         };
 
-        self.history_index = Some(new_index);
-        self.input = self.input_history[new_index].clone();
+        session.history_index = Some(new_index);
+        session.input = session.input_history[new_index].clone();
     }
 
-    /// Tab 補齊邏輯：支援歷史指令與畫面英文單詞
-    fn tab_complete(&mut self) {
-        if self.input.is_empty() {
-            self.tab_completion_prefix = None;
+    /// Tab 補齊邏輯
+    fn tab_complete_for_session(session: &mut crate::session::Session) {
+        if session.input.is_empty() {
+            session.tab_completion_prefix = None;
             return;
         }
         
-        // 檢查使用者是否手動修改了輸入（不再匹配已存的前綴）
-        if let Some(ref prefix) = self.tab_completion_prefix {
-            // 如果當前輸入不是以前綴開頭，或者輸入就是前綴本身（使用者重新輸入）
-            // 則視為新的補齊開始
-            if !self.input.starts_with(prefix) || &self.input == prefix {
-                // 使用者改變了輸入，重置狀態，以當前輸入作為新前綴
-                self.tab_completion_prefix = Some(self.input.clone());
-                self.tab_completion_index = 0;
-                self.tab_completed = false;
+        if let Some(ref prefix) = session.tab_completion_prefix {
+            if !session.input.starts_with(prefix) || &session.input == prefix {
+                session.tab_completion_prefix = Some(session.input.clone());
+                session.tab_completion_index = 0;
+                session.tab_completed = false;
             }
         } else {
-            // 第一次按 Tab，記錄當前輸入作為前綴
-            self.tab_completion_prefix = Some(self.input.clone());
-            self.tab_completion_index = 0;
-            self.tab_completed = false;
+            session.tab_completion_prefix = Some(session.input.clone());
+            session.tab_completion_index = 0;
+            session.tab_completed = false;
         }
         
-        let original_prefix = self.tab_completion_prefix.clone().unwrap();
+        let original_prefix = session.tab_completion_prefix.clone().unwrap();
         
-        // 分離最後一個單詞（用於畫面單字補齊）
         let (prefix_to_match, base_input) = if let Some(last_space_idx) = original_prefix.rfind(' ') {
             let (base, last) = original_prefix.split_at(last_space_idx + 1);
             (last.to_string(), Some(base.to_string()))
@@ -1413,100 +836,63 @@ impl MudApp {
         };
 
         let mut matches: Vec<String> = Vec::new();
-
-        // 策略 1: 如果沒有空格，優先嘗試歷史指令全匹配
-        if base_input.is_none() {
-            let history_matches: Vec<_> = self.input_history.iter()
-                .rev()
-                .filter(|h| h.starts_with(&original_prefix) && *h != &original_prefix)
-                .cloned()
-                .collect();
-            // 去重
-            for h in history_matches {
-                if !matches.contains(&h) {
-                    matches.push(h);
-                }
+        
+        // 1. 補齊歷史指令
+        for history in &session.input_history {
+            if history.starts_with(&original_prefix) && !matches.contains(history) {
+                matches.push(history.clone());
             }
         }
-
-        // 策略 2: 如果歷史沒匹配，或是具備空格（補齊最後一個單詞），從 screen_words 找
-        if matches.is_empty() && !prefix_to_match.is_empty() {
-            let mut screen_matches: Vec<_> = self.screen_words.iter()
-                .filter(|(w, _)| w.to_lowercase().starts_with(&prefix_to_match.to_lowercase()))
-                .map(|(w, meta)| (w.clone(), meta.clone()))
-                .collect();
+        
+        // 2. 補齊畫面單字
+        let clean_prefix = prefix_to_match.to_lowercase();
+        let mut word_matches: Vec<_> = session.screen_words.iter()
+            .filter(|(w, _)| w.to_lowercase().starts_with(&clean_prefix))
+            .collect();
             
-            // 智慧排序：
-            // 1. is_mob 優先 (Mob 名稱排前面)
-            // 2. last_seen 優先 (最新出現的排前面)
-            screen_matches.sort_by(|a, b| {
-                b.1.is_mob.cmp(&a.1.is_mob)
-                    .then_with(|| b.1.last_seen.cmp(&a.1.last_seen))
-                    .then_with(|| a.0.cmp(&b.0))
-            });
-
-            for (word, _) in screen_matches {
-                let full_cmd = match &base_input {
-                    Some(base) => format!("{}{}", base, word),
-                    None => word,
-                };
-                if !matches.contains(&full_cmd) {
-                    matches.push(full_cmd);
-                }
+        word_matches.sort_by(|(a_word, a_meta), (b_word, b_meta)| {
+            b_meta.is_mob.cmp(&a_meta.is_mob)
+                .then_with(|| b_meta.last_seen.cmp(&a_meta.last_seen))
+                .then_with(|| a_word.len().cmp(&b_word.len()))
+        });
+        
+        for (word, _) in word_matches {
+            let full_match = if let Some(ref base) = base_input {
+                format!("{}{}", base, word)
+            } else {
+                word.clone()
+            };
+            if !matches.contains(&full_match) {
+                matches.push(full_match);
             }
         }
 
-        if matches.is_empty() {
-            return;
+        if !matches.is_empty() {
+            let index = session.tab_completion_index % matches.len();
+            session.input = matches[index].clone();
+            session.tab_completion_index += 1;
+            session.tab_completed = true;
         }
-        
-        // 取得當前索引對應的匹配項
-        let idx = self.tab_completion_index % matches.len();
-        self.input = matches[idx].clone();
-        
-        // 下一次 Tab 時跳到下一個匹配項
-        self.tab_completion_index = (self.tab_completion_index + 1) % matches.len();
-        self.tab_completed = true;
     }
 
     /// 發送方向指令
-    fn send_direction(&mut self, dir: &str) {
-        if let Some(tx) = &self.command_tx {
-            let _ = tx.blocking_send(Command::Send(dir.to_string()));
+    fn send_direction_for_session(session: &mut crate::session::Session, dir: &str) {
+        if let Some(tx) = &session.command_tx {
+            let _ = tx.blocking_send(crate::session::Command::Send(dir.to_string()));
         }
     }
 
     /// 處理快捷鍵
-    fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context) {
+    fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context, pending_action: &mut Option<PendingAction>) {
         ctx.input(|i| {
             // F1-F5 功能鍵
-            if i.key_pressed(egui::Key::F1) {
-                // TODO: 顯示說明
-            }
             if i.key_pressed(egui::Key::F2) || i.key_pressed(egui::Key::F3) || i.key_pressed(egui::Key::F4) {
                 self.show_settings_window = true;
             }
-            if i.key_pressed(egui::Key::F5) {
-                // TODO: 切換日誌
-            }
-
-            // 數字鍵盤方向（暫時禁用，避免輸入時誤觸發）
-            // TODO: 改用小鍵盤專用按鍵或添加修飾鍵控制
-            // if i.key_pressed(egui::Key::Num8) { self.send_direction("n"); }
-            // if i.key_pressed(egui::Key::Num2) { self.send_direction("s"); }
-            // if i.key_pressed(egui::Key::Num4) { self.send_direction("w"); }
-            // if i.key_pressed(egui::Key::Num6) { self.send_direction("e"); }
-            // if i.key_pressed(egui::Key::Num7) { self.send_direction("nw"); }
-            // if i.key_pressed(egui::Key::Num9) { self.send_direction("ne"); }
-            // if i.key_pressed(egui::Key::Num1) { self.send_direction("sw"); }
-            // if i.key_pressed(egui::Key::Num3) { self.send_direction("se"); }
-            // if i.key_pressed(egui::Key::Num5) { self.send_direction("look"); }
 
             // Ctrl+L 清除畫面
             if i.modifiers.ctrl && i.key_pressed(egui::Key::L) {
-                if let Some(window) = self.window_manager.get_mut(&self.active_window_id) {
-                    window.clear();
-                }
+                *pending_action = Some(PendingAction::ClearActiveWindow);
             }
 
             // Escape 關閉所有彈出視窗
@@ -1532,17 +918,17 @@ impl MudApp {
                 ];
                 for (idx, key) in num_keys.iter().enumerate() {
                     if i.key_pressed(*key) {
-                        self.session_manager.switch_tab(idx);
+                        *pending_action = Some(PendingAction::SwitchTab(idx));
                     }
                 }
 
                 // Cmd+[ 上一個分頁
                 if i.key_pressed(egui::Key::OpenBracket) {
-                    self.session_manager.prev_tab();
+                    *pending_action = Some(PendingAction::PrevTab);
                 }
                 // Cmd+] 下一個分頁
                 if i.key_pressed(egui::Key::CloseBracket) {
-                    self.session_manager.next_tab();
+                    *pending_action = Some(PendingAction::NextTab);
                 }
 
                 // Cmd+T 開啟連線管理
@@ -1552,18 +938,412 @@ impl MudApp {
             }
         });
     }
+
+    /// 繪製 Profile 管理視窗
+    fn render_profile_window(&mut self, ctx: &egui::Context) {
+        egui::Window::new("連線管理")
+            .resizable(true)
+            .default_width(450.0)
+            .default_height(350.0)
+            .collapsible(false)
+            .show(ctx, |ui| {
+                ui.heading("Profile 列表");
+                ui.separator();
+
+                let profiles: Vec<_> = self.profile_manager.list().iter().map(|p| {
+                    (p.name.clone(), p.display_name.clone(), p.connection.host.clone(), p.connection.port.clone())
+                }).collect();
+
+                if profiles.is_empty() {
+                    ui.label("尚無任何 Profile。");
+                    ui.add_space(10.0);
+                } else {
+                    egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                        for (name, display_name, host, port) in &profiles {
+                            ui.group(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new(display_name).strong());
+                                    ui.label(format!("({}:{})", host, port));
+                                    
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        // 點擊連線按鈕時設定待連線的 Profile
+                                        if ui.button("🔌 連線").clicked() {
+                                            self.pending_connect_profile = Some(name.clone());
+                                            self.show_profile_window = false;
+                                        }
+                                    });
+                                });
+                            });
+                        }
+                    });
+                }
+
+                ui.add_space(15.0);
+                ui.separator();
+
+                // 活躍連線列表
+                ui.heading("活躍連線");
+                ui.separator();
+                
+                let session_count = self.session_manager.len();
+                if session_count == 0 {
+                    ui.label("目前無活躍連線。");
+                } else {
+                    ui.label(format!("活躍 Session 數量: {}", session_count));
+                }
+
+                ui.add_space(15.0);
+                if ui.button("關閉").clicked() {
+                    self.show_profile_window = false;
+                }
+            });
+    }
+
+    /// 繪製設定視窗 (獨立 Window)
+    fn render_settings_window(&mut self, ctx: &egui::Context) {
+        let mut should_close = false;
+        let mut needs_save = false;
+        
+        egui::Window::new("⚙ 設定中心")
+            .resizable(true)
+            .default_width(550.0)
+            .default_height(450.0)
+            .collapsible(false)
+            .show(ctx, |ui| {
+                // 獲取活躍 session
+                let session = match self.session_manager.active_session_mut() {
+                    Some(s) => s,
+                    None => {
+                        ui.label("請先連線至 MUD 伺服器。");
+                        ui.add_space(10.0);
+                        if ui.button("關閉").clicked() {
+                            should_close = true;
+                        }
+                        return;
+                    }
+                };
+
+                // Tab 選擇
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.settings_tab, SettingsTab::Alias, "別名 (Alias)");
+                    ui.selectable_value(&mut self.settings_tab, SettingsTab::Trigger, "觸發器 (Trigger)");
+                    ui.selectable_value(&mut self.settings_tab, SettingsTab::Logger, "日誌 (Logger)");
+                    ui.selectable_value(&mut self.settings_tab, SettingsTab::General, "一般 (General)");
+                });
+                ui.separator();
+                
+                // 根據目前的 Tab 渲染內容
+                match self.settings_tab {
+                    SettingsTab::Alias => {
+                        ui.horizontal(|ui| {
+                            ui.heading("別名管理");
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.button("➕ 新增別名").clicked() {
+                                    self.editing_alias_name = Some(String::new());
+                                    self.alias_edit_pattern = String::new();
+                                    self.alias_edit_replacement = String::new();
+                                    self.alias_edit_category = String::new();
+                                    self.show_alias_window = true;
+                                }
+                            });
+                        });
+                        ui.add_space(5.0);
+                        
+                        let alias_list: Vec<(String, String, String, Option<String>, bool)> = {
+                            session.alias_manager.sorted_aliases.iter()
+                                .filter_map(|name| {
+                                    session.alias_manager.aliases.get(name).map(|a| {
+                                        (a.name.clone(), a.pattern.clone(), a.replacement.clone(), a.category.clone(), a.enabled)
+                                    })
+                                })
+                                .collect()
+                        };
+                        
+                        let mut grouped_aliases: std::collections::BTreeMap<Option<String>, Vec<(String, String, String, Option<String>, bool)>> = std::collections::BTreeMap::new();
+                        for item in alias_list {
+                            grouped_aliases.entry(item.3.clone()).or_default().push(item);
+                        }
+                        
+                        let mut to_delete: Option<String> = None;
+                        let mut to_edit: Option<(String, String, String, String)> = None;
+                        let mut to_toggle_category: Option<(Option<String>, bool)> = None;
+                        
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            if grouped_aliases.is_empty() {
+                                ui.label("尚無別名");
+                            } else {
+                                for (category, items) in grouped_aliases {
+                                    let category_name = category.as_deref().unwrap_or("未分類");
+                                    
+                                    ui.horizontal(|ui| {
+                                        let all_enabled = items.iter().all(|i| i.4);
+                                        let mut current_all_enabled = all_enabled;
+                                        if ui.checkbox(&mut current_all_enabled, "").changed() {
+                                            to_toggle_category = Some((category.clone(), current_all_enabled));
+                                        }
+
+                                        egui::CollapsingHeader::new(RichText::new(category_name).strong())
+                                            .default_open(true)
+                                            .show(ui, |ui| {
+                                                for (name, pattern, replacement, cat, enabled) in items {
+                                                    ui.horizontal(|ui| {
+                                                        ui.add_space(10.0);
+                                                        let mut current_enabled = enabled;
+                                                        if ui.checkbox(&mut current_enabled, "").changed() {
+                                                            if let Some(alias) = session.alias_manager.aliases.get_mut(&name) {
+                                                                alias.enabled = current_enabled;
+                                                                needs_save = true;
+                                                            }
+                                                        }
+                                                        ui.label(format!("{} → {}", pattern, replacement));
+                                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                            if ui.small_button("🗑️").clicked() {
+                                                                to_delete = Some(name.clone());
+                                                            }
+                                                            if ui.small_button("✏️").clicked() {
+                                                                to_edit = Some((name.clone(), pattern.clone(), replacement.clone(), cat.unwrap_or_default()));
+                                                            }
+                                                        });
+                                                    });
+                                                }
+                                            });
+                                    });
+                                }
+                            }
+                        });
+                        
+                        if let Some((cat, enabled)) = to_toggle_category {
+                            for alias in session.alias_manager.aliases.values_mut() {
+                                if alias.category == cat {
+                                    alias.enabled = enabled;
+                                }
+                            }
+                            needs_save = true;
+                        }
+                        if let Some(name) = to_delete {
+                            session.alias_manager.remove(&name);
+                            needs_save = true;
+                        }
+                        if let Some((name, pattern, replacement, category)) = to_edit {
+                            self.editing_alias_name = Some(name);
+                            self.alias_edit_pattern = pattern;
+                            self.alias_edit_replacement = replacement;
+                            self.alias_edit_category = category;
+                            self.show_alias_window = true;
+                        }
+                    }
+                    SettingsTab::Trigger => {
+                        ui.horizontal(|ui| {
+                            ui.heading("觸發器管理");
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.button("➕ 新增觸發器").clicked() {
+                                    self.editing_trigger_name = Some(String::new());
+                                    self.trigger_edit_name = String::new();
+                                    self.trigger_edit_pattern = String::new();
+                                    self.trigger_edit_action = String::new();
+                                    self.trigger_edit_category = String::new();
+                                    self.show_trigger_window = true;
+                                }
+                            });
+                        });
+                        ui.add_space(5.0);
+                        
+                        let trigger_list: Vec<(String, String, String, Option<String>, bool, bool, String)> = {
+                            session.trigger_manager.order.iter()
+                                .filter_map(|name| {
+                                    session.trigger_manager.triggers.get(name).map(|t| {
+                                        let pattern_text = match &t.pattern {
+                                            TriggerPattern::Contains(s) => format!("包含: {}", s),
+                                            TriggerPattern::StartsWith(s) => format!("開頭: {}", s),
+                                            TriggerPattern::EndsWith(s) => format!("結尾: {}", s),
+                                            TriggerPattern::Regex(s) => format!("正則: {}", s),
+                                        };
+                                        let clean_pattern = match &t.pattern {
+                                            TriggerPattern::Contains(s) | TriggerPattern::StartsWith(s) |
+                                            TriggerPattern::EndsWith(s) | TriggerPattern::Regex(s) => s.clone(),
+                                        };
+                                        let (action_str, is_script) = t.actions.iter().find_map(|a| {
+                                            match a {
+                                                TriggerAction::SendCommand(cmd) => Some((cmd.clone(), false)),
+                                                TriggerAction::ExecuteScript(code) => Some((code.clone(), true)),
+                                                _ => None,
+                                            }
+                                        }).unwrap_or_default();
+                                        (t.name.clone(), pattern_text, clean_pattern, t.category.clone(), t.enabled, is_script, action_str)
+                                    })
+                                })
+                                .collect()
+                        };
+                        
+                        let mut grouped_triggers: std::collections::BTreeMap<Option<String>, Vec<(String, String, String, Option<String>, bool, bool, String)>> = std::collections::BTreeMap::new();
+                        for item in trigger_list {
+                            grouped_triggers.entry(item.3.clone()).or_default().push(item);
+                        }
+                        
+                        let mut to_delete: Option<String> = None;
+                        let mut to_edit: Option<(String, String, String, bool, String)> = None;
+                        let mut to_toggle_category: Option<(Option<String>, bool)> = None;
+                        
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            if grouped_triggers.is_empty() {
+                                ui.label("尚無觸發器");
+                            } else {
+                                for (category, items) in grouped_triggers {
+                                    let category_name = category.as_deref().unwrap_or("未分類");
+
+                                    ui.horizontal(|ui| {
+                                        let all_enabled = items.iter().all(|i| i.4);
+                                        let mut current_all_enabled = all_enabled;
+                                        if ui.checkbox(&mut current_all_enabled, "").changed() {
+                                            to_toggle_category = Some((category.clone(), current_all_enabled));
+                                        }
+
+                                        egui::CollapsingHeader::new(RichText::new(category_name).strong())
+                                            .default_open(true)
+                                            .show(ui, |ui| {
+                                                for (name, pattern_text, clean_pattern, cat, enabled, is_script, action_str) in items {
+                                                    ui.horizontal(|ui| {
+                                                        ui.add_space(10.0);
+                                                        let mut current_enabled = enabled;
+                                                        if ui.checkbox(&mut current_enabled, "").changed() {
+                                                            if let Some(trigger) = session.trigger_manager.triggers.get_mut(&name) {
+                                                                trigger.enabled = current_enabled;
+                                                                needs_save = true;
+                                                            }
+                                                        }
+                                                        ui.label(format!("{} [{}]", name, pattern_text));
+                                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                            if ui.small_button("🗑️").clicked() {
+                                                                to_delete = Some(name.clone());
+                                                            }
+                                                            if ui.small_button("✏️").clicked() {
+                                                                to_edit = Some((name.clone(), clean_pattern.clone(), action_str.clone(), is_script, cat.unwrap_or_default()));
+                                                            }
+                                                        });
+                                                    });
+                                                }
+                                            });
+                                    });
+                                }
+                            }
+                        });
+                        
+                        if let Some((cat, enabled)) = to_toggle_category {
+                            for trigger in session.trigger_manager.triggers.values_mut() {
+                                if trigger.category == cat {
+                                    trigger.enabled = enabled;
+                                }
+                            }
+                            needs_save = true;
+                        }
+                        if let Some(name) = to_delete {
+                            session.trigger_manager.remove(&name);
+                            needs_save = true;
+                        }
+                        if let Some((name, pattern, action, is_script, category)) = to_edit {
+                            self.editing_trigger_name = Some(name.clone());
+                            self.trigger_edit_name = name;
+                            self.trigger_edit_pattern = pattern;
+                            self.trigger_edit_action = action;
+                            self.trigger_edit_category = category;
+                            self.trigger_edit_is_script = is_script;
+                            self.show_trigger_window = true;
+                        }
+                    }
+                    SettingsTab::Logger => {
+                        ui.heading("日誌控制");
+                        ui.add_space(10.0);
+                        
+                        if session.logger.is_recording() {
+                            ui.label(format!("狀態: 正在記錄中 ({})", session.logger.path().map(|p| p.display().to_string()).unwrap_or_default()));
+                            if ui.button("停止記錄").clicked() {
+                                let _ = session.logger.stop();
+                            }
+                        } else {
+                            ui.label("狀態: 未啟動");
+                            if ui.button("開始記錄").clicked() {
+                                let path = format!("logs/mud_log_{}.txt", chrono_lite_timestamp());
+                                let _ = session.logger.start(&path);
+                            }
+                        }
+                    }
+                    SettingsTab::General => {
+                        ui.heading("一般設定");
+                        ui.add_space(10.0);
+                        
+                        ui.checkbox(&mut session.auto_scroll, "自動捲動畫面");
+                        ui.add_space(5.0);
+                        ui.label(format!("當前補齊字典大小: {} 個單字", session.screen_words.len()));
+                        ui.label("更多設定即將推出...");
+                    }
+                }
+                
+                ui.add_space(10.0);
+                ui.separator();
+                if ui.button("關閉").clicked() {
+                    should_close = true;
+                }
+            });
+        
+        if needs_save {
+            self.save_config();
+        }
+        if should_close {
+            self.show_settings_window = false;
+        }
+    }
 }
 
 impl eframe::App for MudApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // 儲存 context 以供自動重連使用
-        self.ctx = Some(ctx.clone());
-
+        // === 1. 背景邏輯處理 ===
+        
         // 檢查自動重連
         self.check_reconnect(ctx);
 
-        // 檢查並執行計時器
-        self.check_timers();
+        // 處理待連線的 Profile
+        if let Some(profile_name) = self.pending_connect_profile.take() {
+            self.connect_to_profile(&profile_name, ctx.clone());
+        }
+
+        // 處理計時器
+        if let Some(session) = self.session_manager.active_session_mut() {
+            session.check_timers();
+        }
+
+        // 繪製其他視窗
+        // Note: profiles and settings are already handled above in the floating section
+        
+        let mut needs_save = false;
+        if self.show_alias_window {
+            Self::render_alias_edit(
+                ctx,
+                self.session_manager.active_session_mut(),
+                &mut self.editing_alias_name,
+                &mut self.alias_edit_pattern,
+                &mut self.alias_edit_replacement,
+                &mut self.alias_edit_category,
+                &mut self.show_alias_window,
+                &mut needs_save,
+            );
+        }
+        if self.show_trigger_window {
+            Self::render_trigger_edit(
+                ctx,
+                self.session_manager.active_session_mut(),
+                &mut self.editing_trigger_name,
+                &mut self.trigger_edit_name,
+                &mut self.trigger_edit_pattern,
+                &mut self.trigger_edit_action,
+                &mut self.trigger_edit_category,
+                self.trigger_edit_is_script,
+                &mut self.show_trigger_window,
+                &mut needs_save,
+            );
+        }
+        if needs_save {
+            self.save_config();
+        }
 
         // 處理網路訊息
         self.process_messages();
@@ -1571,457 +1351,213 @@ impl eframe::App for MudApp {
         // 設定暗黑模式
         ctx.set_visuals(egui::Visuals::dark());
 
+        // 使用局部變數記錄
+        let active_id = self.session_manager.active_id();
+        let any_popup_open = self.show_settings_window || self.show_alias_window || self.show_trigger_window || self.show_profile_window;
+        let active_window_id = self.active_window_id.clone();
+
+        // 記錄待執行的延遲動作（避免在閉包中借用 self）
+        let mut pending_action = None;
+
+        // === 2. UI 渲染 ===
+
         // === 頂部：狀態列 + 功能鍵 ===
         egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
             // 第一行：狀態列
             ui.horizontal(|ui| {
-                ui.label("伺服器:");
-                ui.label(RichText::new(&self.host).strong());
-                ui.label(":");
-                ui.label(&self.port);
-                ui.separator();
+                if let Some(session) = self.session_manager.active_session() {
+                    ui.label("伺服器:");
+                    ui.label(RichText::new(&session.host).strong());
+                    ui.label(":");
+                    ui.label(&session.port);
+                    ui.separator();
 
-                match &self.status {
-                    ConnectionStatus::Disconnected => {
-                        ui.label(RichText::new("● 未連線").color(Color32::GRAY));
-                    }
-                    ConnectionStatus::Connecting => {
-                        ui.spinner();
-                        ui.label(RichText::new("連線中...").color(Color32::YELLOW));
-                    }
-                    ConnectionStatus::Connected(_) => {
-                        ui.label(RichText::new("● 已連線").color(Color32::GREEN));
-                        if let Some(start) = self.connected_at {
-                            let elapsed = start.elapsed();
-                            let mins = elapsed.as_secs() / 60;
-                            let secs = elapsed.as_secs() % 60;
-                            ui.separator();
-                            ui.label(format!("時長: {:02}:{:02}", mins, secs));
+                    use crate::session::ConnectionStatus as SessionStatus;
+                    match &session.status {
+                        SessionStatus::Disconnected => {
+                            ui.label(RichText::new("● 未連線").color(Color32::GRAY));
                         }
-                    }
-                    ConnectionStatus::Reconnecting => {
-                        ui.spinner();
-                        if let Some(until) = self.reconnect_delay_until {
-                            let remaining = until.saturating_duration_since(Instant::now());
-                            ui.label(RichText::new(format!("⟳ 重連中... ({}s)", remaining.as_secs() + 1)).color(Color32::YELLOW));
-                        } else {
+                        SessionStatus::Connecting => {
+                            ui.spinner();
+                            ui.label(RichText::new("連線中...").color(Color32::YELLOW));
+                        }
+                        SessionStatus::Connected(_) => {
+                            ui.label(RichText::new("● 已連線").color(Color32::GREEN));
+                        }
+                        SessionStatus::Reconnecting => {
+                            ui.spinner();
                             ui.label(RichText::new("⟳ 重連中...").color(Color32::YELLOW));
                         }
                     }
-                }
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    match &self.status {
-                        ConnectionStatus::Disconnected => {
-                            if ui.button("🔌 連線").clicked() {
-                                self.start_connection(ctx.clone());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        match &session.status {
+                            SessionStatus::Disconnected => {
+                                if ui.button("🔌 連線").clicked() {
+                                    pending_action = Some(PendingAction::Connect(session.id));
+                                }
                             }
-                        }
-                        ConnectionStatus::Connected(_) => {
-                            if ui.button("❌ 斷線").clicked() {
-                                self.disconnect();
+                            SessionStatus::Connected(_) => {
+                                if ui.button("❌ 斷線").clicked() {
+                                    pending_action = Some(PendingAction::Disconnect(session.id));
+                                }
                             }
+                            _ => {}
                         }
-                        ConnectionStatus::Reconnecting => {
-                            if ui.button("⏹ 取消重連").clicked() {
-                                self.reconnect_delay_until = None;
-                                self.status = ConnectionStatus::Disconnected;
-                            }
-                        }
-                        _ => {}
-                    }
-                });
+                    });
+                } else {
+                    ui.label(RichText::new("請從「連線管理」點擊連線以開始").italics().color(Color32::GRAY));
+                }
             });
 
             ui.separator();
 
             // 第二行：功能鍵
             ui.horizontal(|ui| {
-                if ui.button("F1 說明").clicked() {
-                    // TODO
-                }
-                if ui.button("F2 別名").clicked() {
-                    self.show_settings_window = true;
-                }
-                if ui.button("F3 觸發").clicked() {
-                    self.show_settings_window = true;
-                }
-                if ui.button("F4 腳本").clicked() {
-                    self.show_settings_window = true;
-                }
-                if ui.button("F5 日誌").clicked() {
-                    // TODO
-                }
-
+                if ui.button("F1 說明").clicked() {}
+                if ui.button("F2 別名").clicked() { pending_action = Some(PendingAction::ToggleSettings); }
+                if ui.button("F3 觸發").clicked() { pending_action = Some(PendingAction::ToggleSettings); }
+                
                 ui.separator();
-                ui.checkbox(&mut self.auto_scroll, "自動捲動");
-            });
-
-            // 第三行：Session 分頁列（僅當有多個 Session 時顯示）
-            if self.session_manager.len() > 0 {
-                ui.separator();
-                ui.horizontal(|ui| {
-                    // 收集分頁資訊以避免借用衝突
-                    let tabs: Vec<_> = self.session_manager.sessions().iter().enumerate().map(|(i, s)| {
-                        (i, s.id, s.tab_title())
-                    }).collect();
-                    let active_idx = self.session_manager.active_index();
-
-                    for (idx, _id, title) in tabs {
-                        let is_active = idx == active_idx;
-                        let btn = egui::Button::new(
-                            RichText::new(&title).color(if is_active { Color32::WHITE } else { Color32::GRAY })
-                        );
-                        if ui.add(btn).clicked() {
-                            self.session_manager.switch_tab(idx);
+                // 分頁列
+                if self.session_manager.len() > 0 {
+                    for i in 0..self.session_manager.len() {
+                        let is_active = i == self.session_manager.active_index();
+                        if let Some(s) = self.session_manager.sessions().get(i) {
+                            if ui.selectable_label(is_active, s.tab_title()).clicked() {
+                                pending_action = Some(PendingAction::SwitchTab(i));
+                            }
                         }
                     }
-
-                    ui.separator();
-                    
-                    // 新增分頁按鈕
-                    if ui.button("➕").on_hover_text("新增連線").clicked() {
-                        self.show_profile_window = true;
+                }
+                
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("➕").clicked() {
+                        pending_action = Some(PendingAction::ToggleProfile);
                     }
                 });
-            }
+            });
         });
 
-        // === 右側：工具欄 ===
+        // === 右側：工具面板 ===
         egui::SidePanel::right("tools_panel")
             .resizable(true)
             .default_width(140.0)
-            .min_width(100.0)
             .show(ctx, |ui| {
-                ui.heading("視窗");
-                ui.separator();
+                if let Some(session) = self.session_manager.active_session() {
+                    ui.heading("視窗");
+                    ui.separator();
 
-                for window in self.window_manager.windows() {
-                    let is_active = window.id == self.active_window_id;
-                    if ui.selectable_label(is_active, &window.title).clicked() {
-                        self.active_window_id = window.id.clone();
+                    for window in session.window_manager.windows() {
+                        let is_active = window.id == active_window_id;
+                        if ui.selectable_label(is_active, &window.title).clicked() {
+                            pending_action = Some(PendingAction::SwitchWindow(window.id.clone()));
+                        }
                     }
-                }
 
-                ui.add_space(15.0);
-                ui.heading("管理");
-                ui.separator();
+                    ui.add_space(15.0);
+                    ui.heading("管理");
+                    ui.separator();
 
-                if ui.button("⚙ 設定中心").clicked() {
-                    self.show_settings_window = true;
-                }
-                if ui.button("👤 連線管理").clicked() {
-                    self.show_profile_window = true;
-                }
-
-                ui.add_space(15.0);
-                ui.heading("日誌");
-                ui.separator();
-
-                if self.logger.is_recording() {
-                    ui.label(RichText::new("● 記錄中").color(Color32::RED));
-                    if ui.button("停止記錄").clicked() {
-                        let _ = self.logger.stop();
+                    if ui.button("⚙ 設定中心").clicked() {
+                        pending_action = Some(PendingAction::ToggleSettings);
+                    }
+                    if ui.button("👤 連線管理").clicked() {
+                        pending_action = Some(PendingAction::ToggleProfile);
                     }
                 } else {
-                    ui.label("○ 未記錄");
-                    if ui.button("開始記錄").clicked() {
-                        let path = format!("mud_log_{}.txt", chrono_lite_timestamp());
-                        let _ = self.logger.start(&path);
+                    ui.heading("管理");
+                    ui.separator();
+                    if ui.button("👤 連線管理").clicked() {
+                        pending_action = Some(PendingAction::ToggleProfile);
                     }
                 }
             });
 
         // === 底部：輸入區 ===
-        egui::TopBottomPanel::bottom("input_panel").show(ctx, |ui| {
-            ui.add_space(5.0);
-            self.render_input_area(ui);
-            ui.add_space(5.0);
-        });
-
-        // === 中央：訊息區 ===
-        egui::CentralPanel::default().show(ctx, |ui| {
-            self.render_message_area(ui);
-        });
-
-        // === 別名編輯彈出視窗 ===
-        if self.show_alias_window {
-            let is_new = self.editing_alias_name.as_ref().map_or(true, |n| n.is_empty());
-            let title = if is_new { "新增別名" } else { "編輯別名" };
-            
-            egui::Window::new(title)
-                .resizable(true)
-                .default_width(400.0)
-                .collapsible(false)
-                .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("觸發詞:");
-                        ui.text_edit_singleline(&mut self.alias_edit_pattern);
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("替換為:");
-                        ui.text_edit_singleline(&mut self.alias_edit_replacement);
-                    });
+        if let Some(id) = active_id {
+            egui::TopBottomPanel::bottom("input_panel").show(ctx, |ui| {
+                if let Some(session) = self.session_manager.get_mut(id) {
                     ui.add_space(5.0);
-                    ui.label("提示: 使用 $1, $2 作為參數佔位符");
-                    ui.add_space(10.0);
-                    
-                    ui.horizontal(|ui| {
-                        if ui.button("💾 儲存").clicked() {
-                            if !self.alias_edit_pattern.is_empty() {
-                                if let Some(ref old_name) = self.editing_alias_name {
-                                    if !old_name.is_empty() {
-                                        self.alias_manager.remove(old_name);
-                                    }
-                                }
-                                self.alias_manager.add(Alias::new(
-                                    &self.alias_edit_pattern,
-                                    &self.alias_edit_pattern,
-                                    &self.alias_edit_replacement,
-                                ));
-                                self.save_config();
-                                self.show_alias_window = false;
+                    Self::render_input_area(ui, session, any_popup_open);
+                    ui.add_space(5.0);
+                }
+            });
+
+            // === 中央：訊息區 ===
+            egui::CentralPanel::default().show(ctx, |ui| {
+                if let Some(session) = self.session_manager.get_mut(id) {
+                    Self::render_message_area(ui, session, &active_window_id);
+                }
+            });
+
+            // 處理快捷鍵 (不直接傳遞 session，避免借用衝突)
+            self.handle_keyboard_shortcuts(ctx, &mut pending_action);
+        } else {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.centered_and_justified(|ui| {
+                    ui.heading("請點擊右上「＋」或「連線管理」按鈕選擇一個 Profile 連線。");
+                });
+            });
+        }
+
+        // === 動作處理 ===
+        if let Some(action) = pending_action {
+            match action {
+                PendingAction::Connect(id) => self.start_connection(id, ctx.clone()),
+                PendingAction::Disconnect(id) => {
+                    if let Some(session) = self.session_manager.get_mut(id) {
+                        if let Some(tx) = &session.command_tx {
+                            let _ = tx.blocking_send(crate::session::Command::Disconnect);
+                        }
+                    }
+                }
+                PendingAction::SwitchTab(idx) => { self.session_manager.switch_tab(idx); }
+                PendingAction::PrevTab => { self.session_manager.prev_tab(); }
+                PendingAction::NextTab => { self.session_manager.next_tab(); }
+                PendingAction::SwitchWindow(win_id) => { self.active_window_id = win_id; }
+                PendingAction::ToggleSettings => { self.show_settings_window = !self.show_settings_window; }
+                PendingAction::ToggleProfile => { self.show_profile_window = !self.show_profile_window; }
+                PendingAction::ClearActiveWindow => {
+                    if let Some(id) = active_id {
+                        if let Some(session) = self.session_manager.get_mut(id) {
+                            if let Some(window) = session.window_manager.get_mut(&active_window_id) {
+                                window.clear();
                             }
                         }
-                        if ui.button("取消").clicked() {
-                            self.show_alias_window = false;
-                        }
-                    });
-                });
-        }
-
-        // === 觸發器編輯彈出視窗 ===
-        if self.show_trigger_window {
-            let is_new = self.editing_trigger_name.as_ref().map_or(true, |n| n.is_empty());
-            let title = if is_new { "新增觸發器" } else { "編輯觸發器" };
-            
-            egui::Window::new(title)
-                .resizable(true)
-                .default_width(450.0)
-                .collapsible(false)
-                .show(ctx, |ui| {
-                    ui.label(RichText::new("觸發器會在收到的訊息中搜尋「匹配文字」，找到時自動執行「執行命令」").small());
-                    ui.add_space(10.0);
-                    
-                    // 名稱
-                    ui.horizontal(|ui| {
-                        ui.label("名稱：");
-                        ui.add(TextEdit::singleline(&mut self.trigger_edit_name)
-                            .hint_text("例如：自動撿取")
-                            .desired_width(250.0));
-                    });
-                    
-                    ui.add_space(5.0);
-                    
-                    // 匹配文字
-                    ui.horizontal(|ui| {
-                        ui.label("匹配文字：");
-                        ui.add(TextEdit::singleline(&mut self.trigger_edit_pattern)
-                            .hint_text("例如：掉落了")
-                            .desired_width(250.0));
-                    });
-                    ui.label(RichText::new("  ↳ 當收到的訊息包含這段文字時觸發").weak().small());
-                    
-                    ui.add_space(5.0);
-                    
-                    // Lua 腳本模式勾選框
-                    ui.checkbox(&mut self.trigger_edit_is_script, "使用 Lua 腳本");
-                    
-                    // 執行命令
-                    ui.horizontal(|ui| {
-                        ui.label("執行命令：");
-                        if self.trigger_edit_is_script {
-                            ui.add(TextEdit::multiline(&mut self.trigger_edit_action)
-                                .hint_text("mud.send(\"get all\")\nmud.echo(\"OK\")")
-                                .desired_width(250.0)
-                                .desired_rows(3));
-                        } else {
-                            ui.add(TextEdit::singleline(&mut self.trigger_edit_action)
-                                .hint_text("get all")
-                                .desired_width(250.0));
-                        }
-                    });
-                    if self.trigger_edit_is_script {
-                        ui.label(RichText::new("  ↳ Lua 腳本模式，使用 mud.send(\"...\") 發送命令").weak().small());
-                    } else {
-                        ui.label(RichText::new("  ↳ 直接發送命令到 MUD").weak().small());
                     }
-                    
-                    ui.add_space(15.0);
-                    
-                    // 範例區塊
-                    ui.collapsing("📖 使用範例", |ui| {
-                        ui.label("• 簡單模式：輸入 get all");
-                        ui.label("• Lua 模式（多指令）：");
-                        ui.monospace("mud.send(\"get all\")\nmud.send(\"put all in bag\")");
-                    });
-                    
-                    ui.add_space(10.0);
-                    
-                    ui.horizontal(|ui| {
-                        if ui.button("💾 儲存").clicked() {
-                            if !self.trigger_edit_name.is_empty() && !self.trigger_edit_pattern.is_empty() {
-                                if let Some(ref old_name) = self.editing_trigger_name {
-                                    if !old_name.is_empty() {
-                                        self.trigger_manager.remove(old_name);
-                                    }
-                                }
-                                let mut trigger = Trigger::new(
-                                    &self.trigger_edit_name,
-                                    TriggerPattern::Contains(self.trigger_edit_pattern.clone()),
-                                );
-                                if !self.trigger_edit_action.is_empty() {
-                                    if self.trigger_edit_is_script {
-                                        trigger = trigger.add_action(TriggerAction::ExecuteScript(self.trigger_edit_action.clone()));
-                                    } else {
-                                        trigger = trigger.add_action(TriggerAction::SendCommand(self.trigger_edit_action.clone()));
-                                    }
-                                }
-                                self.trigger_manager.add(trigger);
-                                self.save_config();
-                                self.show_trigger_window = false;
-                            }
-                        }
-                        if ui.button("取消").clicked() {
-                            self.show_trigger_window = false;
-                        }
-                    });
-                });
+                }
+            }
         }
 
-        // === 設定中心彈出視窗 ===
-        if self.show_settings_window {
-            egui::Window::new("設定中心")
-                .resizable(true)
-                .default_width(500.0)
-                .default_height(400.0)
-                .collapsible(false)
-                .show(ctx, |ui| {
-                    self.render_settings(ui);
-                    
-                    ui.add_space(10.0);
-                    if ui.button("關閉").clicked() {
-                        self.show_settings_window = false;
-                    }
-                });
-        }
-
-        // === Profile 管理視窗 ===
+        // 彈出視窗
         if self.show_profile_window {
-            egui::Window::new("連線管理")
-                .resizable(true)
-                .default_width(450.0)
-                .default_height(350.0)
-                .collapsible(false)
-                .show(ctx, |ui| {
-                    ui.heading("Profile 列表");
-                    ui.separator();
-
-                    let profiles: Vec<_> = self.profile_manager.list().iter().map(|p| {
-                        (p.name.clone(), p.display_name.clone(), p.connection.host.clone(), p.connection.port.clone())
-                    }).collect();
-
-                    if profiles.is_empty() {
-                        ui.label("尚無任何 Profile。");
-                        ui.add_space(10.0);
-                        
-                        // 提供將目前設定建立為 Profile 的選項
-                        if ui.button("📝 將目前連線儲存為 Profile").clicked() {
-                            use crate::config::Profile;
-                            let profile = Profile {
-                                name: "default".to_string(),
-                                display_name: "預設連線".to_string(),
-                                connection: crate::config::ConnectionConfig {
-                                    host: self.host.clone(),
-                                    port: self.port.clone(),
-                                },
-                                aliases: self.alias_manager.list().iter().map(|a| AliasConfig {
-                                    name: a.name.clone(),
-                                    pattern: a.pattern.clone(),
-                                    replacement: a.replacement.clone(),
-                                    enabled: a.enabled,
-                                }).collect(),
-                                triggers: self.trigger_manager.list().iter().map(|t| {
-                                    let pattern_str = match &t.pattern {
-                                        TriggerPattern::Contains(s) => s.clone(),
-                                        TriggerPattern::StartsWith(s) => s.clone(),
-                                        TriggerPattern::EndsWith(s) => s.clone(),
-                                        TriggerPattern::Regex(s) => s.clone(),
-                                    };
-                                    let (action_str, is_script) = t.actions.iter().find_map(|a| {
-                                        match a {
-                                            TriggerAction::SendCommand(cmd) => Some((cmd.clone(), false)),
-                                            TriggerAction::ExecuteScript(code) => Some((code.clone(), true)),
-                                            _ => None,
-                                        }
-                                    }).unwrap_or_default();
-                                    TriggerConfig {
-                                        name: t.name.clone(),
-                                        pattern: pattern_str,
-                                        action: action_str,
-                                        is_script,
-                                        enabled: t.enabled,
-                                    }
-                                }).collect(),
-                                script_paths: Vec::new(),
-                                created_at: std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|d| d.as_secs())
-                                    .unwrap_or(0),
-                                last_connected: None,
-                            };
-                            let _ = self.profile_manager.save(profile);
-                        }
-                    } else {
-                        egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
-                            for (name, display_name, host, port) in &profiles {
-                                ui.group(|ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(RichText::new(display_name).strong());
-                                        ui.label(format!("({}:{})", host, port));
-                                        
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            // TODO: 連線到此 Profile
-                                            if ui.button("🔌 連線").clicked() {
-                                                // 未來會使用 SessionManager 建立新 Session
-                                                tracing::info!("TODO: 連線到 Profile: {}", name);
-                                            }
-                                        });
-                                    });
-                                });
-                            }
-                        });
-                    }
-
-                    ui.add_space(15.0);
-                    ui.separator();
-
-                    // 活躍連線列表
-                    ui.heading("活躍連線");
-                    ui.separator();
-                    
-                    let session_count = self.session_manager.len();
-                    if session_count == 0 {
-                        ui.label("目前無多帳號連線。");
-                        ui.label(RichText::new("（目前使用傳統單連線模式）").weak());
-                    } else {
-                        ui.label(format!("活躍 Session 數量: {}", session_count));
-                    }
-
-                    ui.add_space(15.0);
-                    if ui.button("關閉").clicked() {
-                        self.show_profile_window = false;
-                    }
-                });
+            self.render_profile_window(ctx);
         }
-
-        // 處理快捷鍵
-        self.handle_keyboard_shortcuts(ctx);
+        
+        // 設定視窗
+        if self.show_settings_window {
+            self.render_settings_window(ctx);
+        }
 
         // 持續刷新
         ctx.request_repaint();
     }
 }
+
+/// 延階段動作
+enum PendingAction {
+    Connect(crate::session::SessionId),
+    Disconnect(crate::session::SessionId),
+    SwitchTab(usize),
+    PrevTab,
+    NextTab,
+    SwitchWindow(String),
+    ToggleSettings,
+    ToggleProfile,
+    ClearActiveWindow,
+}
+
 
 /// 簡易時間戳記（避免引入大型時間庫）
 fn chrono_lite_timestamp() -> String {
@@ -2034,6 +1570,7 @@ fn chrono_lite_timestamp() -> String {
 }
 
 /// 清理 pattern 字串，移除可能的 Debug 格式（如 Contains("...")）
+#[allow(dead_code)]
 fn clean_pattern_string(pattern: &str) -> String {
     let s = pattern.trim();
     

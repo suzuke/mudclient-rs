@@ -154,7 +154,7 @@ impl Logger {
     }
 
     /// 移除 ANSI 轉義碼
-    pub fn strip_ansi(input: &str) -> String {
+    fn strip_ansi(input: &str) -> String {
         let mut result = String::with_capacity(input.len());
         let mut chars = input.chars().peekable();
 

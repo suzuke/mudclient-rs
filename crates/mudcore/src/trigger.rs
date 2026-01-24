@@ -40,6 +40,8 @@ pub enum TriggerPattern {
 pub struct Trigger {
     /// 觸發器名稱
     pub name: String,
+    /// 分類
+    pub category: Option<String>,
     /// 匹配模式
     pub pattern: TriggerPattern,
     /// 執行動作列表
@@ -60,11 +62,18 @@ impl Trigger {
 
         Self {
             name: name.into(),
+            category: None,
             pattern,
             actions: Vec::new(),
             enabled: true,
             compiled_regex: compiled,
         }
+    }
+
+    /// 設定分類
+    pub fn with_category(mut self, category: impl Into<String>) -> Self {
+        self.category = Some(category.into());
+        self
     }
 
     /// 添加動作

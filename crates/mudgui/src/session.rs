@@ -12,10 +12,11 @@ use std::time::Instant;
 
 use mudcore::{
     Alias, AliasManager, Logger, ScriptEngine, Trigger, TriggerAction,
-    TriggerManager, TriggerPattern, WindowManager,
+    TriggerManager, TriggerPattern, WindowManager, WindowMessage,
+    MudContext,
 };
+use std::time::Duration;
 use tokio::sync::mpsc;
-
 use crate::config::{AliasConfig, Profile, TriggerConfig};
 
 // ============================================================================
@@ -26,6 +27,7 @@ use crate::config::{AliasConfig, Profile, TriggerConfig};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SessionId(u64);
 
+#[allow(dead_code)]
 impl SessionId {
     /// 產生新的 SessionId
     pub fn new() -> Self {
@@ -75,6 +77,19 @@ pub enum Command {
     Connect(String, u16),
     Send(String),
     Disconnect,
+}
+
+// ============================================================================
+// ActiveTimer
+// ============================================================================
+
+/// 活躍的計時器
+#[derive(Debug)]
+pub struct ActiveTimer {
+    /// 到期時間
+    pub expires_at: Instant,
+    /// 腳本代碼
+    pub lua_code: String,
 }
 
 // ============================================================================
@@ -151,6 +166,7 @@ pub struct Session {
     pub screen_words: HashMap<String, WordMetadata>,
     
     /// 是否正在接收房間敘述
+    #[allow(dead_code)]
     pub in_room_description: bool,
     
     /// 是否自動滾動到底部
@@ -165,6 +181,13 @@ pub struct Session {
     
     /// 重連等待時間點
     pub reconnect_delay_until: Option<Instant>,
+
+    /// 最後活動時間
+    #[allow(dead_code)]
+    pub last_active: Instant,
+
+    /// 活躍的計時器
+    pub active_timers: Vec<ActiveTimer>,
 
     // === 多視窗預留 ===
     /// 當 Session 被拆分為獨立視窗時的視窗 ID
@@ -190,6 +213,7 @@ impl Session {
         // 載入 Profile 的別名
         for alias_cfg in &profile.aliases {
             let mut alias = Alias::new(&alias_cfg.name, &alias_cfg.pattern, &alias_cfg.replacement);
+            alias.category = alias_cfg.category.clone();
             alias.enabled = alias_cfg.enabled;
             alias_manager.add(alias);
         }
@@ -240,6 +264,8 @@ impl Session {
             scroll_to_bottom_on_next_frame: false,
             auto_reconnect: true,
             reconnect_delay_until: None,
+            last_active: Instant::now(),
+            active_timers: Vec::new(),
             detached_window_id: None,
         }
     }
@@ -271,6 +297,7 @@ impl Session {
             }
         }
 
+        trigger.category = config.category.clone();
         trigger.enabled = config.enabled;
         Some(trigger)
     }
@@ -288,6 +315,7 @@ impl Session {
                 continue;
             }
             let mut alias = Alias::new(&alias_cfg.name, &alias_cfg.pattern, &alias_cfg.replacement);
+            alias.category = alias_cfg.category.clone();
             alias.enabled = alias_cfg.enabled;
             self.alias_manager.add(alias);
         }
@@ -304,6 +332,263 @@ impl Session {
         }
     }
 
+
+    /// 檢查並執行到期的計時器
+    pub fn check_timers(&mut self) {
+        if self.active_timers.is_empty() {
+            return;
+        }
+
+        let now = Instant::now();
+        let mut expired = Vec::new();
+
+        self.active_timers.retain(|timer| {
+            if now >= timer.expires_at {
+                expired.push(timer.lua_code.clone());
+                false
+            } else {
+                true
+            }
+        });
+
+        for code in expired {
+            if let Ok(context) = self.script_engine.execute_inline(&code, "TIMER_EXPIRED", &[], false) {
+                self.apply_script_context(context);
+            }
+        }
+    }
+
+    /// 核心：將腳本執行結果套用到 Session
+    pub fn apply_script_context(&mut self, context: MudContext) {
+        // 1. 發送指令
+        if let Some(tx) = &self.command_tx {
+            for cmd in context.commands {
+                let _ = tx.blocking_send(Command::Send(cmd));
+            }
+        }
+
+        // 2. 本地回顯
+        for echo in context.echos {
+            self.handle_text(&echo, true);
+        }
+
+        // 3. 子視窗輸出
+        for (win_id, text) in context.window_outputs {
+            self.window_manager.route_message(
+                &win_id,
+                WindowMessage {
+                    content: text,
+                    preserve_ansi: true,
+                },
+            );
+        }
+
+        // 4. 計時器註冊
+        let now = Instant::now();
+        for (delay_ms, code) in context.timers {
+            self.active_timers.push(ActiveTimer {
+                expires_at: now + Duration::from_millis(delay_ms),
+                lua_code: code,
+            });
+        }
+
+        // 5. 日誌記錄
+        for log_msg in context.log_messages {
+            let _ = self.logger.log(&format!("[Script] {}", log_msg));
+        }
+    }
+
+    /// 處理接收到的文字與觸發器
+    /// 處理接收到的文字與觸發器
+    pub fn handle_text(&mut self, text: &str, is_echo: bool) -> bool {
+        // 如果文字包含換行符，則逐行處理以確保狀態機能正確運作
+        if text.contains('\n') {
+            let mut result = true;
+            for line in text.lines() {
+                // 遞歸調用處理單行
+                // 注意：這裡我們傳遞 is_echo 為 false，因為只有第一行可能是 echo（取決於調用上下文），
+                // 但通常 handle_text 收到包含換行符的 msg 時都是來自伺服器的封包，非 echo。
+                // 如果是使用者輸入的回顯，通常是單行。為求保險，若原為 echo 且是第一行才視為 echo?
+                // 簡化起見：伺服器訊息通常是一大塊，is_echo=false。使用者輸入是單行，is_echo=true。
+                // 所以這裡直接傳遞原始 is_echo flag 應該是可以的，因為這主要影響是否觸發 'look' 狀態。
+                result &= self.handle_text(line, is_echo);
+            }
+            return result;
+        }
+
+        let mut gagged = false;
+        let mut targets = vec!["main".to_string()];
+
+        if !is_echo {
+            // 處理觸發器
+            let triggers = self.trigger_manager.process(text);
+            
+            // 暫存要執行的動作，避免借用衝突
+            let mut pending_scripts = Vec::new();
+            let mut pending_commands = Vec::new();
+            
+            // 執行觸發器動作
+            for (trigger, m) in triggers {
+                // Gag 檢查
+                // if trigger.gag {
+                //     gagged = true;
+                // }
+
+                // 執行動作
+                for action in &trigger.actions {
+                    match action {
+                        TriggerAction::SendCommand(cmd) => {
+                            if let Some(_tx) = &self.command_tx {
+                                let mut expanded = cmd.clone();
+                                for (i, cap) in m.captures.iter().enumerate() {
+                                    expanded = expanded.replace(&format!("${}", i + 1), cap);
+                                }
+                                pending_commands.push(expanded);
+                            }
+                        }
+                        TriggerAction::ExecuteScript(code) => {
+                            pending_scripts.push((code.clone(), m.captures.clone()));
+                        }
+                        TriggerAction::RouteToWindow(win_id) => {
+                            if !targets.contains(win_id) {
+                                targets.push(win_id.clone());
+                            }
+                        }
+                        TriggerAction::Gag => {
+                            gagged = true;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            // 執行收集到的指令
+            for cmd in pending_commands {
+                if let Some(tx) = &self.command_tx {
+                    let _ = tx.blocking_send(Command::Send(cmd));
+                }
+            }
+
+            // 執行收集到的腳本
+            for (code, captures) in pending_scripts {
+                if let Ok(context) = self.script_engine.execute_inline(&code, "TRIGGER", &captures, false) {
+                    self.apply_script_context(context);
+                }
+            }
+        }
+
+        // 如果被 Gag，則從主要輸出目標中移除 "main"
+        if gagged {
+            targets.retain(|t| t != "main");
+        }
+
+        // 路由到視窗
+        for target_id in targets {
+            self.window_manager.route_message(
+                &target_id,
+                WindowMessage {
+                    content: text.to_string(),
+                    preserve_ansi: !is_echo, 
+                },
+            );
+        }
+
+        // 提取單字用於自動補齊
+        let clean_text = if text.contains('\x1b') {
+            let re = regex::Regex::new(r"\x1b\[[0-9;]*[mK]").unwrap();
+            re.replace_all(text, "").to_string()
+        } else {
+            text.to_string()
+        };
+
+        let clean_lower = clean_text.to_lowercase();
+        // 優化提示字元偵測：不分大小寫
+        let is_prompt = clean_lower.contains('(') && clean_lower.contains('/') && 
+                        (clean_lower.contains('h') || clean_lower.contains('m') || clean_lower.contains('v'));
+        
+        let trim_text = text.trim().to_lowercase();
+        // 擴展方向指令偵測
+        let is_dir = ["n", "s", "e", "w", "u", "d", "nw", "ne", "sw", "se", 
+                      "north", "south", "east", "west", "up", "down", 
+                      "northwest", "northeast", "southwest", "southeast"].contains(&trim_text.as_str());
+        
+        // 狀態機：進入房間描述模式
+        if is_echo && (trim_text == "l" || trim_text == "look" || is_dir) {
+            self.in_room_description = true;
+        }
+
+        // 狀態機：離開房間描述模式 (遇到 prompt)
+        if is_prompt {
+            self.in_room_description = false;
+        }
+
+        let is_exit_line = clean_text.contains("[出口:");
+        let has_mob_brackets = clean_text.contains('(') && clean_text.contains(')');
+        // 只要包含斜線且周圍有文字，很可能是 "中文名稱/English ID" 的格式
+        let is_slash_line = clean_text.contains('/') && clean_text.len() > 5;
+
+        // 如果符合任一條件，提取單字
+        if has_mob_brackets || self.in_room_description || is_exit_line || is_slash_line {
+            let now = Instant::now();
+            
+            // 1. 提取括號內的內容 (優先級高)
+            let mob_re = regex::Regex::new(r"\(([^)]+)\)").unwrap();
+            for cap in mob_re.captures_iter(&clean_text) {
+                let content = &cap[1];
+                for word in content.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-') {
+                    if word.len() >= 2 && word.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+                        self.screen_words.insert(word.to_string(), WordMetadata {
+                            last_seen: now,
+                            is_mob: true,
+                        });
+                    }
+                }
+            }
+
+            // 2. 提取斜線後的內容 (針對 "中文/ID" 格式)
+            if let Some(slash_idx) = clean_text.rfind('/') {
+                let after_slash = &clean_text[slash_idx+1..];
+                for word in after_slash.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-') {
+                    if word.len() >= 2 && word.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+                        self.screen_words.insert(word.to_string(), WordMetadata {
+                            last_seen: now,
+                            is_mob: true, // 假設斜線後通常是 ID
+                        });
+                    }
+                }
+            }
+
+            // 3. 提取整行所有英文單字 (通用兜底)
+            for word in clean_text.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-') {
+                if word.len() >= 2 && word.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+                    let entry = self.screen_words.entry(word.to_string()).or_insert(WordMetadata {
+                        last_seen: now,
+                        is_mob: false,
+                    });
+                    entry.last_seen = now;
+                }
+            }
+        }
+
+        // 限制字典大小
+        if self.screen_words.len() > 1000 {
+            let mut items: Vec<_> = self.screen_words.iter().map(|(k, m)| (k.clone(), m.last_seen)).collect();
+            items.sort_by_key(|(_, t)| *t);
+            // 移除最舊的 200 個
+            for (k, _) in items.iter().take(200) {
+                self.screen_words.remove(k);
+            }
+        }
+
+        // 日誌記錄
+        let _ = self.logger.log(text);
+
+        self.last_active = Instant::now();
+
+        true
+    }
+
+
     /// 取得分頁標題
     pub fn tab_title(&self) -> String {
         let status_icon = match &self.status {
@@ -316,11 +601,13 @@ impl Session {
     }
 
     /// 是否已連線
+    #[allow(dead_code)]
     pub fn is_connected(&self) -> bool {
         matches!(self.status, ConnectionStatus::Connected(_))
     }
 
     /// 是否正在連線
+    #[allow(dead_code)]
     pub fn is_connecting(&self) -> bool {
         matches!(self.status, ConnectionStatus::Connecting | ConnectionStatus::Reconnecting)
     }
@@ -347,6 +634,7 @@ pub struct SessionManager {
     global_triggers: Vec<TriggerConfig>,
 }
 
+#[allow(dead_code)]
 impl SessionManager {
     /// 建立新的 SessionManager
     pub fn new() -> Self {
@@ -404,6 +692,11 @@ impl SessionManager {
     /// 取得目前選中的 Session（可變）
     pub fn active_session_mut(&mut self) -> Option<&mut Session> {
         self.sessions.get_mut(self.active_index)
+    }
+
+    /// 取得目前選中的 Session ID
+    pub fn active_id(&self) -> Option<SessionId> {
+        self.active_session().map(|s| s.id)
     }
 
     /// 依 ID 取得 Session
