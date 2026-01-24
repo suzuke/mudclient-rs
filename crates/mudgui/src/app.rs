@@ -120,12 +120,70 @@ impl MudApp {
     fn save_config(&mut self) {
         // 如果有活躍 Session，將其目前狀態同步回 Profile
         if let Some(session) = self.session_manager.active_session() {
-            // 這裡可以透過 ProfileManager 進行更新
-            // 目前 ProfileManager 儲存的是靜態資料，實作上應將 Session 內容導出回 Profile
-            tracing::info!("儲存活躍 Session 配置: {}", session.profile_name);
+            let profile_name = session.profile_name.clone();
+            
+            // 1. 同步 Alias
+            let mut new_aliases = Vec::new();
+            for name in &session.alias_manager.sorted_aliases {
+                if let Some(a) = session.alias_manager.get(name) {
+                    new_aliases.push(crate::config::AliasConfig {
+                        name: a.name.clone(),
+                        pattern: a.pattern.clone(),
+                        replacement: a.replacement.clone(),
+                        category: a.category.clone(),
+                        enabled: a.enabled,
+                    });
+                }
+            }
+
+            // 2. 同步 Trigger
+            let mut new_triggers = Vec::new();
+            for name in &session.trigger_manager.order {
+                 if let Some(t) = session.trigger_manager.get(name) {
+                     let (action_str, is_script) = if let Some(first_action) = t.actions.first() {
+                         match first_action {
+                             TriggerAction::SendCommand(s) => (s.clone(), false),
+                             TriggerAction::ExecuteScript(s) => (s.clone(), true),
+                             _ => (String::new(), false),
+                         }
+                     } else {
+                         (String::new(), false)
+                     };
+                     
+                     let pat_str = match &t.pattern {
+                         TriggerPattern::Contains(s) | TriggerPattern::StartsWith(s) | TriggerPattern::EndsWith(s) | TriggerPattern::Regex(s) => s.clone(),
+                     };
+                     
+                     new_triggers.push(crate::config::TriggerConfig {
+                         name: t.name.clone(),
+                         pattern: pat_str,
+                         action: action_str,
+                         category: t.category.clone(),
+                         is_script,
+                         enabled: t.enabled,
+                     });
+                 }
+            }
+
+            // 3. 更新 ProfileManager 並儲存
+             if let Some(profile) = self.profile_manager.get_mut(&profile_name) {
+                 profile.aliases = new_aliases;
+                 profile.triggers = new_triggers;
+                 
+                 // 儲存到磁碟
+                 let p = profile.clone();
+                 if let Err(e) = self.profile_manager.save(p) {
+                     tracing::error!("Failed to save profile {}: {}", profile_name, e);
+                 } else {
+                     tracing::info!("Saved profile: {}", profile_name);
+                 }
+             }
         }
         
-        let _ = self.global_config.save();
+        // 儲存全域設定
+        if let Err(e) = self.global_config.save() {
+            tracing::error!("Failed to save global config: {}", e);
+        }
     }
 
     /// 設定字型（支援中文）
@@ -601,7 +659,7 @@ impl MudApp {
         trigger_edit_pattern: &mut String,
         trigger_edit_action: &mut String,
         trigger_edit_category: &mut String,
-        trigger_edit_is_script: bool,
+        trigger_edit_is_script: &mut bool,
         show_trigger_window: &mut bool,
         needs_save_flag: &mut bool,
     ) {
@@ -619,18 +677,40 @@ impl MudApp {
                     ui.text_edit_singleline(trigger_edit_pattern);
                 });
 
+                ui.add_space(5.0);
+                
+                // 1. Lua 選項上移
                 ui.horizontal(|ui| {
-                    ui.label("執行命令:");
-                    ui.text_edit_singleline(trigger_edit_action);
+                    ui.checkbox(trigger_edit_is_script, "使用 Lua 腳本模式");
+                    ui.label(
+                        egui::RichText::new("(勾選後可撰寫多行程式碼)")
+                            .size(11.0)
+                            .color(egui::Color32::GRAY)
+                    );
+                });
+
+                // 2. 執行命令 (根據模式切換單行/多行)
+                ui.horizontal(|ui| {
+                    ui.label("執行內容:");
+                    if *trigger_edit_is_script {
+                        ui.text_edit_multiline(trigger_edit_action);
+                    } else {
+                        ui.text_edit_singleline(trigger_edit_action);
+                    }
                 });
 
                 ui.horizontal(|ui| {
-                    ui.label("分類:");
+                    ui.label("分類標籤:");
                     ui.text_edit_singleline(trigger_edit_category);
                 });
 
                 ui.add_space(10.0);
-                ui.label("提示: 支援正則表達式偵測");
+                // 3. 優化提示文字
+                ui.label(
+                    egui::RichText::new("💡 小撇步：匹配文字支援 Regular Expression (正則表達式)，讓您的觸發器更聰明！")
+                        .size(11.0)
+                        .color(egui::Color32::from_rgb(180, 180, 180))
+                );
 
                 ui.add_space(20.0);
 
@@ -661,7 +741,7 @@ impl MudApp {
                                     pattern,
                                 );
                                 if !trigger_edit_action.is_empty() {
-                                    if trigger_edit_is_script {
+                                    if *trigger_edit_is_script {
                                         trigger = trigger.add_action(TriggerAction::ExecuteScript(trigger_edit_action.clone()));
                                     } else {
                                         trigger = trigger.add_action(TriggerAction::SendCommand(trigger_edit_action.clone()));
@@ -1326,7 +1406,7 @@ impl eframe::App for MudApp {
                 &mut self.trigger_edit_pattern,
                 &mut self.trigger_edit_action,
                 &mut self.trigger_edit_category,
-                self.trigger_edit_is_script,
+                &mut self.trigger_edit_is_script,
                 &mut self.show_trigger_window,
                 &mut needs_save,
             );

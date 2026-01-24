@@ -464,9 +464,8 @@ impl Session {
 
             // 執行收集到的指令
             for cmd in pending_commands {
-                if let Some(tx) = &self.command_tx {
-                    let _ = tx.blocking_send(Command::Send(cmd));
-                }
+                // 使用 handle_user_input 處理觸發器指令，以支援分號拆分與別名
+                self.handle_user_input(&cmd);
             }
 
             // 執行收集到的腳本
@@ -590,35 +589,83 @@ impl Session {
 
     /// 處理使用者輸入的指令 (包含特殊指令如 #loop, #delay, /lua)
     pub fn handle_user_input(&mut self, input: &str) {
+        self.handle_user_input_with_depth(input, 0);
+    }
+
+    fn handle_user_input_with_depth(&mut self, input: &str, depth: usize) {
         let input = input.trim();
         if input.is_empty() {
             return;
         }
+        
+        // 防止無限遞迴
+        if depth > 50 {
+            self.system_message(&format!("Error: Command recursion limit reached for '{}'", input));
+            return;
+        }
 
-        // 1. Alias 處理 (遞迴與分號支援)
-        let aliased = self.alias_manager.process(input);
-        if aliased != input {
-            // 如果 Alias 展開後包含分號，拆分並遞迴處理
-            if aliased.contains(';') {
-                for part in aliased.split(';') {
-                    self.handle_user_input(part);
-                }
-                return;
+        // 1. 分號拆分 (Semicolon Splitting)
+        if input.contains(';') {
+            for part in input.split(';') {
+                self.handle_user_input_with_depth(part, depth + 1);
             }
-            // 單一指令遞迴 (支援 Alias Chaining)
-            // 防止無限迴圈：若展開後與原字串相同則繼續 (process 已保證這點)
-            // 但若是循環 alias (a->b, b->a)，這裡會 stack overflow。
-            // 實務上通常由使用者負責避免，或加入深度限制。在此暫不加入深度限制。
-            self.handle_user_input(&aliased);
             return;
         }
 
         // 2. 變數展開 (Variable Expansion)
-        // 變數展開應該在 Alias 之後，以便 Alias 內容中的變數能被展開
-        // 例如 alias k 'kill $target' -> k -> kill $target -> kill rat
+        // 移至最前，確保 Trigger 和 Alias 都能看到展開後的變數
         let input = self.script_engine.expand_variables(input);
 
-        // 3. 處理特殊指令 (Client-Side Commands)
+        // 3. 觸發器處理 (Local Echo Triggers)
+        // 移至 Alias 之前，以支援 "Input Trigger" (針對玩家輸入的原始指令觸發)
+        // 若 Alias 發生展開，遞迴呼叫會再次觸發針對展開後指令的 Trigger，達成多層觸發效果。
+        tracing::info!("Checking input triggers for: '{}'", input);
+        let matches = self.trigger_manager.process(&input);
+        
+        let mut pending_commands = Vec::new();
+        let mut pending_scripts = Vec::new();
+
+        for (trigger, m) in matches {
+            tracing::info!("Match trigger: {}", trigger.name);
+            for action in &trigger.actions {
+                match action {
+                    mudcore::TriggerAction::SendCommand(cmd) => {
+                        let mut expanded = cmd.clone();
+                        for (i, cap) in m.captures.iter().enumerate() {
+                            expanded = expanded.replace(&format!("${}", i + 1), cap);
+                        }
+                        pending_commands.push(expanded);
+                    }
+                    mudcore::TriggerAction::ExecuteScript(code) => {
+                        pending_scripts.push((code.clone(), m.captures.clone()));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        
+        for (script, captures) in pending_scripts {
+            match self.script_engine.execute_inline(&script, "Trigger", &captures, false) {
+                Ok(ctx) => self.apply_script_context(ctx),
+                Err(e) => {
+                    tracing::error!("Trigger script error: {}", e);
+                    self.system_message(&format!("Trigger Script Error: {}", e));
+                }
+            }
+        }
+        
+        for cmd in pending_commands {
+            self.handle_user_input_with_depth(&cmd, depth + 1);
+        }
+
+        // 4. Alias 處理
+        let aliased = self.alias_manager.process(&input);
+        if aliased != input {
+            self.handle_user_input_with_depth(&aliased, depth + 1);
+            return;
+        }
+
+        // 5. 處理特殊指令 (Client-Side Commands)
         if input.starts_with("#") || input.starts_with("/") {
             let parts: Vec<&str> = input.split_whitespace().collect();
             let cmd = parts[0];
@@ -629,8 +676,7 @@ impl Session {
                         if let Ok(count) = parts[1].parse::<usize>() {
                             let sub_cmd = parts[2..].join(" ");
                             for _ in 0..count {
-                                // 遞迴呼叫以支援巢狀或後續處理
-                                self.handle_user_input(&sub_cmd);
+                                self.handle_user_input_with_depth(&sub_cmd, depth + 1);
                             }
                             return;
                         }
@@ -698,13 +744,11 @@ impl Session {
                 }
                 _ => {
                     // 如果不是已知指令，則視為普通內容發送
-                    // 但通常以 # 開頭的可能是誤打，這裡選擇直接發送
                 }
             }
         }
 
-        // 2. 標準指令處理 (本地回顯 + 發送)
-        // input 已經在前面擴展過了
+        // 6. 標準指令處理 (本地回顯 + 發送)
         
         // 恢復回顯：
         self.window_manager.route_message("main", mudcore::window::WindowMessage {
