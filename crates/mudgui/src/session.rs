@@ -595,7 +595,30 @@ impl Session {
             return;
         }
 
-        // 1. 處理特殊指令
+        // 1. Alias 處理 (遞迴與分號支援)
+        let aliased = self.alias_manager.process(input);
+        if aliased != input {
+            // 如果 Alias 展開後包含分號，拆分並遞迴處理
+            if aliased.contains(';') {
+                for part in aliased.split(';') {
+                    self.handle_user_input(part);
+                }
+                return;
+            }
+            // 單一指令遞迴 (支援 Alias Chaining)
+            // 防止無限迴圈：若展開後與原字串相同則繼續 (process 已保證這點)
+            // 但若是循環 alias (a->b, b->a)，這裡會 stack overflow。
+            // 實務上通常由使用者負責避免，或加入深度限制。在此暫不加入深度限制。
+            self.handle_user_input(&aliased);
+            return;
+        }
+
+        // 2. 變數展開 (Variable Expansion)
+        // 變數展開應該在 Alias 之後，以便 Alias 內容中的變數能被展開
+        // 例如 alias k 'kill $target' -> k -> kill $target -> kill rat
+        let input = self.script_engine.expand_variables(input);
+
+        // 3. 處理特殊指令 (Client-Side Commands)
         if input.starts_with("#") || input.starts_with("/") {
             let parts: Vec<&str> = input.split_whitespace().collect();
             let cmd = parts[0];
@@ -681,16 +704,16 @@ impl Session {
         }
 
         // 2. 標準指令處理 (本地回顯 + 發送)
-        let expanded = self.script_engine.expand_variables(input);
-
+        // input 已經在前面擴展過了
+        
         // 恢復回顯：
         self.window_manager.route_message("main", mudcore::window::WindowMessage {
-            content: format!("{}{}\n", if expanded.is_empty() { "" } else { "\n" }, expanded), 
+            content: format!("{}{}\n", if input.is_empty() { "" } else { "\n" }, input), 
             preserve_ansi: true,
         });
 
         if let Some(tx) = &self.command_tx {
-            let _ = tx.blocking_send(crate::session::Command::Send(expanded));
+            let _ = tx.blocking_send(crate::session::Command::Send(input.to_string()));
         }
     }
 
