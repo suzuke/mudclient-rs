@@ -367,7 +367,7 @@ impl MudApp {
                                                             break;
                                                         }
                                                         Err(e) => {
-                                                            let _ = msg_tx.send(format!(">>> 錯誤: {}\n", e)).await;
+                                                            let _ = msg_tx.send(format!(">>> 連線已關閉 (錯誤: {})\n", e)).await;
                                                             break;
                                                         }
                                                     }
@@ -391,7 +391,7 @@ impl MudApp {
                                         }
                                     }
                                     Err(e) => {
-                                        let _ = msg_tx.send(format!(">>> 連線失敗: {}\n", e)).await;
+                                        let _ = msg_tx.send(format!(">>> 連線已關閉 (連線失敗: {})\n", e)).await;
                                     }
                                 }
                             }
