@@ -881,7 +881,17 @@ impl MudApp {
     fn tab_complete_for_session(session: &mut crate::session::Session) {
         if session.input.is_empty() {
             session.tab_completion_prefix = None;
+            session.last_completed_input = None;
             return;
+        }
+
+        // 檢查是否發生了手動修改：
+        // 如果當前輸入與上次自動補齊後的結果不同，則視為使用者手動修改了內容
+        if let Some(ref last_completed) = session.last_completed_input {
+            if &session.input != last_completed {
+                session.tab_completion_prefix = None;
+                session.tab_completion_index = 0;
+            }
         }
         
         if let Some(ref prefix) = session.tab_completion_prefix {
@@ -940,8 +950,11 @@ impl MudApp {
         if !matches.is_empty() {
             let index = session.tab_completion_index % matches.len();
             session.input = matches[index].clone();
+            session.last_completed_input = Some(session.input.clone());
             session.tab_completion_index += 1;
             session.tab_completed = true;
+        } else {
+            session.last_completed_input = None;
         }
     }
 

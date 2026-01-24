@@ -161,6 +161,9 @@ pub struct Session {
     
     /// 是否發生了 Tab 補齊
     pub tab_completed: bool,
+
+    /// Tab 補齊：上次補齊後的內容 (用於偵測手動修改)
+    pub last_completed_input: Option<String>,
     
     /// 畫面單字字典（用於智慧補齊）
     pub screen_words: HashMap<String, WordMetadata>,
@@ -258,6 +261,7 @@ impl Session {
             tab_completion_prefix: None,
             tab_completion_index: 0,
             tab_completed: false,
+            last_completed_input: None,
             screen_words: HashMap::new(),
             in_room_description: false,
             auto_scroll: true,
@@ -594,9 +598,6 @@ impl Session {
 
     fn handle_user_input_with_depth(&mut self, input: &str, depth: usize) {
         let input = input.trim();
-        if input.is_empty() {
-            return;
-        }
         
         // 防止無限遞迴
         if depth > 50 {
