@@ -56,12 +56,23 @@ impl Alias {
                 if let Some(&next) = chars.peek() {
                     if next.is_ascii_digit() {
                         // $1, $2 等 -> 捕獲組
-                        regex_pattern.push_str(r"(.+?)");
+                        // 如果前面有空格，設為選用參數 (包含空格)
+                        if regex_pattern.ends_with(' ') {
+                            regex_pattern.pop();
+                            regex_pattern.push_str(r"(?: (.*?))?");
+                        } else {
+                            regex_pattern.push_str(r"(.*?)");
+                        }
                         chars.next(); // 消耗數字
                         continue;
                     } else if next == '*' {
                         // $* -> 匹配所有剩餘參數
-                        regex_pattern.push_str(r"(.*)");
+                        if regex_pattern.ends_with(' ') {
+                            regex_pattern.pop();
+                            regex_pattern.push_str(r"(?: (.*))?");
+                        } else {
+                            regex_pattern.push_str(r"(.*)");
+                        }
                         chars.next();
                         continue;
                     }
@@ -99,11 +110,12 @@ impl Alias {
         let mut result = self.replacement.clone();
         
         // 替換 $1, $2 等佔位符
+        // 替換 $1, $2 等佔位符
         for i in 1..captures.len() {
-            if let Some(m) = captures.get(i) {
-                let placeholder = format!("${}", i);
-                result = result.replace(&placeholder, m.as_str());
-            }
+            let placeholder = format!("${}", i);
+            // 如果捕獲組為 None (選用參數未匹配)，則替換為空字串
+            let val = captures.get(i).map_or("", |m| m.as_str());
+            result = result.replace(&placeholder, val);
         }
         
         // 替換 $* （所有參數）
@@ -245,5 +257,17 @@ mod tests {
 
         assert_eq!(manager.process("gonorth"), "walk north;enter");
         assert_eq!(manager.process("go south"), "walk south");
+    }
+
+    #[test]
+    fn test_alias_optional_parameter() {
+        // 測試 cfr $1 情況
+        let alias = Alias::new("cfr", "cfr $1", "c 'full ref' $1");
+        
+        // 帶參數
+        assert_eq!(alias.try_expand("cfr target"), Some("c 'full ref' target".to_string()));
+        
+        // 不帶參數 (應該也要能匹配，且 $1 展開為空字串)
+        assert_eq!(alias.try_expand("cfr"), Some("c 'full ref' ".to_string()));
     }
 }
