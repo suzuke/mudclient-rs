@@ -218,6 +218,7 @@ impl Session {
             let mut alias = Alias::new(&alias_cfg.name, &alias_cfg.pattern, &alias_cfg.replacement);
             alias.category = alias_cfg.category.clone();
             alias.enabled = alias_cfg.enabled;
+            alias.is_script = alias_cfg.is_script;
             alias_manager.add(alias);
         }
 
@@ -323,6 +324,7 @@ impl Session {
             let mut alias = Alias::new(&alias_cfg.name, &alias_cfg.pattern, &alias_cfg.replacement);
             alias.category = alias_cfg.category.clone();
             alias.enabled = alias_cfg.enabled;
+            alias.is_script = alias_cfg.is_script;
             self.alias_manager.add(alias);
         }
 
@@ -662,10 +664,23 @@ impl Session {
         }
 
         // 4. Alias 處理
-        let aliased = self.alias_manager.process(&input);
-        if aliased != input {
-            self.handle_user_input_with_depth(&aliased, depth + 1);
-            return;
+        use mudcore::alias::AliasMatchResult;
+        match self.alias_manager.process_match(&input) {
+            AliasMatchResult::Replacement(expanded) => {
+                self.handle_user_input_with_depth(&expanded, depth + 1);
+                return;
+            }
+            AliasMatchResult::Script(code) => {
+                match self.script_engine.execute_inline(&code, "Alias", &[], false) {
+                    Ok(ctx) => self.apply_script_context(ctx),
+                    Err(e) => {
+                        tracing::error!("Alias script error: {}", e);
+                        self.system_message(&format!("Alias Script Error: {}", e));
+                    }
+                }
+                return;
+            }
+            AliasMatchResult::None => {}
         }
 
         // 5. 處理特殊指令 (Client-Side Commands)

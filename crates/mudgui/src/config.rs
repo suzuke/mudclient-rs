@@ -22,6 +22,8 @@ pub struct AliasConfig {
     pub replacement: String,
     #[serde(default)]
     pub category: Option<String>,
+    #[serde(default)]
+    pub is_script: bool,
     #[serde(default = "default_true")]
     pub enabled: bool,
 }

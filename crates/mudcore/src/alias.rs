@@ -18,9 +18,22 @@ pub struct Alias {
     pub replacement: String,
     /// 是否啟用
     pub enabled: bool,
+    /// 是否為 Lua 腳本
+    pub is_script: bool,
     /// 編譯後的正則表達式（內部使用）
     #[allow(dead_code)]
     compiled_regex: Option<Regex>,
+}
+
+/// 別名匹配結果
+#[derive(Debug, Clone, PartialEq)]
+pub enum AliasMatchResult {
+    /// 一般字串替換
+    Replacement(String),
+    /// Lua 腳本執行
+    Script(String),
+    /// 未匹配
+    None,
 }
 
 impl Alias {
@@ -35,8 +48,15 @@ impl Alias {
             pattern,
             replacement: replacement.into(),
             enabled: true,
+            is_script: false,
             compiled_regex: regex,
         }
+    }
+
+    /// 設定為腳本模式
+    pub fn as_script(mut self, is_script: bool) -> Self {
+        self.is_script = is_script;
+        self
     }
 
     /// 設定分類
@@ -197,6 +217,22 @@ impl AliasManager {
             len_b.cmp(&len_a) // 降序
         });
         self.sorted_aliases = list;
+    }
+
+    /// 處理輸入並回傳詳細匹配結果
+    pub fn process_match(&self, input: &str) -> AliasMatchResult {
+        for name in &self.sorted_aliases {
+            if let Some(alias) = self.aliases.get(name) {
+                if let Some(expanded) = alias.try_expand(input) {
+                    if alias.is_script {
+                        return AliasMatchResult::Script(expanded);
+                    } else {
+                        return AliasMatchResult::Replacement(expanded);
+                    }
+                }
+            }
+        }
+        AliasMatchResult::None
     }
 }
 

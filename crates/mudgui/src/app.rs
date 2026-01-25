@@ -46,6 +46,7 @@ pub struct MudApp {
     alias_edit_pattern: String,
     alias_edit_replacement: String,
     alias_edit_category: String,
+    alias_edit_is_script: bool,
 
     // === 觸發器編輯狀態 ===
     show_trigger_window: bool,
@@ -105,6 +106,7 @@ impl MudApp {
             alias_edit_pattern: String::new(),
             alias_edit_replacement: String::new(),
             alias_edit_category: String::new(),
+            alias_edit_is_script: false,
             show_trigger_window: false,
             editing_trigger_name: None,
             trigger_edit_name: String::new(),
@@ -131,6 +133,7 @@ impl MudApp {
                         pattern: a.pattern.clone(),
                         replacement: a.replacement.clone(),
                         category: a.category.clone(),
+                        is_script: a.is_script,
                         enabled: a.enabled,
                     });
                 }
@@ -590,6 +593,7 @@ impl MudApp {
         alias_edit_pattern: &mut String,
         alias_edit_replacement: &mut String,
         alias_edit_category: &mut String,
+        alias_edit_is_script: &mut bool,
         show_alias_window: &mut bool,
         needs_save_flag: &mut bool,
     ) {
@@ -602,9 +606,24 @@ impl MudApp {
                     ui.text_edit_singleline(alias_edit_pattern);
                 });
 
+
+
                 ui.horizontal(|ui| {
-                    ui.label("替換為:");
-                    ui.text_edit_singleline(alias_edit_replacement);
+                    ui.checkbox(alias_edit_is_script, "使用 Lua 腳本");
+                    ui.label(
+                        egui::RichText::new("(勾選後可撰寫多行程式碼)")
+                            .size(11.0)
+                            .color(egui::Color32::GRAY)
+                    );
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label(if *alias_edit_is_script { "Lua 腳本:" } else { "替換為:" });
+                    if *alias_edit_is_script {
+                        ui.text_edit_multiline(alias_edit_replacement);
+                    } else {
+                        ui.text_edit_singleline(alias_edit_replacement);
+                    }
                 });
 
                 ui.horizontal(|ui| {
@@ -662,6 +681,7 @@ impl MudApp {
                                     alias_edit_pattern.clone(),
                                     alias_edit_replacement.clone(),
                                 );
+                                alias.is_script = *alias_edit_is_script;
                                 if !alias_edit_category.is_empty() {
                                     alias.category = Some(alias_edit_category.clone());
                                 }
@@ -1506,6 +1526,7 @@ impl eframe::App for MudApp {
                 &mut self.alias_edit_pattern,
                 &mut self.alias_edit_replacement,
                 &mut self.alias_edit_category,
+                &mut self.alias_edit_is_script,
                 &mut self.show_alias_window,
                 &mut needs_save,
             );
