@@ -789,6 +789,8 @@ impl MudApp {
                                     || trigger_edit_pattern.contains("[")
                                     || trigger_edit_pattern.contains("$")
                                     || trigger_edit_pattern.contains("^")
+                                    || trigger_edit_pattern.contains("|")
+                                    || trigger_edit_pattern.contains("?")
                                 {
                                     TriggerPattern::Regex(trigger_edit_pattern.clone())
                                 } else {
@@ -1467,9 +1469,29 @@ impl eframe::App for MudApp {
             self.connect_to_profile(&profile_name, ctx.clone());
         }
 
-        // 處理計時器
+        // 處理計時器與自動喚醒
         if let Some(session) = self.session_manager.active_session_mut() {
             session.check_timers();
+            
+            // 計算最近的計時器到期時間以喚醒 UI
+            if !session.active_timers.is_empty() {
+                let now = Instant::now();
+                let mut next_wake = None;
+                
+                for timer in &session.active_timers {
+                    let remaining = timer.expires_at.saturating_duration_since(now);
+                    match next_wake {
+                        None => next_wake = Some(remaining),
+                        Some(d) if remaining < d => next_wake = Some(remaining),
+                        _ => {}
+                    }
+                }
+                
+                if let Some(duration) = next_wake {
+                    // 加上一點緩衝確保確實過期
+                    ctx.request_repaint_after(duration + std::time::Duration::from_millis(10));
+                }
+            }
         }
 
         // 繪製其他視窗

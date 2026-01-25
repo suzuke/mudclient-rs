@@ -285,6 +285,8 @@ impl Session {
             || clean_pattern.contains("[")
             || clean_pattern.contains("$")
             || clean_pattern.contains("^")
+            || clean_pattern.contains("|")
+            || clean_pattern.contains("?")
         {
             TriggerPattern::Regex(clean_pattern)
         } else {
