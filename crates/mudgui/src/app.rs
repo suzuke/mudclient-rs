@@ -1582,13 +1582,27 @@ impl eframe::App for MudApp {
                 ui.separator();
                 // 分頁列
                 if self.session_manager.len() > 0 {
+                    let mut close_id = None;
                     for i in 0..self.session_manager.len() {
                         let is_active = i == self.session_manager.active_index();
                         if let Some(s) = self.session_manager.sessions().get(i) {
-                            if ui.selectable_label(is_active, s.tab_title()).clicked() {
-                                pending_action = Some(PendingAction::SwitchTab(i));
-                            }
+                            // 使用 group 讓分頁標籤與關閉按鈕視覺上結合
+                            ui.group(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 4.0;
+                                    if ui.selectable_label(is_active, s.tab_title()).clicked() {
+                                        pending_action = Some(PendingAction::SwitchTab(i));
+                                    }
+                                    // 關閉按鈕 (x)
+                                    if ui.add(egui::Button::new("x").small().frame(false)).clicked() {
+                                        close_id = Some(s.id);
+                                    }
+                                });
+                            });
                         }
+                    }
+                    if let Some(id) = close_id {
+                        pending_action = Some(PendingAction::CloseSession(id));
                     }
                 }
                 
@@ -1688,6 +1702,9 @@ impl eframe::App for MudApp {
                         }
                     }
                 }
+                PendingAction::CloseSession(id) => {
+                    self.session_manager.close_session(id);
+                }
             }
         }
 
@@ -1717,6 +1734,7 @@ enum PendingAction {
     ToggleSettings,
     ToggleProfile,
     ClearActiveWindow,
+    CloseSession(crate::session::SessionId),
 }
 
 
