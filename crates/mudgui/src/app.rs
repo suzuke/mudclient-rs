@@ -610,6 +610,35 @@ impl MudApp {
                 ui.horizontal(|ui| {
                     ui.label("分類:");
                     ui.text_edit_singleline(alias_edit_category);
+
+                    // 分類選擇選單
+                    if let Some(session) = session_opt.as_ref() {
+                        ui.menu_button("▼", |ui| {
+                            ui.set_max_width(200.0);
+                            
+                            // 收集並排序現有的所有分類
+                            let mut categories: Vec<String> = Vec::new();
+                            categories.extend(session.trigger_manager.list().iter().filter_map(|t| t.category.clone()));
+                            categories.extend(session.alias_manager.list().iter().filter_map(|a| a.category.clone()));
+                            
+                            categories.retain(|c| !c.is_empty());
+                            categories.sort();
+                            categories.dedup();
+
+                            if categories.is_empty() {
+                                ui.label("尚無任何分類");
+                            } else {
+                                ui.label("選擇現有分類:");
+                                ui.separator();
+                                for cat in categories {
+                                    if ui.button(&cat).clicked() {
+                                        *alias_edit_category = cat;
+                                        ui.close_menu();
+                                    }
+                                }
+                            }
+                        });
+                    }
                 });
 
                 ui.add_space(10.0);
@@ -702,6 +731,35 @@ impl MudApp {
                 ui.horizontal(|ui| {
                     ui.label("分類標籤:");
                     ui.text_edit_singleline(trigger_edit_category);
+
+                    // 分類選擇選單
+                    if let Some(session) = session_opt.as_ref() {
+                        ui.menu_button("▼", |ui| {
+                            ui.set_max_width(200.0);
+                            
+                            // 收集並排序現有的所有分類
+                            let mut categories: Vec<String> = Vec::new();
+                            categories.extend(session.trigger_manager.list().iter().filter_map(|t| t.category.clone()));
+                            categories.extend(session.alias_manager.list().iter().filter_map(|a| a.category.clone()));
+                            
+                            categories.retain(|c| !c.is_empty());
+                            categories.sort();
+                            categories.dedup();
+
+                            if categories.is_empty() {
+                                ui.label("尚無任何分類");
+                            } else {
+                                ui.label("選擇現有分類:");
+                                ui.separator();
+                                for cat in categories {
+                                    if ui.button(&cat).clicked() {
+                                        *trigger_edit_category = cat;
+                                        ui.close_menu();
+                                    }
+                                }
+                            }
+                        });
+                    }
                 });
 
                 ui.add_space(10.0);
@@ -915,6 +973,22 @@ impl MudApp {
             (original_prefix.clone(), None)
         };
 
+        // 支援 "2.ne" -> "2.necklace" 的數字索引補齊
+        let (search_key, dot_prefix) = if let Some((idx_str, suffix)) = prefix_to_match.split_once('.') {
+            if !idx_str.is_empty() && idx_str.chars().all(|c| c.is_ascii_digit()) {
+                 (suffix.to_string(), Some(format!("{}.", idx_str)))
+            } else {
+                 (prefix_to_match.clone(), None)
+            }
+        } else {
+             (prefix_to_match.clone(), None)
+        };
+
+        if search_key.is_empty() && dot_prefix.is_none() {
+            // 如果只有空白前綴且無數字索引，避免列出所有單字
+            return;
+        }
+
         let mut matches: Vec<String> = Vec::new();
         
         // 1. 補齊歷史指令
@@ -925,7 +999,7 @@ impl MudApp {
         }
         
         // 2. 補齊畫面單字
-        let clean_prefix = prefix_to_match.to_lowercase();
+        let clean_prefix = search_key.to_lowercase();
         let mut word_matches: Vec<_> = session.screen_words.iter()
             .filter(|(w, _)| w.to_lowercase().starts_with(&clean_prefix))
             .collect();
@@ -937,11 +1011,15 @@ impl MudApp {
         });
         
         for (word, _) in word_matches {
-            let full_match = if let Some(ref base) = base_input {
-                format!("{}{}", base, word)
-            } else {
-                word.clone()
-            };
+            let mut full_match = String::new();
+            if let Some(ref b) = base_input {
+                full_match.push_str(b);
+            }
+            if let Some(ref d) = dot_prefix {
+                full_match.push_str(d);
+            }
+            full_match.push_str(word);
+            
             if !matches.contains(&full_match) {
                 matches.push(full_match);
             }
