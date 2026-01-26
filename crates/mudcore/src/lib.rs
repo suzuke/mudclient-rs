@@ -26,7 +26,7 @@ pub use alias::{Alias, AliasManager};
 pub use buffer::MessageBuffer;
 pub use encoding::{decode_big5, encode_big5};
 pub use logger::{LogFormat, Logger};
-pub use paths::{Path, PathManager};
+pub use paths::{Path, PathManager, PathRecorder, LoopStatus};
 pub use speedwalk::parse_speedwalk;
 pub use script::{MudContext, ScriptEngine};
 pub use telnet::TelnetClient;

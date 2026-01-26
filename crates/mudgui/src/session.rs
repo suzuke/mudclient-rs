@@ -9,12 +9,13 @@
 
 use std::collections::HashMap;
 use std::time::Instant;
-
 use mudcore::{
     Alias, AliasManager, Logger, ScriptEngine, Trigger, TriggerAction,
     TriggerManager, TriggerPattern, WindowManager, WindowMessage,
-    MudContext, Path, PathManager,
+    MudContext, Path, PathManager, PathRecorder, LoopStatus,
 };
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use crate::config::{AliasConfig, Profile, TriggerConfig};
@@ -74,7 +75,7 @@ impl Default for ConnectionStatus {
 /// 發送給網路執行緒的命令
 #[derive(Debug)]
 pub enum Command {
-    Connect(String, u16),
+    Connect(String, u16, Option<String>, Option<String>), // Host, Port, Username, Password
     Send(String),
     Disconnect,
 }
@@ -115,6 +116,13 @@ pub struct Session {
     /// 連接埠
     pub port: String,
     
+    // === 帳號資訊 ===
+    /// 登入帳號
+    pub username: Option<String>,
+    /// 登入密碼
+    pub password: Option<String>,
+
+    
     /// 連線狀態
     pub status: ConnectionStatus,
     
@@ -136,6 +144,9 @@ pub struct Session {
     
     /// 路徑管理器
     pub path_manager: PathManager,
+    
+    /// 路徑記錄器
+    pub path_recorder: PathRecorder,
     
     /// 腳本引擎
     pub script_engine: ScriptEngine,
@@ -199,6 +210,16 @@ pub struct Session {
     /// 當 Session 被拆分為獨立視窗時的視窗 ID
     #[allow(dead_code)]
     pub detached_window_id: Option<u64>,
+
+    // === 防呆機制 ===
+    /// 上一次發送的指令
+    pub last_sent_command: Option<String>,
+    
+    /// 重複指令計數
+    pub repeat_command_count: usize,
+    
+    /// 用於識別房間特徵的行緩衝區
+    pub line_buffer: std::collections::VecDeque<String>,
 }
 
 /// 畫面單字的中繼資料
@@ -216,6 +237,9 @@ impl Session {
         let mut alias_manager = AliasManager::new();
         let mut trigger_manager = TriggerManager::new();
         let mut path_manager = PathManager::new();
+        
+        let username = profile.username.clone();
+        let password = profile.password.clone();
 
         // 載入 Profile 的路徑
         for path_cfg in &profile.paths {
@@ -258,6 +282,8 @@ impl Session {
             display_name: profile.display_name.clone(),
             host: profile.connection.host.clone(),
             port: profile.connection.port.clone(),
+            username,
+            password,
             status: ConnectionStatus::Disconnected,
             command_tx: None,
             message_rx: None,
@@ -265,6 +291,7 @@ impl Session {
             alias_manager,
             trigger_manager,
             path_manager,
+            path_recorder: PathRecorder::new(),
             script_engine: ScriptEngine::new(),
             window_manager: WindowManager::new(),
             logger,
@@ -284,6 +311,9 @@ impl Session {
             last_active: Instant::now(),
             active_timers: Vec::new(),
             detached_window_id: None,
+            last_sent_command: None,
+            repeat_command_count: 0,
+            line_buffer: std::collections::VecDeque::with_capacity(5),
         }
     }
 
@@ -532,6 +562,43 @@ impl Session {
         // 優化提示字元偵測：不分大小寫
         let is_prompt = clean_lower.contains('(') && clean_lower.contains('/') && 
                         (clean_lower.contains('h') || clean_lower.contains('m') || clean_lower.contains('v'));
+
+        // 更新 Line Buffer (只存非空、非 Prompt、非系統訊息)
+        if !text.trim().is_empty() && !is_prompt && !text.starts_with(">>>") {
+            if self.line_buffer.len() >= 5 {
+                self.line_buffer.pop_front();
+            }
+            self.line_buffer.push_back(text.trim().to_string());
+        }
+
+        let is_exit_line = clean_text.contains("[出口:");
+        
+        // --- 迴圈偵測 ---
+        // --- 迴圈偵測 ---
+        if is_exit_line && self.path_recorder.is_recording {
+            // 嘗試從 buffer 抓取房間名稱 (通常是出口行的上一行)
+            let room_name = if self.line_buffer.len() >= 2 {
+                self.line_buffer.get(self.line_buffer.len() - 2).cloned().unwrap_or("Unknown".to_string())
+            } else {
+                "Unknown".to_string()
+            };
+            
+            let signature = format!("{}|{}", room_name, clean_text.trim());
+            
+            let mut hasher = DefaultHasher::new();
+            signature.hash(&mut hasher);
+            let hash = hasher.finish();
+            
+            match self.path_recorder.record_room(hash) {
+                LoopStatus::ExactLoop => {
+                    self.system_message("⚠️ 偵測到迴圈！您回到了路徑起點或經過的原點 (Exact Loop)。");
+                }
+                LoopStatus::PotentialLoop => {
+                    self.system_message("⚠️ 注意：此處場景與之前經過的地點極為相似 (Potential Loop)，但座標不同。");
+                }
+                LoopStatus::None => {}
+            }
+        }
         
         let trim_text = text.trim().to_lowercase();
         // 擴展方向指令偵測
@@ -806,6 +873,100 @@ impl Session {
                     self.system_message("Usage: #unvar <key>");
                     return;
                 }
+                "#path" => {
+                    if parts.len() < 2 {
+                        self.system_message("Usage: #path <start|stop|loop|clear|undo|back|show|save>");
+                        return;
+                    }
+                    match parts[1] {
+                        "start" | "record" => {
+                            self.path_recorder.start();
+                            self.system_message("Path recording started.");
+                        }
+                        "stop" => {
+                            self.path_recorder.stop();
+                            self.system_message("Path recording stopped.");
+                        }
+                        "clear" => {
+                            self.path_recorder.clear();
+                            self.system_message("Path recording cleared.");
+                        }
+                        "simplify" | "optimize" => {
+                            let old_len = self.path_recorder.recorded_commands.len();
+                            self.path_recorder.simplify();
+                            let new_len = self.path_recorder.recorded_commands.len();
+                            self.system_message(&format!("Path simplified: {} -> {} steps (removed {} steps)", old_len, new_len, old_len - new_len));
+                        }
+                        "undo" => {
+                            if let Some(removed) = self.path_recorder.pop_last() {
+                                self.system_message(&format!("Undid last step: {}", removed));
+                            } else {
+                                self.system_message("No steps to undo.");
+                            }
+                        }
+                        "back" => {
+                            if self.path_recorder.is_recording {
+                                self.system_message("Pausing recording for backtracking...");
+                                self.path_recorder.stop();
+                            }
+                            
+                            let reverse_path = self.path_recorder.get_reverse_path();
+                            if reverse_path.is_empty() {
+                                self.system_message("No path recorded to backtrack.");
+                            } else {
+                                self.system_message(&format!("Backtracking {} steps...", reverse_path.len()));
+                                for cmd in reverse_path {
+                                    self.handle_user_input_with_depth(&cmd, depth + 1);
+                                }
+                            }
+                        }
+                        "show" => {
+                           let path_str = self.path_recorder.get_path_string();
+                           if path_str.is_empty() {
+                               self.system_message("Path is empty.");
+                           } else {
+                               self.system_message(&format!("Current Path: {}", path_str));
+                           }
+                        }
+                        "save" => {
+                            if parts.len() < 3 {
+                                self.system_message("Usage: #path save <name>");
+                            } else {
+                                let name = parts[2];
+                                let path_str = self.path_recorder.get_path_string();
+                                if path_str.is_empty() {
+                                    self.system_message("Cannot save empty path.");
+                                } else {
+                                    let path = mudcore::Path::new(name, &path_str);
+                                    self.path_manager.add(path);
+                                    self.system_message(&format!("Path saved as '{}'", name));
+                                }
+                            }
+                        }
+                        "loop" => {
+                            if parts.len() < 3 {
+                                self.system_message(&format!("Loop detection is currently: {}", if self.path_recorder.enable_loop_detection { "ON" } else { "OFF" }));
+                                self.system_message("Usage: #path loop <on|off>");
+                            } else {
+                                match parts[2].to_lowercase().as_str() {
+                                    "on" | "true" | "1" => {
+                                        self.path_recorder.enable_loop_detection = true;
+                                        self.system_message("Loop detection ENABLED.");
+                                    }
+                                    "off" | "false" | "0" => {
+                                        self.path_recorder.enable_loop_detection = false;
+                                        self.system_message("Loop detection DISABLED.");
+                                    }
+                                    _ => self.system_message("Usage: #path loop <on|off>"),
+                                }
+                            }
+                        }
+                        _ => {
+                             self.system_message("Unknown path command. Usage: #path <start|stop|loop|clear|undo|back|show|save>");
+                        }
+                    }
+                    return;
+                }
                 _ => {
                     // 如果不是已知指令，則視為普通內容發送
                 }
@@ -820,7 +981,36 @@ impl Session {
             preserve_ansi: true,
         });
 
-        if let Some(tx) = &self.command_tx {
+        // Clone tx to avoid borrow check issues when calling system_message
+        if let Some(tx) = self.command_tx.clone() {
+            // === 防呆機制：檢查重複指令 ===
+            let current_cmd = input.to_string();
+            
+            if let Some(last) = &self.last_sent_command {
+                if last == &current_cmd {
+                    self.repeat_command_count += 1;
+                } else {
+                    self.repeat_command_count = 1;
+                    self.last_sent_command = Some(current_cmd.clone());
+                }
+            } else {
+                self.repeat_command_count = 1;
+                self.last_sent_command = Some(current_cmd.clone());
+            }
+
+            // 如果重複次數達到 20，自動插入 save
+            if self.repeat_command_count >= 20 {
+                self.system_message("Anti-spam: Repeated command limit reached (20). Auto-inserting 'save'.");
+                let _ = tx.blocking_send(crate::session::Command::Send("save".to_string()));
+                // 重置計數器，讓使用者可以繼續輸入（或根據需求重置為 1）
+                self.repeat_command_count = 0;
+            }
+            
+            // 記錄路徑 (在送出前記錄)
+            if self.path_recorder.is_recording {
+                 self.path_recorder.record(&input);
+            }
+
             let _ = tx.blocking_send(crate::session::Command::Send(input.to_string()));
         }
     }
@@ -1057,6 +1247,8 @@ mod tests {
             aliases: vec![],
             triggers: vec![],
             script_paths: vec![],
+            username: None,
+            password: None,
             created_at: 0,
             last_connected: None,
         };

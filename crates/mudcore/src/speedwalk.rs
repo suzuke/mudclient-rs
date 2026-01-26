@@ -30,7 +30,7 @@ pub fn parse_speedwalk(input: &str) -> Option<Vec<String>> {
     // 方向包含: n, s, e, w, ne, nw, se, sw, u, d
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {
-        Regex::new(r"(?i)^(\d*)(n|s|e|w|ne|nw|se|sw|u|d)").unwrap()
+        Regex::new(r"(?i)^(\d*)(ne|nw|se|sw|n|s|e|w|u|d)").unwrap()
     });
 
     // 使用 remainder slice 逐步解析

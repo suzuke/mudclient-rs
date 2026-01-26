@@ -88,6 +88,15 @@ pub struct Profile {
     /// 自訂腳本載入路徑（可選）
     #[serde(default)]
     pub script_paths: Vec<String>,
+    
+    // === 帳號資訊 ===
+    /// 登入帳號
+    #[serde(default)]
+    pub username: Option<String>,
+    /// 登入密碼 (注意：目前為明文儲存)
+    #[serde(default)]
+    pub password: Option<String>,
+
     /// 建立時間 (Unix timestamp)
     #[serde(default)]
     pub created_at: u64,
@@ -106,6 +115,8 @@ impl Default for Profile {
             triggers: Vec::new(),
             paths: Vec::new(),
             script_paths: Vec::new(),
+            username: None,
+            password: None,
             created_at: current_timestamp(),
             last_connected: None,
         }
@@ -501,6 +512,8 @@ pub fn migrate_legacy_config() -> MigrationResult {
         triggers: legacy.triggers,
         paths: Vec::new(),
         script_paths: Vec::new(),
+        username: None,
+        password: None,
         created_at: current_timestamp(),
         last_connected: None,
     };

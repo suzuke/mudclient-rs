@@ -64,8 +64,27 @@ pub struct MudApp {
     path_edit_value: String,
     path_edit_category: String,
 
+    // === Profile 編輯狀態 ===
+    show_profile_edit_window: bool,
+    editing_profile_original_name: Option<String>,
+    profile_edit_name: String,
+    profile_edit_display_name: String,
+    profile_edit_host: String,
+    profile_edit_port: String,
+    profile_edit_username: String,
+    profile_edit_password: String,
+
     /// 設定視窗開關
     show_settings_window: bool,
+
+    /// 設定範圍 (Global/Profile)
+    settings_scope: SettingsScope,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsScope {
+    Profile,
+    Global,
 }
 
 /// 設定中心標籤頁
@@ -130,7 +149,18 @@ impl MudApp {
             path_edit_value: String::new(),
             path_edit_category: String::new(),
             
+            // Profile 編輯狀態初始化
+            show_profile_edit_window: false,
+            editing_profile_original_name: None,
+            profile_edit_name: String::new(),
+            profile_edit_display_name: String::new(),
+            profile_edit_host: String::new(),
+            profile_edit_port: String::new(),
+            profile_edit_username: String::new(),
+            profile_edit_password: String::new(),
+
             show_settings_window: false,
+            settings_scope: SettingsScope::Profile,
         }
     }
 
@@ -144,14 +174,26 @@ impl MudApp {
             let mut new_aliases = Vec::new();
             for name in &session.alias_manager.sorted_aliases {
                 if let Some(a) = session.alias_manager.get(name) {
-                    new_aliases.push(crate::config::AliasConfig {
-                        name: a.name.clone(),
-                        pattern: a.pattern.clone(),
-                        replacement: a.replacement.clone(),
-                        category: a.category.clone(),
-                        is_script: a.is_script,
-                        enabled: a.enabled,
+                    // 檢查是否與全域設定相同 (完全相同則不儲存，實現 Clean Save)
+                    let is_global_identical = self.global_config.global_aliases.iter().any(|ga| {
+                        ga.name == a.name && 
+                        ga.pattern == a.pattern && 
+                        ga.replacement == a.replacement && 
+                        ga.is_script == a.is_script &&
+                        ga.enabled == a.enabled &&
+                        ga.category == a.category
                     });
+
+                    if !is_global_identical {
+                        new_aliases.push(crate::config::AliasConfig {
+                            name: a.name.clone(),
+                            pattern: a.pattern.clone(),
+                            replacement: a.replacement.clone(),
+                            category: a.category.clone(),
+                            is_script: a.is_script,
+                            enabled: a.enabled,
+                        });
+                    }
                 }
             }
 
@@ -173,17 +215,29 @@ impl MudApp {
                          TriggerPattern::Contains(s) | TriggerPattern::StartsWith(s) | TriggerPattern::EndsWith(s) | TriggerPattern::Regex(s) => s.clone(),
                      };
                      
-                     new_triggers.push(crate::config::TriggerConfig {
-                         name: t.name.clone(),
-                         pattern: pat_str,
-                         action: action_str,
-                         category: t.category.clone(),
-                         is_script,
-                         enabled: t.enabled,
+                     // 檢查是否與全域設定相同
+                     let is_global_identical = self.global_config.global_triggers.iter().any(|gt| {
+                         gt.name == t.name && 
+                         gt.pattern == pat_str && 
+                         gt.action == action_str && 
+                         gt.is_script == is_script &&
+                         gt.enabled == t.enabled &&
+                         gt.category == t.category
                      });
+
+                     if !is_global_identical {
+                         new_triggers.push(crate::config::TriggerConfig {
+                             name: t.name.clone(),
+                             pattern: pat_str,
+                             action: action_str,
+                             category: t.category.clone(),
+                             is_script,
+                             enabled: t.enabled,
+                         });
+                     }
                  }
              }
- 
+
              // 3. 同步 Path
              let mut new_paths = Vec::new();
              for name in &session.path_manager.sorted_keys {
@@ -195,7 +249,7 @@ impl MudApp {
                      });
                  }
              }
- 
+
              // 4. 更新 ProfileManager 並儲存
               if let Some(profile) = self.profile_manager.get_mut(&profile_name) {
                   profile.aliases = new_aliases;
@@ -352,12 +406,17 @@ impl MudApp {
 
     /// 啟動指定 Session 的網路連線
     fn start_connection(&mut self, session_id: crate::session::SessionId, ctx: egui::Context) {
-        let (host, port) = {
+        let (host, port, username, password) = {
             let session = match self.session_manager.get(session_id) {
                 Some(s) => s,
                 None => return,
             };
-            (session.host.clone(), session.port.parse::<u16>().unwrap_or(7777))
+            (
+                session.host.clone(), 
+                session.port.parse::<u16>().unwrap_or(7777),
+                session.username.clone(),
+                session.password.clone(),
+            )
         };
 
         // 創建 channels
@@ -380,10 +439,30 @@ impl MudApp {
                 tokio::select! {
                     Some(cmd) = cmd_rx.recv() => {
                         match cmd {
-                            SessionCommand::Connect(h, p) => {
+                            SessionCommand::Connect(h, p, u, pwd) => {
                                 match client.connect(&h, p).await {
                                     Ok(_) => {
                                         let _ = msg_tx.send(format!(">>> 已連線到 {}:{}\n", h, p)).await;
+
+                                        // 自動登入邏輯
+                                        if let Some(username) = u {
+                                            // 稍微延遲一點點確保連線穩定（簡易版）
+                                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                                            if let Err(e) = client.send(&username).await {
+                                                let _ = msg_tx.send(format!(">>> 自動登入(帳號)失敗: {}\n", e)).await;
+                                            } else {
+                                                // let _ = msg_tx.send(">>> 已發送帳號\n".to_string()).await;
+                                            }
+
+                                            if let Some(password) = pwd {
+                                                tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                                                if let Err(e) = client.send(&password).await {
+                                                     let _ = msg_tx.send(format!(">>> 自動登入(密碼)失敗: {}\n", e)).await;
+                                                } else {
+                                                    let _ = msg_tx.send(">>> 已嘗試自動登入\n".to_string()).await;
+                                                }
+                                            }
+                                        }
 
                                         // 開始讀取迴圈
                                         loop {
@@ -437,7 +516,7 @@ impl MudApp {
         });
 
         // 發送初始連線命令
-        let _ = cmd_tx.blocking_send(SessionCommand::Connect(host, port));
+        let _ = cmd_tx.blocking_send(SessionCommand::Connect(host, port, username, password));
     }
 
     /// 發送訊息（針對指定 Session）
@@ -618,6 +697,7 @@ impl MudApp {
     fn render_alias_edit(
         ctx: &egui::Context,
         session_opt: Option<&mut crate::session::Session>,
+        global_config_opt: Option<&mut GlobalConfig>,
         editing_alias_name: &mut Option<String>,
         alias_edit_pattern: &mut String,
         alias_edit_replacement: &mut String,
@@ -634,8 +714,6 @@ impl MudApp {
                     ui.label("觸發詞:");
                     ui.text_edit_singleline(alias_edit_pattern);
                 });
-
-
 
                 ui.horizontal(|ui| {
                     ui.checkbox(alias_edit_is_script, "使用 Lua 腳本");
@@ -660,33 +738,37 @@ impl MudApp {
                     ui.text_edit_singleline(alias_edit_category);
 
                     // 分類選擇選單
-                    if let Some(session) = session_opt.as_ref() {
-                        ui.menu_button("▼", |ui| {
-                            ui.set_max_width(200.0);
-                            
-                            // 收集並排序現有的所有分類
-                            let mut categories: Vec<String> = Vec::new();
+                    ui.menu_button("▼", |ui| {
+                        ui.set_max_width(200.0);
+                        
+                        // 收集並排序現有的所有分類
+                        let mut categories: Vec<String> = Vec::new();
+
+                        if let Some(session) = session_opt.as_ref() {
                             categories.extend(session.trigger_manager.list().iter().filter_map(|t| t.category.clone()));
                             categories.extend(session.alias_manager.list().iter().filter_map(|a| a.category.clone()));
-                            
-                            categories.retain(|c| !c.is_empty());
-                            categories.sort();
-                            categories.dedup();
+                        } else if let Some(global) = global_config_opt.as_ref() {
+                             categories.extend(global.global_triggers.iter().filter_map(|t| t.category.clone()));
+                             categories.extend(global.global_aliases.iter().filter_map(|a| a.category.clone()));
+                        }
+                        
+                        categories.retain(|c| !c.is_empty());
+                        categories.sort();
+                        categories.dedup();
 
-                            if categories.is_empty() {
-                                ui.label("尚無任何分類");
-                            } else {
-                                ui.label("選擇現有分類:");
-                                ui.separator();
-                                for cat in categories {
-                                    if ui.button(&cat).clicked() {
-                                        *alias_edit_category = cat;
-                                        ui.close_menu();
-                                    }
+                        if categories.is_empty() {
+                            ui.label("尚無任何分類");
+                        } else {
+                            ui.label("選擇現有分類:");
+                            ui.separator();
+                            for cat in categories {
+                                if ui.button(&cat).clicked() {
+                                    *alias_edit_category = cat;
+                                    ui.close_menu();
                                 }
                             }
-                        });
-                    }
+                        }
+                    });
                 });
 
                 ui.add_space(10.0);
@@ -716,6 +798,30 @@ impl MudApp {
                                 }
                                 session.alias_manager.add(alias);
                                 *needs_save_flag = true;
+                            } else if let Some(global) = global_config_opt {
+                                // Global Config Logic
+                                let name = if let Some(ref old_name) = editing_alias_name {
+                                    if !old_name.is_empty() {
+                                        // Remove old
+                                        global.global_aliases.retain(|a| &a.name != old_name);
+                                        old_name.clone()
+                                    } else {
+                                        alias_edit_pattern.clone()
+                                    }
+                                } else {
+                                    alias_edit_pattern.clone()
+                                };
+                                
+                                // Push new
+                                global.global_aliases.push(crate::config::AliasConfig {
+                                    name,
+                                    pattern: alias_edit_pattern.clone(),
+                                    replacement: alias_edit_replacement.clone(),
+                                    category: if alias_edit_category.is_empty() { None } else { Some(alias_edit_category.clone()) },
+                                    is_script: *alias_edit_is_script,
+                                    enabled: true,
+                                });
+                                *needs_save_flag = true;
                             }
                             *show_alias_window = false;
                         }
@@ -732,6 +838,7 @@ impl MudApp {
     fn render_trigger_edit(
         ctx: &egui::Context,
         session_opt: Option<&mut crate::session::Session>,
+        global_config_opt: Option<&mut GlobalConfig>,
         editing_trigger_name: &mut Option<String>,
         trigger_edit_name: &mut String,
         trigger_edit_pattern: &mut String,
@@ -782,33 +889,37 @@ impl MudApp {
                     ui.text_edit_singleline(trigger_edit_category);
 
                     // 分類選擇選單
-                    if let Some(session) = session_opt.as_ref() {
-                        ui.menu_button("▼", |ui| {
-                            ui.set_max_width(200.0);
-                            
-                            // 收集並排序現有的所有分類
-                            let mut categories: Vec<String> = Vec::new();
+                    ui.menu_button("▼", |ui| {
+                        ui.set_max_width(200.0);
+                        
+                        // 收集並排序現有的所有分類
+                        let mut categories: Vec<String> = Vec::new();
+                        
+                        if let Some(session) = session_opt.as_ref() {
                             categories.extend(session.trigger_manager.list().iter().filter_map(|t| t.category.clone()));
                             categories.extend(session.alias_manager.list().iter().filter_map(|a| a.category.clone()));
-                            
-                            categories.retain(|c| !c.is_empty());
-                            categories.sort();
-                            categories.dedup();
+                        } else if let Some(global) = global_config_opt.as_ref() {
+                             categories.extend(global.global_triggers.iter().filter_map(|t| t.category.clone()));
+                             categories.extend(global.global_aliases.iter().filter_map(|a| a.category.clone()));
+                        }
+                        
+                        categories.retain(|c| !c.is_empty());
+                        categories.sort();
+                        categories.dedup();
 
-                            if categories.is_empty() {
-                                ui.label("尚無任何分類");
-                            } else {
-                                ui.label("選擇現有分類:");
-                                ui.separator();
-                                for cat in categories {
-                                    if ui.button(&cat).clicked() {
-                                        *trigger_edit_category = cat;
-                                        ui.close_menu();
-                                    }
+                        if categories.is_empty() {
+                            ui.label("尚無任何分類");
+                        } else {
+                            ui.label("選擇現有分類:");
+                            ui.separator();
+                            for cat in categories {
+                                if ui.button(&cat).clicked() {
+                                    *trigger_edit_category = cat;
+                                    ui.close_menu();
                                 }
                             }
-                        });
-                    }
+                        }
+                    });
                 });
 
                 ui.add_space(10.0);
@@ -860,6 +971,28 @@ impl MudApp {
                                     trigger.category = Some(trigger_edit_category.clone());
                                 }
                                 session.trigger_manager.add(trigger);
+                                *needs_save_flag = true;
+                            } else if let Some(global) = global_config_opt {
+                                // Global Config Logic
+                                let name = if let Some(ref old_name) = editing_trigger_name {
+                                    if !old_name.is_empty() {
+                                        global.global_triggers.retain(|t| &t.name != old_name);
+                                        old_name.clone()
+                                    } else {
+                                        trigger_edit_name.clone()
+                                    }
+                                } else {
+                                    trigger_edit_name.clone()
+                                };
+                                
+                                global.global_triggers.push(crate::config::TriggerConfig {
+                                    name,
+                                    pattern: trigger_edit_pattern.clone(),
+                                    action: trigger_edit_action.clone(),
+                                    category: if trigger_edit_category.is_empty() { None } else { Some(trigger_edit_category.clone()) },
+                                    is_script: *trigger_edit_is_script,
+                                    enabled: true,
+                                });
                                 *needs_save_flag = true;
                             }
                             *show_trigger_window = false;
@@ -1249,38 +1382,85 @@ impl MudApp {
         });
     }
 
-    /// 繪製 Profile 管理視窗
+    /// 繪製 Profile 管理視窗 (含連線與新增/編輯/刪除)
     fn render_profile_window(&mut self, ctx: &egui::Context) {
-        egui::Window::new("連線管理")
-            .resizable(true)
-            .default_width(450.0)
-            .default_height(350.0)
+        egui::Window::new("👤 連線管理")
             .collapsible(false)
+            .resizable(false)
             .show(ctx, |ui| {
-                ui.heading("Profile 列表");
+                ui.horizontal(|ui| {
+                    ui.heading("Profile 列表");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("➕ 新增 Profile").clicked() {
+                            self.editing_profile_original_name = None;
+                            self.profile_edit_name = String::new();
+                            self.profile_edit_display_name = String::new();
+                            self.profile_edit_host = "localhost".to_string();
+                            self.profile_edit_port = "7777".to_string();
+                            self.profile_edit_username = String::new();
+                            self.profile_edit_password = String::new();
+                            self.show_profile_edit_window = true;
+                        }
+                    });
+                });
                 ui.separator();
 
                 let profiles: Vec<_> = self.profile_manager.list().iter().map(|p| {
-                    (p.name.clone(), p.display_name.clone(), p.connection.host.clone(), p.connection.port.clone())
+                    (p.name.clone(), p.display_name.clone(), p.connection.host.clone(), p.connection.port.clone(), p.username.clone())
                 }).collect();
 
                 if profiles.is_empty() {
                     ui.label("尚無任何 Profile。");
                     ui.add_space(10.0);
                 } else {
-                    egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
-                        for (name, display_name, host, port) in &profiles {
+                    egui::ScrollArea::vertical().max_height(250.0).show(ui, |ui| {
+                        for (name, display_name, host, port, username) in &profiles {
                             ui.group(|ui| {
                                 ui.horizontal(|ui| {
-                                    ui.label(RichText::new(display_name).strong());
-                                    ui.label(format!("({}:{})", host, port));
+                                    ui.vertical(|ui| {
+                                        ui.label(RichText::new(display_name).strong());
+                                        let user_info = if let Some(u) = username { format!(" | User: {}", u) } else { String::new() };
+                                        ui.label(format!("{}:{}{}", host, port, user_info));
+                                    });
                                     
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        // 點擊連線按鈕時設定待連線的 Profile
+                                        // 連線按鈕
                                         if ui.button("🔌 連線").clicked() {
                                             self.pending_connect_profile = Some(name.clone());
                                             self.show_profile_window = false;
                                         }
+                                        
+                                        // 更多操作選單
+                                        ui.menu_button("⚙", |ui| {
+                                            if ui.button("✏️ 編輯").clicked() {
+                                                if let Some(p) = self.profile_manager.get(name) {
+                                                    self.editing_profile_original_name = Some(name.clone());
+                                                    self.profile_edit_name = p.name.clone();
+                                                    self.profile_edit_display_name = p.display_name.clone();
+                                                    self.profile_edit_host = p.connection.host.clone();
+                                                    self.profile_edit_port = p.connection.port.clone();
+                                                    self.profile_edit_username = p.username.clone().unwrap_or_default();
+                                                    self.profile_edit_password = p.password.clone().unwrap_or_default();
+                                                    self.show_profile_edit_window = true;
+                                                }
+                                                ui.close_menu();
+                                            }
+                                            
+                                            if ui.button("📋 複製").clicked() {
+                                                let new_name = format!("{}_copy", name);
+                                                if let Err(e) = self.profile_manager.duplicate(name, &new_name) {
+                                                    tracing::error!("Failed to duplicate profile: {}", e);
+                                                }
+                                                ui.close_menu();
+                                            }
+
+                                            if ui.button("🗑️ 刪除").clicked() {
+                                                if let Err(e) = self.profile_manager.delete(name) {
+                                                    tracing::error!("Failed to delete profile: {}", e);
+                                                }
+                                                ui.close_menu();
+                                            }
+                                        });
                                     });
                                 });
                             });
@@ -1306,6 +1486,98 @@ impl MudApp {
                 if ui.button("關閉").clicked() {
                     self.show_profile_window = false;
                 }
+            });
+
+        // 渲染 Profile 編輯視窗
+        if self.show_profile_edit_window {
+            self.render_profile_edit_window(ctx);
+        }
+    }
+
+    /// 繪製 Profile 編輯視窗
+    fn render_profile_edit_window(&mut self, ctx: &egui::Context) {
+        let title = if self.editing_profile_original_name.is_some() { "✏️ 編輯 Profile" } else { "➕ 新增 Profile" };
+        
+        egui::Window::new(title)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                egui::Grid::new("profile_edit_grid_conn").num_columns(2).spacing([10.0, 10.0]).show(ui, |ui| {
+                    ui.label("識別名稱 (ID):");
+                    if self.editing_profile_original_name.is_some() {
+                        ui.label(RichText::new(&self.profile_edit_name).code()); // ID 不可修改
+                    } else {
+                        ui.text_edit_singleline(&mut self.profile_edit_name);
+                    }
+                    ui.end_row();
+
+                    ui.label("顯示名稱:");
+                    ui.text_edit_singleline(&mut self.profile_edit_display_name);
+                    ui.end_row();
+
+                    ui.label("主機位址 (Host):");
+                    ui.text_edit_singleline(&mut self.profile_edit_host);
+                    ui.end_row();
+
+                    ui.label("連接埠 (Port):");
+                    ui.text_edit_singleline(&mut self.profile_edit_port);
+                    ui.end_row();
+                });
+                
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
+
+                egui::Grid::new("profile_edit_grid_auth").num_columns(2).spacing([10.0, 10.0]).show(ui, |ui| {
+                    ui.label("帳號 (Username):");
+                    ui.text_edit_singleline(&mut self.profile_edit_username);
+                    ui.end_row();
+
+                    ui.label("密碼 (Password):");
+                    ui.add(egui::TextEdit::singleline(&mut self.profile_edit_password).password(true));
+                    ui.end_row();
+                });
+
+                ui.add_space(20.0);
+                
+                ui.horizontal(|ui| {
+                    if ui.button("💾 儲存").clicked() {
+                        // 驗證輸入
+                        if self.profile_edit_name.is_empty() {
+                            // TODO: 顯示錯誤
+                        } else {
+                            let mut profile = if let Some(ref original_name) = self.editing_profile_original_name {
+                                if let Some(existing) = self.profile_manager.get(original_name) {
+                                    existing.clone()
+                                } else {
+                                    crate::config::Profile::default()
+                                }
+                            } else {
+                                crate::config::Profile::default()
+                            };
+
+                            // 更新欄位
+                            profile.name = self.profile_edit_name.clone();
+                            profile.display_name = self.profile_edit_display_name.clone();
+                            profile.connection.host = self.profile_edit_host.clone();
+                            profile.connection.port = self.profile_edit_port.clone();
+                            
+                            profile.username = if self.profile_edit_username.is_empty() { None } else { Some(self.profile_edit_username.clone()) };
+                            profile.password = if self.profile_edit_password.is_empty() { None } else { Some(self.profile_edit_password.clone()) };
+                            
+                            // 儲存
+                            if let Err(e) = self.profile_manager.save(profile) {
+                                tracing::error!("Failed to save profile: {}", e);
+                            }
+                            
+                            self.show_profile_edit_window = false;
+                        }
+                    }
+
+                    if ui.button("取消").clicked() {
+                        self.show_profile_edit_window = false;
+                    }
+                });
             });
     }
 
@@ -1343,11 +1615,27 @@ impl MudApp {
                 });
                 ui.separator();
                 
+                // 設定範圍選擇 (僅對 Alias 與 Trigger 有效)
+                if matches!(self.settings_tab, SettingsTab::Alias | SettingsTab::Trigger) {
+                    ui.horizontal(|ui| {
+                        ui.label("設定範圍:");
+                        ui.radio_value(&mut self.settings_scope, SettingsScope::Profile, "目前 Profile");
+                        ui.radio_value(&mut self.settings_scope, SettingsScope::Global, "全域設定 (Global)");
+                    });
+                    if self.settings_scope == SettingsScope::Global {
+                        ui.colored_label(egui::Color32::LIGHT_BLUE, "ℹ️ 正在編輯全域設定，所有 Profile 預設都會套用這些設定。");
+                    }
+                    ui.separator();
+                }
+
                 // 根據目前的 Tab 渲染內容
                 match self.settings_tab {
                     SettingsTab::Alias => {
                         ui.horizontal(|ui| {
-                            ui.heading("別名管理");
+                            ui.heading(match self.settings_scope {
+                                SettingsScope::Profile => "別名管理 (Profile)",
+                                SettingsScope::Global => "別名管理 (Global)",
+                            });
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if ui.button("➕ 新增別名").clicked() {
                                     self.editing_alias_name = Some(String::new());
@@ -1360,14 +1648,24 @@ impl MudApp {
                         });
                         ui.add_space(5.0);
                         
-                        let alias_list: Vec<(String, String, String, Option<String>, bool, bool)> = {
-                            session.alias_manager.sorted_aliases.iter()
-                                .filter_map(|name| {
-                                    session.alias_manager.aliases.get(name).map(|a| {
-                                        (a.name.clone(), a.pattern.clone(), a.replacement.clone(), a.category.clone(), a.enabled, a.is_script)
+                        // 收集 Alias 列表
+                        let alias_list: Vec<(String, String, String, Option<String>, bool, bool)> = match self.settings_scope {
+                            SettingsScope::Profile => {
+                                // Profile 模式: 顯示 Session 中的別名
+                                session.alias_manager.sorted_aliases.iter()
+                                    .filter_map(|name| {
+                                        session.alias_manager.aliases.get(name).map(|a| {
+                                            (a.name.clone(), a.pattern.clone(), a.replacement.clone(), a.category.clone(), a.enabled, a.is_script)
+                                        })
                                     })
-                                })
-                                .collect()
+                                    .collect()
+                            },
+                            SettingsScope::Global => {
+                                // Global 模式: 顯示 Global Config 中的別名
+                                self.global_config.global_aliases.iter().map(|a| {
+                                    (a.name.clone(), a.pattern.clone(), a.replacement.clone(), a.category.clone(), a.enabled, a.is_script)
+                                }).collect()
+                            }
                         };
                         
                         let mut grouped_aliases: std::collections::BTreeMap<Option<String>, Vec<(String, String, String, Option<String>, bool, bool)>> = std::collections::BTreeMap::new();
@@ -1401,9 +1699,20 @@ impl MudApp {
                                                         ui.add_space(10.0);
                                                         let mut current_enabled = enabled;
                                                         if ui.checkbox(&mut current_enabled, "").changed() {
-                                                            if let Some(alias) = session.alias_manager.aliases.get_mut(&name) {
-                                                                alias.enabled = current_enabled;
-                                                                needs_save = true;
+                                                            // 更新 Enabled 狀態
+                                                            match self.settings_scope {
+                                                                SettingsScope::Profile => {
+                                                                    if let Some(alias) = session.alias_manager.aliases.get_mut(&name) {
+                                                                        alias.enabled = current_enabled;
+                                                                        needs_save = true;
+                                                                    }
+                                                                },
+                                                                SettingsScope::Global => {
+                                                                    if let Some(alias) = self.global_config.global_aliases.iter_mut().find(|a| a.name == name) {
+                                                                        alias.enabled = current_enabled;
+                                                                        needs_save = true;
+                                                                    }
+                                                                }
                                                             }
                                                         }
                                                         let display_text = if is_script {
@@ -1435,16 +1744,29 @@ impl MudApp {
                             }
                         });
                         
+                        // 處理操作
                         if let Some((cat, enabled)) = to_toggle_category {
-                            for alias in session.alias_manager.aliases.values_mut() {
-                                if alias.category == cat {
-                                    alias.enabled = enabled;
+                             match self.settings_scope {
+                                SettingsScope::Profile => {
+                                    for alias in session.alias_manager.aliases.values_mut() {
+                                        if alias.category == cat { alias.enabled = enabled; }
+                                    }
+                                },
+                                SettingsScope::Global => {
+                                    for alias in self.global_config.global_aliases.iter_mut() {
+                                        if alias.category == cat { alias.enabled = enabled; }
+                                    }
                                 }
                             }
                             needs_save = true;
                         }
                         if let Some(name) = to_delete {
-                            session.alias_manager.remove(&name);
+                            match self.settings_scope {
+                                SettingsScope::Profile => { session.alias_manager.remove(&name); },
+                                SettingsScope::Global => { 
+                                    self.global_config.global_aliases.retain(|a| a.name != name); 
+                                }
+                            }
                             needs_save = true;
                         }
                         if let Some((name, pattern, replacement, category, is_script)) = to_edit {
@@ -1458,7 +1780,10 @@ impl MudApp {
                     }
                     SettingsTab::Trigger => {
                         ui.horizontal(|ui| {
-                            ui.heading("觸發器管理");
+                            ui.heading(match self.settings_scope {
+                                SettingsScope::Profile => "觸發器管理 (Profile)",
+                                SettingsScope::Global => "觸發器管理 (Global)",
+                            });
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if ui.button("➕ 新增觸發器").clicked() {
                                     self.editing_trigger_name = Some(String::new());
@@ -1472,31 +1797,40 @@ impl MudApp {
                         });
                         ui.add_space(5.0);
                         
-                        let trigger_list: Vec<(String, String, String, Option<String>, bool, bool, String)> = {
-                            session.trigger_manager.order.iter()
-                                .filter_map(|name| {
-                                    session.trigger_manager.triggers.get(name).map(|t| {
-                                        let pattern_text = match &t.pattern {
-                                            TriggerPattern::Contains(s) => format!("包含: {}", s),
-                                            TriggerPattern::StartsWith(s) => format!("開頭: {}", s),
-                                            TriggerPattern::EndsWith(s) => format!("結尾: {}", s),
-                                            TriggerPattern::Regex(s) => format!("正則: {}", s),
-                                        };
-                                        let clean_pattern = match &t.pattern {
-                                            TriggerPattern::Contains(s) | TriggerPattern::StartsWith(s) |
-                                            TriggerPattern::EndsWith(s) | TriggerPattern::Regex(s) => s.clone(),
-                                        };
-                                        let (action_str, is_script) = t.actions.iter().find_map(|a| {
-                                            match a {
-                                                TriggerAction::SendCommand(cmd) => Some((cmd.clone(), false)),
-                                                TriggerAction::ExecuteScript(code) => Some((code.clone(), true)),
-                                                _ => None,
-                                            }
-                                        }).unwrap_or_default();
-                                        (t.name.clone(), pattern_text, clean_pattern, t.category.clone(), t.enabled, is_script, action_str)
+                        // 收集 Trigger 列表
+                        let trigger_list: Vec<(String, String, String, Option<String>, bool, bool, String)> = match self.settings_scope {
+                            SettingsScope::Profile => {
+                                session.trigger_manager.order.iter()
+                                    .filter_map(|name| {
+                                        session.trigger_manager.triggers.get(name).map(|t| {
+                                            let pattern_text = match &t.pattern {
+                                                TriggerPattern::Contains(s) => format!("包含: {}", s),
+                                                TriggerPattern::StartsWith(s) => format!("開頭: {}", s),
+                                                TriggerPattern::EndsWith(s) => format!("結尾: {}", s),
+                                                TriggerPattern::Regex(s) => format!("正則: {}", s),
+                                            };
+                                            let clean_pattern = match &t.pattern {
+                                                TriggerPattern::Contains(s) | TriggerPattern::StartsWith(s) |
+                                                TriggerPattern::EndsWith(s) | TriggerPattern::Regex(s) => s.clone(),
+                                            };
+                                            let (action_str, is_script) = t.actions.iter().find_map(|a| {
+                                                match a {
+                                                    TriggerAction::SendCommand(cmd) => Some((cmd.clone(), false)),
+                                                    TriggerAction::ExecuteScript(code) => Some((code.clone(), true)),
+                                                    _ => None,
+                                                }
+                                            }).unwrap_or_default();
+                                            (t.name.clone(), pattern_text, clean_pattern, t.category.clone(), t.enabled, is_script, action_str)
+                                        })
                                     })
-                                })
-                                .collect()
+                                    .collect()
+                            },
+                            SettingsScope::Global => {
+                                self.global_config.global_triggers.iter().map(|t| {
+                                    let pattern_text = format!("(Global) {}", t.pattern); // 簡化
+                                    (t.name.clone(), pattern_text, t.pattern.clone(), t.category.clone(), t.enabled, t.is_script, t.action.clone())
+                                }).collect()
+                            }
                         };
                         
                         let mut grouped_triggers: std::collections::BTreeMap<Option<String>, Vec<(String, String, String, Option<String>, bool, bool, String)>> = std::collections::BTreeMap::new();
@@ -1514,54 +1848,75 @@ impl MudApp {
                             } else {
                                 for (category, items) in grouped_triggers {
                                     let category_name = category.as_deref().unwrap_or("未分類");
-
-                                    ui.horizontal(|ui| {
-                                        let all_enabled = items.iter().all(|i| i.4);
-                                        let mut current_all_enabled = all_enabled;
-                                        if ui.checkbox(&mut current_all_enabled, "").changed() {
-                                            to_toggle_category = Some((category.clone(), current_all_enabled));
-                                        }
-
-                                        egui::CollapsingHeader::new(RichText::new(category_name).strong())
-                                            .default_open(true)
-                                            .show(ui, |ui| {
-                                                for (name, pattern_text, clean_pattern, cat, enabled, is_script, action_str) in items {
-                                                    ui.horizontal(|ui| {
-                                                        ui.add_space(10.0);
-                                                        let mut current_enabled = enabled;
-                                                        if ui.checkbox(&mut current_enabled, "").changed() {
-                                                            if let Some(trigger) = session.trigger_manager.triggers.get_mut(&name) {
-                                                                trigger.enabled = current_enabled;
-                                                                needs_save = true;
-                                                            }
-                                                        }
-                                                        ui.label(format!("{} [{}]", name, pattern_text));
-                                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                                            if ui.small_button("🗑️").clicked() {
-                                                                to_delete = Some(name.clone());
-                                                            }
-                                                            if ui.small_button("✏️").clicked() {
-                                                                to_edit = Some((name.clone(), clean_pattern.clone(), action_str.clone(), is_script, cat.unwrap_or_default()));
-                                                            }
-                                                        });
-                                                    });
-                                                }
-                                            });
-                                    });
+ 
+                                     ui.horizontal(|ui| {
+                                         let all_enabled = items.iter().all(|i| i.4);
+                                         let mut current_all_enabled = all_enabled;
+                                         if ui.checkbox(&mut current_all_enabled, "").changed() {
+                                             to_toggle_category = Some((category.clone(), current_all_enabled));
+                                         }
+ 
+                                         egui::CollapsingHeader::new(RichText::new(category_name).strong())
+                                             .default_open(true)
+                                             .show(ui, |ui| {
+                                                 for (name, pattern_text, clean_pattern, cat, enabled, is_script, action_str) in items {
+                                                     ui.horizontal(|ui| {
+                                                         ui.add_space(10.0);
+                                                         let mut current_enabled = enabled;
+                                                         if ui.checkbox(&mut current_enabled, "").changed() {
+                                                             match self.settings_scope {
+                                                                SettingsScope::Profile => {
+                                                                    if let Some(trigger) = session.trigger_manager.triggers.get_mut(&name) {
+                                                                        trigger.enabled = current_enabled;
+                                                                        needs_save = true;
+                                                                    }
+                                                                },
+                                                                SettingsScope::Global => {
+                                                                    if let Some(trigger) = self.global_config.global_triggers.iter_mut().find(|t| t.name == name) {
+                                                                        trigger.enabled = current_enabled;
+                                                                        needs_save = true;
+                                                                    }
+                                                                }
+                                                             }
+                                                         }
+                                                         ui.label(format!("{} [{}]", name, pattern_text));
+                                                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                             if ui.small_button("🗑️").clicked() {
+                                                                 to_delete = Some(name.clone());
+                                                             }
+                                                             if ui.small_button("✏️").clicked() {
+                                                                 to_edit = Some((name.clone(), clean_pattern.clone(), action_str.clone(), is_script, cat.unwrap_or_default()));
+                                                             }
+                                                         });
+                                                     });
+                                                 }
+                                             });
+                                     });
                                 }
                             }
                         });
                         
+                        // 處理操作
                         if let Some((cat, enabled)) = to_toggle_category {
-                            for trigger in session.trigger_manager.triggers.values_mut() {
-                                if trigger.category == cat {
-                                    trigger.enabled = enabled;
+                            match self.settings_scope {
+                                SettingsScope::Profile => {
+                                    for trigger in session.trigger_manager.triggers.values_mut() {
+                                        if trigger.category == cat { trigger.enabled = enabled; }
+                                    }
+                                },
+                                SettingsScope::Global => {
+                                    for trigger in self.global_config.global_triggers.iter_mut() {
+                                        if trigger.category == cat { trigger.enabled = enabled; }
+                                    }
                                 }
                             }
                             needs_save = true;
                         }
                         if let Some(name) = to_delete {
-                            session.trigger_manager.remove(&name);
+                            match self.settings_scope {
+                                SettingsScope::Profile => { session.trigger_manager.remove(&name); },
+                                SettingsScope::Global => { self.global_config.global_triggers.retain(|t| t.name != name); }
+                            }
                             needs_save = true;
                         }
                         if let Some((name, pattern, action, is_script, category)) = to_edit {
@@ -1689,6 +2044,8 @@ impl MudApp {
             self.show_settings_window = false;
         }
     }
+
+
 }
 
 impl eframe::App for MudApp {
@@ -1732,10 +2089,18 @@ impl eframe::App for MudApp {
         // Note: profiles and settings are already handled above in the floating section
         
         let mut needs_save = false;
+        
+        // 準備編輯器所需的 Context (依據 Scope 決定傳入 Session 或 Global Config)
+        let (session_opt, global_opt) = match self.settings_scope {
+            SettingsScope::Profile => (self.session_manager.active_session_mut(), None),
+            SettingsScope::Global => (None, Some(&mut self.global_config)),
+        };
+        
         if self.show_alias_window {
             Self::render_alias_edit(
                 ctx,
-                self.session_manager.active_session_mut(),
+                session_opt, // 不能同時借用 self.session_manager 與 self.global_config (如果是 Global mode, session_opt 是 None, 安全)
+                global_opt,
                 &mut self.editing_alias_name,
                 &mut self.alias_edit_pattern,
                 &mut self.alias_edit_replacement,
@@ -1745,10 +2110,23 @@ impl eframe::App for MudApp {
                 &mut needs_save,
             );
         }
+        
+        // 重新獲取 mutable references 因為上面的 session_opt 借用結束了? 
+        // Rust borrow checker 可能會抱怨 session_opt 被用兩次。
+        // 但 session_opt 是 Option<&mut Session>, 不能 Copy。
+        // 我們需要再次 match 或是 clone (不行).
+        // 簡單解法：再次獲取。
+        
+        let (session_opt_trigger, global_opt_trigger) = match self.settings_scope {
+            SettingsScope::Profile => (self.session_manager.active_session_mut(), None),
+            SettingsScope::Global => (None, Some(&mut self.global_config)),
+        };
+
         if self.show_trigger_window {
             Self::render_trigger_edit(
                 ctx,
-                self.session_manager.active_session_mut(),
+                session_opt_trigger,
+                global_opt_trigger,
                 &mut self.editing_trigger_name,
                 &mut self.trigger_edit_name,
                 &mut self.trigger_edit_pattern,
@@ -1758,7 +2136,6 @@ impl eframe::App for MudApp {
                 &mut self.show_trigger_window,
                 &mut needs_save,
             );
-
         }
         if self.show_path_window {
             Self::render_path_edit(
