@@ -6,7 +6,7 @@ use eframe::egui::{self, Color32, FontId, RichText, ScrollArea, TextEdit};
 use eframe::egui::text::LayoutJob;
 use mudcore::{
     Alias, TelnetClient, Trigger, TriggerAction,
-    TriggerPattern,
+    TriggerPattern, Path,
 };
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
@@ -57,6 +57,13 @@ pub struct MudApp {
     trigger_edit_category: String,
     trigger_edit_is_script: bool,
 
+    // === 路徑編輯狀態 ===
+    show_path_window: bool,
+    editing_path_name: Option<String>,
+    path_edit_name: String,
+    path_edit_value: String,
+    path_edit_category: String,
+
     /// 設定視窗開關
     show_settings_window: bool,
 }
@@ -66,6 +73,7 @@ pub struct MudApp {
 enum SettingsTab {
     Alias,
     Trigger,
+    Path,
     Logger,
     General,
 }
@@ -114,6 +122,14 @@ impl MudApp {
             trigger_edit_action: String::new(),
             trigger_edit_category: String::new(),
             trigger_edit_is_script: false,
+            
+            // 路徑狀態
+            show_path_window: false,
+            editing_path_name: None,
+            path_edit_name: String::new(),
+            path_edit_value: String::new(),
+            path_edit_category: String::new(),
+            
             show_settings_window: false,
         }
     }
@@ -166,14 +182,27 @@ impl MudApp {
                          enabled: t.enabled,
                      });
                  }
-            }
-
-            // 3. 更新 ProfileManager 並儲存
-             if let Some(profile) = self.profile_manager.get_mut(&profile_name) {
-                 profile.aliases = new_aliases;
-                 profile.triggers = new_triggers;
-                 
-                 // 儲存到磁碟
+             }
+ 
+             // 3. 同步 Path
+             let mut new_paths = Vec::new();
+             for name in &session.path_manager.sorted_keys {
+                 if let Some(p) = session.path_manager.get(name) {
+                     new_paths.push(crate::config::PathConfig {
+                         name: p.name.clone(),
+                         value: p.value.clone(),
+                         category: p.category.clone(),
+                     });
+                 }
+             }
+ 
+             // 4. 更新 ProfileManager 並儲存
+              if let Some(profile) = self.profile_manager.get_mut(&profile_name) {
+                  profile.aliases = new_aliases;
+                  profile.triggers = new_triggers;
+                  profile.paths = new_paths;
+                  
+                  // 儲存到磁碟
                  let p = profile.clone();
                  if let Err(e) = self.profile_manager.save(p) {
                      tracing::error!("Failed to save profile {}: {}", profile_name, e);
@@ -844,6 +873,104 @@ impl MudApp {
             });
     }
 
+    /// 繪製路徑編輯介面
+    fn render_path_edit(
+        ctx: &egui::Context,
+        session_opt: Option<&mut crate::session::Session>,
+        editing_path_name: &mut Option<String>,
+        path_edit_name: &mut String,
+        path_edit_value: &mut String,
+        path_edit_category: &mut String,
+        show_path_window: &mut bool,
+        needs_save_flag: &mut bool,
+    ) {
+        egui::Window::new(if editing_path_name.as_ref().map_or(true, |n| n.is_empty()) { "➕ 新增路徑" } else { "✏️ 編輯路徑" })
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("路徑名稱:");
+                    ui.text_edit_singleline(path_edit_name);
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("路徑內容:");
+                    ui.text_edit_singleline(path_edit_value);
+                });
+                
+                ui.label(
+                    egui::RichText::new("提示: 使用 /3w2ne 格式可自動解析為 recall; w; w; w; ne; ne")
+                        .size(11.0)
+                        .color(egui::Color32::GRAY)
+                );
+
+                ui.horizontal(|ui| {
+                    ui.label("分類:");
+                    ui.text_edit_singleline(path_edit_category);
+
+                    // 分類選擇選單
+                    if let Some(session) = session_opt.as_ref() {
+                        ui.menu_button("▼", |ui| {
+                            ui.set_max_width(200.0);
+                            
+                            // 收集現有分類
+                            let mut categories: Vec<String> = Vec::new();
+                            categories.extend(session.path_manager.list().iter().filter_map(|p| p.category.clone()));
+                            
+                            categories.retain(|c| !c.is_empty());
+                            categories.sort();
+                            categories.dedup();
+
+                            if categories.is_empty() {
+                                ui.label("尚無任何分類");
+                            } else {
+                                ui.label("選擇現有分類:");
+                                ui.separator();
+                                for cat in categories {
+                                    if ui.button(&cat).clicked() {
+                                        *path_edit_category = cat;
+                                        ui.close_menu();
+                                    }
+                                }
+                            }
+                        });
+                    }
+                });
+
+                ui.add_space(20.0);
+
+                ui.horizontal(|ui| {
+                    if ui.button("💾 儲存").clicked() {
+                        if !path_edit_name.is_empty() && !path_edit_value.is_empty() {
+                            if let Some(session) = session_opt {
+                                // 如果是編輯模式，先刪除舊的
+                                if let Some(ref old_name) = editing_path_name {
+                                    if !old_name.is_empty() {
+                                        session.path_manager.remove(old_name);
+                                    }
+                                }
+                                // 新增路徑
+                                let mut path = Path::new(
+                                    path_edit_name.clone(),
+                                    path_edit_value.clone(),
+                                );
+                                if !path_edit_category.is_empty() {
+                                    path.category = Some(path_edit_category.clone());
+                                }
+                                session.path_manager.add(path);
+                                *needs_save_flag = true;
+                            }
+                            *show_path_window = false;
+                        }
+                    }
+
+                    if ui.button("取消").clicked() {
+                        *show_path_window = false;
+                    }
+                });
+            });
+    }
+
     /// 繪製輸入區
     fn render_input_area(ui: &mut egui::Ui, session: &mut crate::session::Session, any_popup_open: bool) {
         ui.horizontal(|ui| {
@@ -1210,6 +1337,7 @@ impl MudApp {
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut self.settings_tab, SettingsTab::Alias, "別名 (Alias)");
                     ui.selectable_value(&mut self.settings_tab, SettingsTab::Trigger, "觸發器 (Trigger)");
+                    ui.selectable_value(&mut self.settings_tab, SettingsTab::Path, "路徑 (Path)");
                     ui.selectable_value(&mut self.settings_tab, SettingsTab::Logger, "日誌 (Logger)");
                     ui.selectable_value(&mut self.settings_tab, SettingsTab::General, "一般 (General)");
                 });
@@ -1232,23 +1360,23 @@ impl MudApp {
                         });
                         ui.add_space(5.0);
                         
-                        let alias_list: Vec<(String, String, String, Option<String>, bool)> = {
+                        let alias_list: Vec<(String, String, String, Option<String>, bool, bool)> = {
                             session.alias_manager.sorted_aliases.iter()
                                 .filter_map(|name| {
                                     session.alias_manager.aliases.get(name).map(|a| {
-                                        (a.name.clone(), a.pattern.clone(), a.replacement.clone(), a.category.clone(), a.enabled)
+                                        (a.name.clone(), a.pattern.clone(), a.replacement.clone(), a.category.clone(), a.enabled, a.is_script)
                                     })
                                 })
                                 .collect()
                         };
                         
-                        let mut grouped_aliases: std::collections::BTreeMap<Option<String>, Vec<(String, String, String, Option<String>, bool)>> = std::collections::BTreeMap::new();
+                        let mut grouped_aliases: std::collections::BTreeMap<Option<String>, Vec<(String, String, String, Option<String>, bool, bool)>> = std::collections::BTreeMap::new();
                         for item in alias_list {
                             grouped_aliases.entry(item.3.clone()).or_default().push(item);
                         }
                         
                         let mut to_delete: Option<String> = None;
-                        let mut to_edit: Option<(String, String, String, String)> = None;
+                        let mut to_edit: Option<(String, String, String, String, bool)> = None;
                         let mut to_toggle_category: Option<(Option<String>, bool)> = None;
                         
                         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -1268,7 +1396,7 @@ impl MudApp {
                                         egui::CollapsingHeader::new(RichText::new(category_name).strong())
                                             .default_open(true)
                                             .show(ui, |ui| {
-                                                for (name, pattern, replacement, cat, enabled) in items {
+                                                for (name, pattern, replacement, cat, enabled, is_script) in items {
                                                     ui.horizontal(|ui| {
                                                         ui.add_space(10.0);
                                                         let mut current_enabled = enabled;
@@ -1278,13 +1406,25 @@ impl MudApp {
                                                                 needs_save = true;
                                                             }
                                                         }
-                                                        ui.label(format!("{} → {}", pattern, replacement));
+                                                        let display_text = if is_script {
+                                                            let first_line = replacement.lines().next().unwrap_or("");
+                                                            let truncated = if first_line.chars().count() > 40 {
+                                                                format!("{}...", first_line.chars().take(40).collect::<String>())
+                                                            } else {
+                                                                first_line.to_string()
+                                                            };
+                                                            format!("{} → [Lua] {}", pattern, truncated)
+                                                        } else {
+                                                            format!("{} → {}", pattern, replacement)
+                                                        };
+                                                        ui.label(display_text).on_hover_text(&replacement);
+                                                        
                                                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                                             if ui.small_button("🗑️").clicked() {
                                                                 to_delete = Some(name.clone());
                                                             }
                                                             if ui.small_button("✏️").clicked() {
-                                                                to_edit = Some((name.clone(), pattern.clone(), replacement.clone(), cat.unwrap_or_default()));
+                                                                to_edit = Some((name.clone(), pattern.clone(), replacement.clone(), cat.unwrap_or_default(), is_script));
                                                             }
                                                         });
                                                     });
@@ -1307,11 +1447,12 @@ impl MudApp {
                             session.alias_manager.remove(&name);
                             needs_save = true;
                         }
-                        if let Some((name, pattern, replacement, category)) = to_edit {
+                        if let Some((name, pattern, replacement, category, is_script)) = to_edit {
                             self.editing_alias_name = Some(name);
                             self.alias_edit_pattern = pattern;
                             self.alias_edit_replacement = replacement;
                             self.alias_edit_category = category;
+                            self.alias_edit_is_script = is_script;
                             self.show_alias_window = true;
                         }
                     }
@@ -1433,6 +1574,79 @@ impl MudApp {
                             self.show_trigger_window = true;
                         }
                     }
+                    SettingsTab::Path => {
+                        ui.horizontal(|ui| {
+                            ui.heading("路徑管理");
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.button("➕ 新增路徑").clicked() {
+                                    self.editing_path_name = Some(String::new());
+                                    self.path_edit_name = String::new();
+                                    self.path_edit_value = String::new();
+                                    self.path_edit_category = String::new();
+                                    self.show_path_window = true;
+                                }
+                            });
+                        });
+                        ui.add_space(5.0);
+
+                        // 收集路徑列表
+                        let path_list: Vec<(String, String, Option<String>)> = {
+                            session.path_manager.list().iter()
+                                .map(|p| (p.name.clone(), p.value.clone(), p.category.clone()))
+                                .collect()
+                        };
+
+                        let mut grouped_paths: std::collections::BTreeMap<Option<String>, Vec<(String, String, Option<String>)>> = std::collections::BTreeMap::new();
+                        for item in path_list {
+                            grouped_paths.entry(item.2.clone()).or_default().push(item);
+                        }
+
+                        let mut to_delete: Option<String> = None;
+                        let mut to_edit: Option<(String, String, String)> = None;
+
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            if grouped_paths.is_empty() {
+                                ui.label("尚無路徑");
+                            } else {
+                                for (category, items) in grouped_paths {
+                                    let category_name = category.as_deref().unwrap_or("未分類");
+                                    
+                                    egui::CollapsingHeader::new(RichText::new(category_name).strong())
+                                        .default_open(true)
+                                        .show(ui, |ui| {
+                                            for (name, value, cat) in items {
+                                                ui.horizontal(|ui| {
+                                                    ui.add_space(10.0);
+                                                    
+                                                    ui.label(format!("{} → {}", name, value));
+                                                    
+                                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                        if ui.small_button("🗑️").clicked() {
+                                                            to_delete = Some(name.clone());
+                                                        }
+                                                        if ui.small_button("✏️").clicked() {
+                                                            to_edit = Some((name.clone(), value.clone(), cat.unwrap_or_default()));
+                                                        }
+                                                    });
+                                                });
+                                            }
+                                        });
+                                }
+                            }
+                        });
+
+                        if let Some(name) = to_delete {
+                            session.path_manager.remove(&name);
+                            needs_save = true;
+                        }
+                        if let Some((name, value, category)) = to_edit {
+                            self.editing_path_name = Some(name.clone());
+                            self.path_edit_name = name;
+                            self.path_edit_value = value;
+                            self.path_edit_category = category;
+                            self.show_path_window = true;
+                        }
+                    }
                     SettingsTab::Logger => {
                         ui.heading("日誌控制");
                         ui.add_space(10.0);
@@ -1542,6 +1756,19 @@ impl eframe::App for MudApp {
                 &mut self.trigger_edit_category,
                 &mut self.trigger_edit_is_script,
                 &mut self.show_trigger_window,
+                &mut needs_save,
+            );
+
+        }
+        if self.show_path_window {
+            Self::render_path_edit(
+                ctx,
+                self.session_manager.active_session_mut(),
+                &mut self.editing_path_name,
+                &mut self.path_edit_name,
+                &mut self.path_edit_value,
+                &mut self.path_edit_category,
+                &mut self.show_path_window,
                 &mut needs_save,
             );
         }

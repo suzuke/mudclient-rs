@@ -42,6 +42,15 @@ pub struct TriggerConfig {
     pub enabled: bool,
 }
 
+/// 路徑設定（可序列化版本）
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PathConfig {
+    pub name: String,
+    pub value: String,
+    #[serde(default)]
+    pub category: Option<String>,
+}
+
 /// 連線設定
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ConnectionConfig {
@@ -73,6 +82,9 @@ pub struct Profile {
     /// Profile 專屬觸發器
     #[serde(default)]
     pub triggers: Vec<TriggerConfig>,
+    /// Profile 專屬路徑
+    #[serde(default)]
+    pub paths: Vec<PathConfig>,
     /// 自訂腳本載入路徑（可選）
     #[serde(default)]
     pub script_paths: Vec<String>,
@@ -92,6 +104,7 @@ impl Default for Profile {
             connection: ConnectionConfig::default(),
             aliases: Vec::new(),
             triggers: Vec::new(),
+            paths: Vec::new(),
             script_paths: Vec::new(),
             created_at: current_timestamp(),
             last_connected: None,
@@ -486,6 +499,7 @@ pub fn migrate_legacy_config() -> MigrationResult {
         connection: legacy.connection,
         aliases: legacy.aliases,
         triggers: legacy.triggers,
+        paths: Vec::new(),
         script_paths: Vec::new(),
         created_at: current_timestamp(),
         last_connected: None,

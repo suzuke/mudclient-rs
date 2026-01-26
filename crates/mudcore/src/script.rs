@@ -45,6 +45,9 @@ pub struct MudContext {
     
     /// 延遲執行的 Timer (delay_ms, lua_code)
     pub timers: Vec<(u64, String)>,
+    
+    /// 觸發器狀態更新 (name, enabled)
+    pub trigger_updates: Vec<(String, bool)>,
 }
 
 impl MudContext {
@@ -167,6 +170,10 @@ impl ScriptEngine {
             let timers = self.lua.create_table()?;
             mud.set("timers", timers)?;
             
+            // 創建 trigger_updates 表
+            let trigger_updates = self.lua.create_table()?;
+            mud.set("trigger_updates", trigger_updates)?;
+            
             // gag 標記
             mud.set("gag", false)?;
             
@@ -237,6 +244,19 @@ impl ScriptEngine {
                 Ok(())
             })?;
             mud.set("timer", timer_fn)?;
+            
+            // mud.enable_trigger(name, enabled) 函數 - 啟用/禁用觸發器
+            let enable_trigger_fn = scope.create_function(|lua, (name, enabled): (String, bool)| {
+                let mud: mlua::Table = lua.globals().get("mud")?;
+                let updates: mlua::Table = mud.get("trigger_updates")?;
+                let len = updates.len()? + 1;
+                let pair = lua.create_table()?;
+                pair.set(1, name)?;
+                pair.set(2, enabled)?;
+                updates.set(len, pair)?;
+                Ok(())
+            })?;
+            mud.set("enable_trigger", enable_trigger_fn)?;
             
             // 設置全局變數
             self.lua.globals().set("mud", mud)?;
@@ -314,6 +334,17 @@ impl ScriptEngine {
                         if let (Ok(delay_ms), Ok(code)) = (tbl.get::<u64>(1), tbl.get::<String>(2)) {
                             // 計時器觸發永遠不被視為回顯
                             context.timers.push((delay_ms, code));
+                        }
+                    }
+                }
+            }
+            
+            // 收集 trigger_updates
+            if let Ok(updates) = mud.get::<mlua::Table>("trigger_updates") {
+                for pair in updates.pairs::<i64, mlua::Table>() {
+                    if let Ok((_, tbl)) = pair {
+                        if let (Ok(name), Ok(enabled)) = (tbl.get::<String>(1), tbl.get::<bool>(2)) {
+                            context.trigger_updates.push((name, enabled));
                         }
                     }
                 }

@@ -13,7 +13,7 @@ use std::time::Instant;
 use mudcore::{
     Alias, AliasManager, Logger, ScriptEngine, Trigger, TriggerAction,
     TriggerManager, TriggerPattern, WindowManager, WindowMessage,
-    MudContext,
+    MudContext, Path, PathManager,
 };
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -134,6 +134,9 @@ pub struct Session {
     /// 觸發器管理器
     pub trigger_manager: TriggerManager,
     
+    /// 路徑管理器
+    pub path_manager: PathManager,
+    
     /// 腳本引擎
     pub script_engine: ScriptEngine,
     
@@ -212,6 +215,14 @@ impl Session {
     pub fn from_profile(profile: &Profile) -> Self {
         let mut alias_manager = AliasManager::new();
         let mut trigger_manager = TriggerManager::new();
+        let mut path_manager = PathManager::new();
+
+        // 載入 Profile 的路徑
+        for path_cfg in &profile.paths {
+            let mut path = Path::new(&path_cfg.name, &path_cfg.value);
+            path.category = path_cfg.category.clone();
+            path_manager.add(path);
+        }
 
         // 載入 Profile 的別名
         for alias_cfg in &profile.aliases {
@@ -253,6 +264,7 @@ impl Session {
             connected_at: None,
             alias_manager,
             trigger_manager,
+            path_manager,
             script_engine: ScriptEngine::new(),
             window_manager: WindowManager::new(),
             logger,
@@ -404,6 +416,14 @@ impl Session {
         for log_msg in context.log_messages {
             let _ = self.logger.log(&format!("[Script] {}", log_msg));
         }
+
+        // 6. 觸發器狀態更新
+        for (name, enabled) in context.trigger_updates {
+            if let Some(trigger) = self.trigger_manager.get_mut(&name) {
+                trigger.enabled = enabled;
+                tracing::info!("Script updated trigger '{}' enabled: {}", name, enabled);
+            }
+        }
     }
 
     /// 處理接收到的文字與觸發器
@@ -478,7 +498,7 @@ impl Session {
 
             // 執行收集到的腳本
             for (code, captures) in pending_scripts {
-                if let Ok(context) = self.script_engine.execute_inline(&code, "TRIGGER", &captures, false) {
+                if let Ok(context) = self.script_engine.execute_inline(&code, text, &captures, false) {
                     self.apply_script_context(context);
                 }
             }
@@ -650,7 +670,7 @@ impl Session {
         }
         
         for (script, captures) in pending_scripts {
-            match self.script_engine.execute_inline(&script, "Trigger", &captures, false) {
+            match self.script_engine.execute_inline(&script, &input, &captures, false) {
                 Ok(ctx) => self.apply_script_context(ctx),
                 Err(e) => {
                     tracing::error!("Trigger script error: {}", e);
@@ -671,7 +691,7 @@ impl Session {
                 return;
             }
             AliasMatchResult::Script(code) => {
-                match self.script_engine.execute_inline(&code, "Alias", &[], false) {
+                match self.script_engine.execute_inline(&code, &input, &[], false) {
                     Ok(ctx) => self.apply_script_context(ctx),
                     Err(e) => {
                         tracing::error!("Alias script error: {}", e);
@@ -683,7 +703,33 @@ impl Session {
             AliasMatchResult::None => {}
         }
 
-        // 5. 處理特殊指令 (Client-Side Commands)
+        // 5. Path 與 Speedwalk 解析
+        // 這邊處理兩件事：
+        // a. Path Expansion: 如果輸入符合已定義的 path name，展開為 path value
+        // b. Speedwalk Parsing: 如果輸入 (或展開後的內容) 對應 speedwalk 格式，則分解指令
+        
+        let path_value = if let Some(path) = self.path_manager.get(&input) {
+            path.value.clone()
+        } else {
+            input.to_string()
+        };
+
+        // 嘗試解析為 Speedwalk
+        // 需引入 mudcore::parse_speedwalk
+        if let Some(commands) = mudcore::parse_speedwalk(&path_value) {
+             for cmd in commands {
+                 self.handle_user_input_with_depth(&cmd, depth + 1);
+             }
+             return;
+        }
+
+        // 如果發生了 path expansion 但不符合 speedwalk 格式 (例如純指令替換)，也需要遞迴處理
+        if path_value != input {
+             self.handle_user_input_with_depth(&path_value, depth + 1);
+             return;
+        }
+
+        // 6. 處理特殊指令 (Client-Side Commands)
         if input.starts_with("#") || input.starts_with("/") {
             let parts: Vec<&str> = input.split_whitespace().collect();
             let cmd = parts[0];
