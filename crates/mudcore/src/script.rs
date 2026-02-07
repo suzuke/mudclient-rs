@@ -361,6 +361,28 @@ impl ScriptEngine {
         self.lua.load(code).into_function()?;
         Ok(())
     }
+
+    /// 呼叫全域 Lua 鉤子函數
+    pub fn invoke_hook(&self, hook_name: &str, arg: &str) -> Result<Option<MudContext>, ScriptError> {
+        // 檢查函數是否存在
+        if !self.lua.globals().contains_key(hook_name)? {
+            return Ok(None);
+        }
+
+        // 執行呼叫
+        self.lua.scope(|_scope| {
+           // 我們只是檢查是否存在，實際上呼叫是透過下面的 adapter_code
+           // let _func: mlua::Function = self.lua.globals().get(hook_name)?;
+           Ok(())
+        })?;
+        
+        // 為了避免 lifetime 和 borrow 問題，我們使用 execute_inline 的既有路徑
+        // 構造一段呼叫代碼
+        let adapter_code = format!("if _G['{0}'] then _G['{0}'](message) end", hook_name);
+        // 注意：這裡我們依賴 execute_inline 將 message 注入到全局
+        
+        self.run_code(&adapter_code, arg, &[], false).map(Some)
+    }
 }
 
 impl Default for ScriptEngine {

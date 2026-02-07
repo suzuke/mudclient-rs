@@ -276,7 +276,7 @@ impl Session {
         );
         let _ = logger.start(&log_path);
 
-        Self {
+        let mut session = Self {
             id: SessionId::new(),
             profile_name: profile.name.clone(),
             display_name: profile.display_name.clone(),
@@ -314,11 +314,16 @@ impl Session {
             last_sent_command: None,
             repeat_command_count: 0,
             line_buffer: std::collections::VecDeque::with_capacity(5),
-        }
+        };
+
+        // 自動載入 scripts/ 目錄下的腳本
+        session.load_startup_scripts();
+
+        session
     }
 
     /// 從設定建立觸發器
-    fn create_trigger_from_config(config: &TriggerConfig) -> Option<Trigger> {
+    pub fn create_trigger_from_config(config: &TriggerConfig) -> Option<Trigger> {
         let clean_pattern = clean_pattern_string(&config.pattern);
 
         // 自動偵測正則表達式模式
@@ -408,6 +413,60 @@ impl Session {
         }
     }
 
+    /// 載入並執行 scripts/ 目錄下的所有 .lua 腳本
+    fn load_startup_scripts(&mut self) {
+        let scripts_dir = std::path::Path::new("scripts");
+        if !scripts_dir.exists() {
+            // 如果目錄不存在，嘗試建立它
+            if let Err(e) = std::fs::create_dir_all(scripts_dir) {
+                let _ = self.logger.log(&format!("無法建立 scripts 目錄: {}", e));
+                return;
+            }
+        }
+
+        match std::fs::read_dir(scripts_dir) {
+            Ok(entries) => {
+                let mut valid_scripts = Vec::new();
+                for entry in entries {
+                    if let Ok(entry) = entry {
+                        let path = entry.path();
+                        if path.extension().map_or(false, |ext| ext == "lua") {
+                            valid_scripts.push(path);
+                        }
+                    }
+                }
+                // 排序以保證載入順序確定性
+                valid_scripts.sort();
+
+                for path in valid_scripts {
+                    if let Ok(code) = std::fs::read_to_string(&path) {
+                        let filename = path.file_name().unwrap_or_default().to_string_lossy();
+                        match self.script_engine.execute_inline(&code, "STARTUP", &[], false) {
+                            Ok(context) => {
+                                self.apply_script_context(context);
+                                let _ = self.logger.log(&format!("已自動載入腳本: {}", filename));
+                                
+                                // 回顯到系統視窗，讓用戶知道發生了什麼
+                                self.window_manager.route_message("main", mudcore::WindowMessage {
+                                    content: format!("\n[System] 自動載入腳本: {}\n", filename),
+                                    preserve_ansi: true,
+                                });
+                            }
+                            Err(e) => {
+                                let msg = format!("腳本載入錯誤 ({}): {}", filename, e);
+                                let _ = self.logger.log(&msg);
+                                self.system_message(&msg); 
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = self.logger.log(&format!("無法讀取 scripts 目錄: {}", e));
+            }
+        }
+    }
+
     /// 核心：將腳本執行結果套用到 Session
     pub fn apply_script_context(&mut self, context: MudContext) {
         // 1. 發送指令
@@ -463,6 +522,12 @@ impl Session {
         if text.contains('\n') {
             let mut result = true;
             for line in text.lines() {
+                // 過濾掉伺服器輸出的空行，以修正雙倍行距問題
+                // 但保留使用者的輸入回顯 (is_echo = true)
+                if !is_echo && line.trim().is_empty() {
+                    continue;
+                }
+
                 // 遞歸調用處理單行
                 // 注意：這裡我們傳遞 is_echo 為 false，因為只有第一行可能是 echo（取決於調用上下文），
                 // 但通常 handle_text 收到包含換行符的 msg 時都是來自伺服器的封包，非 echo。
@@ -478,6 +543,15 @@ impl Session {
         let mut targets = vec!["main".to_string()];
 
         if !is_echo {
+            // 0. 呼叫全域鉤子 (Global Hook)
+            // 這允許 Lua 腳本直接處理每一行伺服器訊息，無需透過正則表達式觸發器
+            if let Ok(Some(context)) = self.script_engine.invoke_hook("on_server_message", text) {
+                if context.gag {
+                    gagged = true;
+                }
+                self.apply_script_context(context);
+            }
+
             // 處理觸發器
             let triggers = self.trigger_manager.process(text);
             
@@ -529,6 +603,9 @@ impl Session {
             // 執行收集到的腳本
             for (code, captures) in pending_scripts {
                 if let Ok(context) = self.script_engine.execute_inline(&code, text, &captures, false) {
+                    if context.gag {
+                        gagged = true;
+                    }
                     self.apply_script_context(context);
                 }
             }

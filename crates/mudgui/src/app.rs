@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use eframe::egui::{self, Color32, FontId, RichText, ScrollArea, TextEdit};
 use eframe::egui::text::LayoutJob;
+use egui_extras::{Column, TableBuilder};
 use mudcore::{
     Alias, TelnetClient, Trigger, TriggerAction,
     TriggerPattern, Path,
@@ -47,6 +48,7 @@ pub struct MudApp {
     alias_edit_replacement: String,
     alias_edit_category: String,
     alias_edit_is_script: bool,
+    alias_search_text: String,
 
     // === 觸發器編輯狀態 ===
     show_trigger_window: bool,
@@ -56,6 +58,7 @@ pub struct MudApp {
     trigger_edit_action: String,
     trigger_edit_category: String,
     trigger_edit_is_script: bool,
+    trigger_search_text: String,
 
     // === 路徑編輯狀態 ===
     show_path_window: bool,
@@ -161,6 +164,8 @@ impl MudApp {
 
             show_settings_window: false,
             settings_scope: SettingsScope::Profile,
+            alias_search_text: String::new(),
+            trigger_search_text: String::new(),
         }
     }
 
@@ -1636,6 +1641,10 @@ impl MudApp {
                                 SettingsScope::Profile => "別名管理 (Profile)",
                                 SettingsScope::Global => "別名管理 (Global)",
                             });
+
+                            // 搜尋框
+                            ui.add(TextEdit::singleline(&mut self.alias_search_text).hint_text("🔍 搜尋名稱或內容..."));
+
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if ui.button("➕ 新增別名").clicked() {
                                     self.editing_alias_name = Some(String::new());
@@ -1648,14 +1657,39 @@ impl MudApp {
                         });
                         ui.add_space(5.0);
                         
+                        // 定義別名來源類型
+                        #[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord)]
+                        enum AliasSource {
+                            Global,   // 來自全域設定 (繼承)
+                            Profile,  // 本地設定 (獨有)
+                            Override, // 本地設定 (覆蓋全域)
+                        }
+
                         // 收集 Alias 列表
-                        let alias_list: Vec<(String, String, String, Option<String>, bool, bool)> = match self.settings_scope {
+                        let mut alias_list: Vec<(String, String, String, Option<String>, bool, bool, AliasSource)> = match self.settings_scope {
                             SettingsScope::Profile => {
                                 // Profile 模式: 顯示 Session 中的別名
                                 session.alias_manager.sorted_aliases.iter()
                                     .filter_map(|name| {
                                         session.alias_manager.aliases.get(name).map(|a| {
-                                            (a.name.clone(), a.pattern.clone(), a.replacement.clone(), a.category.clone(), a.enabled, a.is_script)
+                                            // 判斷來源
+                                            let source = if let Some(global_a) = self.global_config.global_aliases.iter().find(|ga| ga.name == a.name) {
+                                                let global_is_match = global_a.pattern == a.pattern &&
+                                                                    global_a.replacement == a.replacement &&
+                                                                    global_a.is_script == a.is_script &&
+                                                                    global_a.enabled == a.enabled &&
+                                                                    global_a.category == a.category;
+                                                                    
+                                                if global_is_match {
+                                                    AliasSource::Global
+                                                } else {
+                                                    AliasSource::Override
+                                                }
+                                            } else {
+                                                AliasSource::Profile
+                                            };
+
+                                            (a.name.clone(), a.pattern.clone(), a.replacement.clone(), a.category.clone(), a.enabled, a.is_script, source)
                                         })
                                     })
                                     .collect()
@@ -1663,86 +1697,204 @@ impl MudApp {
                             SettingsScope::Global => {
                                 // Global 模式: 顯示 Global Config 中的別名
                                 self.global_config.global_aliases.iter().map(|a| {
-                                    (a.name.clone(), a.pattern.clone(), a.replacement.clone(), a.category.clone(), a.enabled, a.is_script)
+                                    (a.name.clone(), a.pattern.clone(), a.replacement.clone(), a.category.clone(), a.enabled, a.is_script, AliasSource::Global)
                                 }).collect()
                             }
                         };
                         
-                        let mut grouped_aliases: std::collections::BTreeMap<Option<String>, Vec<(String, String, String, Option<String>, bool, bool)>> = std::collections::BTreeMap::new();
+                        // 搜尋過濾
+                        let search = self.alias_search_text.to_lowercase();
+                        if !search.is_empty() {
+                            alias_list.retain(|(name, pattern, replacement, cat, _, _, _)| {
+                                name.to_lowercase().contains(&search) || 
+                                pattern.to_lowercase().contains(&search) ||
+                                replacement.to_lowercase().contains(&search) ||
+                                cat.as_deref().unwrap_or("").to_lowercase().contains(&search)
+                            });
+                        }
+
+                        // Grouping Logic
+                        let mut grouped_aliases: std::collections::BTreeMap<Option<String>, Vec<(String, String, String, Option<String>, bool, bool, AliasSource)>> = std::collections::BTreeMap::new();
                         for item in alias_list {
                             grouped_aliases.entry(item.3.clone()).or_default().push(item);
                         }
-                        
+
                         let mut to_delete: Option<String> = None;
                         let mut to_edit: Option<(String, String, String, String, bool)> = None;
+                        let mut to_toggle_name: Option<(String, bool)> = None;
                         let mut to_toggle_category: Option<(Option<String>, bool)> = None;
-                        
-                        egui::ScrollArea::vertical().show(ui, |ui| {
-                            if grouped_aliases.is_empty() {
-                                ui.label("尚無別名");
-                            } else {
-                                for (category, items) in grouped_aliases {
-                                    let category_name = category.as_deref().unwrap_or("未分類");
-                                    
-                                    ui.horizontal(|ui| {
-                                        let all_enabled = items.iter().all(|i| i.4);
-                                        let mut current_all_enabled = all_enabled;
-                                        if ui.checkbox(&mut current_all_enabled, "").changed() {
-                                            to_toggle_category = Some((category.clone(), current_all_enabled));
-                                        }
 
-                                        egui::CollapsingHeader::new(RichText::new(category_name).strong())
-                                            .default_open(true)
-                                            .show(ui, |ui| {
-                                                for (name, pattern, replacement, cat, enabled, is_script) in items {
-                                                    ui.horizontal(|ui| {
-                                                        ui.add_space(10.0);
-                                                        let mut current_enabled = enabled;
-                                                        if ui.checkbox(&mut current_enabled, "").changed() {
-                                                            // 更新 Enabled 狀態
-                                                            match self.settings_scope {
-                                                                SettingsScope::Profile => {
-                                                                    if let Some(alias) = session.alias_manager.aliases.get_mut(&name) {
-                                                                        alias.enabled = current_enabled;
-                                                                        needs_save = true;
-                                                                    }
-                                                                },
-                                                                SettingsScope::Global => {
-                                                                    if let Some(alias) = self.global_config.global_aliases.iter_mut().find(|a| a.name == name) {
-                                                                        alias.enabled = current_enabled;
-                                                                        needs_save = true;
+                        // 操作 Action
+                        enum AliasOp {
+                            MoveToGlobal(String),
+                            MoveToProfile(String),
+                            RevertToGlobal(String),
+                            CopyToGlobal(String),
+                        }
+                        let mut op_action: Option<AliasOp> = None;
+
+                        // 表格繪製
+                        TableBuilder::new(ui)
+                            .striped(true)
+                            .resizable(true)
+                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                            .column(Column::auto()) // Enabled
+                            .column(Column::auto()) // Source Icon
+                            .column(Column::auto().at_least(60.0)) // Category
+                            .column(Column::initial(100.0).resizable(true)) // Name
+                            .column(Column::initial(150.0).resizable(true)) // Pattern
+                            .column(Column::remainder()) // Replacement
+                            .column(Column::auto()) // Actions
+                            .header(20.0, |mut header| {
+                                header.col(|ui| { ui.strong("啟用"); });
+                                header.col(|ui| { ui.strong("來源"); });
+                                header.col(|ui| { ui.strong("分類"); });
+                                header.col(|ui| { ui.strong("名稱"); });
+                                header.col(|ui| { ui.strong("指令"); });
+                                header.col(|ui| { ui.strong("內容"); });
+                                header.col(|ui| { ui.strong("操作"); });
+                            })
+                            .body(|mut body| {
+                                for (category, items) in grouped_aliases {
+                                     let category_id_str = category.clone().unwrap_or_else(|| "default".to_string());
+                                     let is_expanded_id = body.ui_mut().make_persistent_id(format!("alias_cat_{}", category_id_str));
+                                     let is_expanded = body.ui_mut().data(|d| d.get_temp::<bool>(is_expanded_id).unwrap_or(true));
+
+                                     // Group Header Row
+                                     body.row(24.0, |mut row| {
+                                         row.col(|ui| {
+                                             let icon = if is_expanded { "▼" } else { "▶" };
+                                             if ui.button(icon).clicked() {
+                                                 ui.data_mut(|d| d.insert_temp(is_expanded_id, !is_expanded));
+                                             }
+                                         });
+                                         row.col(|_| {}); // Source placeholder
+                                         row.col(|ui| {
+                                             let cat_name = category.as_deref().unwrap_or("未分類");
+                                             ui.strong(cat_name);
+                                         });
+                                         row.col(|ui| {
+                                             // Batch toggle
+                                            if !items.is_empty() {
+                                                let all_enabled = items.iter().all(|i| i.4);
+                                                let mut current_all = all_enabled;
+                                                if ui.checkbox(&mut current_all, "(全選)").changed() {
+                                                    to_toggle_category = Some((category.clone(), current_all));
+                                                }
+                                            }
+                                         });
+                                         row.col(|_| {});
+                                         row.col(|_| {});
+                                         row.col(|_| {});
+                                     });
+
+                                    if is_expanded {
+                                        for (name, pattern, replacement, cat, enabled, is_script, source) in items {
+                                            body.row(24.0, |mut row| {
+                                                // 1. 啟用
+                                                row.col(|ui| {
+                                                    let mut is_enabled = enabled;
+                                                    if ui.checkbox(&mut is_enabled, "").changed() {
+                                                        to_toggle_name = Some((name.clone(), is_enabled));
+                                                    }
+                                                });
+
+                                                // 2. 來源圖示
+                                                row.col(|ui| {
+                                                    match source {
+                                                        AliasSource::Global => { ui.label("🌍").on_hover_text("全域設定 (Global)"); },
+                                                        AliasSource::Profile => { ui.label("👤").on_hover_text("Profile 專屬"); },
+                                                        AliasSource::Override => { ui.label("⚠️").on_hover_text("已覆蓋全域設定 (Override)"); },
+                                                    }
+                                                });
+
+                                                // 3. 分類
+                                                row.col(|_ui| {
+                                                    // ui.label(cat.as_deref().unwrap_or("-")); // Optional
+                                                });
+
+                                                // 4. 名稱
+                                                row.col(|ui| {
+                                                    ui.label(&name);
+                                                });
+
+                                                // 5. 指令 (Pattern)
+                                                row.col(|ui| {
+                                                    ui.label(&pattern).on_hover_text(&pattern);
+                                                });
+
+                                                // 6. 內容 (Replacement)
+                                                row.col(|ui| {
+                                                    let display_text = if is_script {
+                                                        let first_line = replacement.lines().next().unwrap_or("");
+                                                        let truncated = if first_line.chars().count() > 40 {
+                                                            format!("{}...", first_line.chars().take(40).collect::<String>())
+                                                        } else {
+                                                            first_line.to_string()
+                                                        };
+                                                        format!("[Lua] {}", truncated)
+                                                    } else {
+                                                        replacement.clone()
+                                                    };
+                                                    ui.label(display_text).on_hover_text(&replacement);
+                                                });
+
+                                                // 7. 操作
+                                                row.col(|ui| {
+                                                     ui.horizontal(|ui| {
+                                                        ui.spacing_mut().item_spacing.x = 8.0;
+                                                        if ui.button("✏️").on_hover_text("編輯").clicked() {
+                                                            to_edit = Some((name.clone(), pattern.clone(), replacement.clone(), cat.clone().unwrap_or_default(), is_script));
+                                                        }
+
+                                                        if self.settings_scope == SettingsScope::Profile {
+                                                            ui.menu_button(" ⋮ ", |ui| {
+                                                                ui.set_min_width(120.0);
+                                                                match source {
+                                                                    AliasSource::Profile => {
+                                                                        if ui.button("🌍 移至全域").clicked() {
+                                                                            op_action = Some(AliasOp::MoveToGlobal(name.clone()));
+                                                                            ui.close_menu();
+                                                                        }
+                                                                        if ui.button("📋 複製至全域").clicked() {
+                                                                            op_action = Some(AliasOp::CopyToGlobal(name.clone()));
+                                                                            ui.close_menu();
+                                                                        }
+                                                                    },
+                                                                    AliasSource::Global => {
+                                                                        if ui.button("👤 獨立為 Profile").clicked() {
+                                                                            op_action = Some(AliasOp::MoveToProfile(name.clone()));
+                                                                            ui.close_menu();
+                                                                        }
+                                                                        if ui.button("✏️ 覆蓋 (Override)").clicked() {
+                                                                            to_edit = Some((name.clone(), pattern.clone(), replacement.clone(), cat.clone().unwrap_or_default(), is_script));
+                                                                            ui.close_menu();
+                                                                        }
+                                                                    },
+                                                                    AliasSource::Override => {
+                                                                        if ui.button("🔙 還原至全域").clicked() {
+                                                                            op_action = Some(AliasOp::RevertToGlobal(name.clone()));
+                                                                            ui.close_menu();
+                                                                        }
+                                                                        if ui.button("🌍 更新至全域").clicked() {
+                                                                            op_action = Some(AliasOp::MoveToGlobal(name.clone()));
+                                                                            ui.close_menu();
+                                                                        }
                                                                     }
                                                                 }
-                                                            }
+                                                            });
                                                         }
-                                                        let display_text = if is_script {
-                                                            let first_line = replacement.lines().next().unwrap_or("");
-                                                            let truncated = if first_line.chars().count() > 40 {
-                                                                format!("{}...", first_line.chars().take(40).collect::<String>())
-                                                            } else {
-                                                                first_line.to_string()
-                                                            };
-                                                            format!("{} → [Lua] {}", pattern, truncated)
-                                                        } else {
-                                                            format!("{} → {}", pattern, replacement)
-                                                        };
-                                                        ui.label(display_text).on_hover_text(&replacement);
-                                                        
-                                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                                            if ui.small_button("🗑️").clicked() {
-                                                                to_delete = Some(name.clone());
-                                                            }
-                                                            if ui.small_button("✏️").clicked() {
-                                                                to_edit = Some((name.clone(), pattern.clone(), replacement.clone(), cat.unwrap_or_default(), is_script));
-                                                            }
-                                                        });
-                                                    });
-                                                }
+
+                                                        if ui.button("🗑️").on_hover_text("刪除").clicked() {
+                                                            to_delete = Some(name.clone());
+                                                        }
+                                                     });
+                                                });
                                             });
-                                    });
+                                        }
+                                    }
                                 }
-                            }
-                        });
+                            });
                         
                         // 處理操作
                         if let Some((cat, enabled)) = to_toggle_category {
@@ -1760,6 +1912,24 @@ impl MudApp {
                             }
                             needs_save = true;
                         }
+
+                        if let Some((name, enabled)) = to_toggle_name {
+                             match self.settings_scope {
+                                SettingsScope::Profile => {
+                                    if let Some(alias) = session.alias_manager.aliases.get_mut(&name) {
+                                        alias.enabled = enabled;
+                                        needs_save = true;
+                                    }
+                                },
+                                SettingsScope::Global => {
+                                    if let Some(alias) = self.global_config.global_aliases.iter_mut().find(|a| a.name == name) {
+                                        alias.enabled = enabled;
+                                        needs_save = true;
+                                    }
+                                }
+                            }
+                        }
+
                         if let Some(name) = to_delete {
                             match self.settings_scope {
                                 SettingsScope::Profile => { session.alias_manager.remove(&name); },
@@ -1769,6 +1939,7 @@ impl MudApp {
                             }
                             needs_save = true;
                         }
+
                         if let Some((name, pattern, replacement, category, is_script)) = to_edit {
                             self.editing_alias_name = Some(name);
                             self.alias_edit_pattern = pattern;
@@ -1777,6 +1948,47 @@ impl MudApp {
                             self.alias_edit_is_script = is_script;
                             self.show_alias_window = true;
                         }
+
+                        // 處理範圍操作
+                        if let Some(op) = op_action {
+                            match op {
+                                AliasOp::MoveToGlobal(name) | AliasOp::CopyToGlobal(name) => {
+                                    if let Some(a) = session.alias_manager.aliases.get(&name) {
+                                        let new_config = crate::config::AliasConfig {
+                                            name: a.name.clone(),
+                                            pattern: a.pattern.clone(),
+                                            replacement: a.replacement.clone(),
+                                            category: a.category.clone(),
+                                            is_script: a.is_script,
+                                            enabled: a.enabled,
+                                        };
+
+                                        if let Some(existing) = self.global_config.global_aliases.iter_mut().find(|ga| ga.name == name) {
+                                            *existing = new_config;
+                                        } else {
+                                            self.global_config.global_aliases.push(new_config);
+                                        }
+                                        needs_save = true;
+                                    }
+                                },
+                                AliasOp::MoveToProfile(name) => {
+                                    self.global_config.global_aliases.retain(|a| a.name != name);
+                                    needs_save = true;
+                                },
+                                AliasOp::RevertToGlobal(name) => {
+                                    if let Some(ga) = self.global_config.global_aliases.iter().find(|a| a.name == name) {
+                                       let mut alias = mudcore::Alias::new(&ga.name, &ga.pattern, &ga.replacement)
+                                           .as_script(ga.is_script);
+                                       alias.enabled = ga.enabled;
+                                       if let Some(ref cat) = ga.category {
+                                           alias = alias.with_category(cat);
+                                       }
+                                       session.alias_manager.add(alias);
+                                       needs_save = true;
+                                    }
+                                }
+                            }
+                        }
                     }
                     SettingsTab::Trigger => {
                         ui.horizontal(|ui| {
@@ -1784,6 +1996,10 @@ impl MudApp {
                                 SettingsScope::Profile => "觸發器管理 (Profile)",
                                 SettingsScope::Global => "觸發器管理 (Global)",
                             });
+                            
+                            // 搜尋框
+                            ui.add(TextEdit::singleline(&mut self.trigger_search_text).hint_text("🔍 搜尋名稱或內容..."));
+
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if ui.button("➕ 新增觸發器").clicked() {
                                     self.editing_trigger_name = Some(String::new());
@@ -1797,8 +2013,16 @@ impl MudApp {
                         });
                         ui.add_space(5.0);
                         
+                        // 定義觸發器來源類型
+                        #[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord)]
+                        enum TriggerSource {
+                            Global,   // 來自全域設定 (繼承)
+                            Profile,  // 本地設定 (獨有)
+                            Override, // 本地設定 (覆蓋全域)
+                        }
+
                         // 收集 Trigger 列表
-                        let trigger_list: Vec<(String, String, String, Option<String>, bool, bool, String)> = match self.settings_scope {
+                        let mut trigger_list: Vec<(String, String, String, Option<String>, bool, bool, String, TriggerSource)> = match self.settings_scope {
                             SettingsScope::Profile => {
                                 session.trigger_manager.order.iter()
                                     .filter_map(|name| {
@@ -1820,81 +2044,211 @@ impl MudApp {
                                                     _ => None,
                                                 }
                                             }).unwrap_or_default();
-                                            (t.name.clone(), pattern_text, clean_pattern, t.category.clone(), t.enabled, is_script, action_str)
+                                            
+                                            // 判斷來源
+                                            let source = if let Some(global_t) = self.global_config.global_triggers.iter().find(|gt| gt.name == t.name) {
+                                                let global_is_match = clean_pattern_string(&global_t.pattern) == clean_pattern &&
+                                                                    global_t.action == action_str &&
+                                                                    global_t.is_script == is_script &&
+                                                                    global_t.enabled == t.enabled &&
+                                                                    global_t.category == t.category;
+                                                                    
+                                                if global_is_match {
+                                                    TriggerSource::Global
+                                                } else {
+                                                    TriggerSource::Override
+                                                }
+                                            } else {
+                                                TriggerSource::Profile
+                                            };
+
+                                            (t.name.clone(), pattern_text, clean_pattern, t.category.clone(), t.enabled, is_script, action_str, source)
                                         })
                                     })
                                     .collect()
                             },
                             SettingsScope::Global => {
                                 self.global_config.global_triggers.iter().map(|t| {
-                                    let pattern_text = format!("(Global) {}", t.pattern); // 簡化
-                                    (t.name.clone(), pattern_text, t.pattern.clone(), t.category.clone(), t.enabled, t.is_script, t.action.clone())
+                                    let pattern_text = format!("(Global) {}", t.pattern);
+                                    (t.name.clone(), pattern_text, t.pattern.clone(), t.category.clone(), t.enabled, t.is_script, t.action.clone(), TriggerSource::Global)
                                 }).collect()
                             }
                         };
+
+                        // 搜尋過濾
+                        let search = self.trigger_search_text.to_lowercase();
+                        if !search.is_empty() {
+                            trigger_list.retain(|(name, p_text, _, cat, _, _, _, _)| {
+                                name.to_lowercase().contains(&search) || 
+                                p_text.to_lowercase().contains(&search) ||
+                                cat.as_deref().unwrap_or("").to_lowercase().contains(&search)
+                            });
+                        }
                         
-                        let mut grouped_triggers: std::collections::BTreeMap<Option<String>, Vec<(String, String, String, Option<String>, bool, bool, String)>> = std::collections::BTreeMap::new();
+                        // Grouping Logic
+                        let mut grouped_triggers: std::collections::BTreeMap<Option<String>, Vec<(String, String, String, Option<String>, bool, bool, String, TriggerSource)>> = std::collections::BTreeMap::new();
                         for item in trigger_list {
                             grouped_triggers.entry(item.3.clone()).or_default().push(item);
                         }
-                        
+
                         let mut to_delete: Option<String> = None;
                         let mut to_edit: Option<(String, String, String, bool, String)> = None;
+                        let mut to_toggle_name: Option<(String, bool)> = None;
                         let mut to_toggle_category: Option<(Option<String>, bool)> = None;
                         
-                        egui::ScrollArea::vertical().show(ui, |ui| {
-                            if grouped_triggers.is_empty() {
-                                ui.label("尚無觸發器");
-                            } else {
+                        // 操作 Action
+                        enum TriggerOp {
+                            MoveToGlobal(String),
+                            MoveToProfile(String),
+                            RevertToGlobal(String),
+                            CopyToGlobal(String),
+                        }
+                        let mut op_action: Option<TriggerOp> = None;
+
+                        // 表格繪製
+                        TableBuilder::new(ui)
+                            .striped(true)
+                            .resizable(true)
+                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                            .column(Column::auto()) // Enabled / Toggle
+                            .column(Column::auto()) // Source Icon
+                            .column(Column::auto().at_least(60.0)) // Category
+                            .column(Column::initial(120.0).resizable(true)) // Name
+                            .column(Column::remainder()) // Pattern
+                            .column(Column::auto()) // Actions
+                            .header(20.0, |mut header| {
+                                header.col(|ui| { ui.strong("啟用"); });
+                                header.col(|ui| { ui.strong("來源"); });
+                                header.col(|ui| { ui.strong("分類"); });
+                                header.col(|ui| { ui.strong("名稱"); });
+                                header.col(|ui| { ui.strong("觸發內容"); });
+                                header.col(|ui| { ui.strong("操作"); });
+                            })
+                            .body(|mut body| {
                                 for (category, items) in grouped_triggers {
-                                    let category_name = category.as_deref().unwrap_or("未分類");
- 
-                                     ui.horizontal(|ui| {
-                                         let all_enabled = items.iter().all(|i| i.4);
-                                         let mut current_all_enabled = all_enabled;
-                                         if ui.checkbox(&mut current_all_enabled, "").changed() {
-                                             to_toggle_category = Some((category.clone(), current_all_enabled));
-                                         }
- 
-                                         egui::CollapsingHeader::new(RichText::new(category_name).strong())
-                                             .default_open(true)
-                                             .show(ui, |ui| {
-                                                 for (name, pattern_text, clean_pattern, cat, enabled, is_script, action_str) in items {
-                                                     ui.horizontal(|ui| {
-                                                         ui.add_space(10.0);
-                                                         let mut current_enabled = enabled;
-                                                         if ui.checkbox(&mut current_enabled, "").changed() {
-                                                             match self.settings_scope {
-                                                                SettingsScope::Profile => {
-                                                                    if let Some(trigger) = session.trigger_manager.triggers.get_mut(&name) {
-                                                                        trigger.enabled = current_enabled;
-                                                                        needs_save = true;
-                                                                    }
-                                                                },
-                                                                SettingsScope::Global => {
-                                                                    if let Some(trigger) = self.global_config.global_triggers.iter_mut().find(|t| t.name == name) {
-                                                                        trigger.enabled = current_enabled;
-                                                                        needs_save = true;
+                                    let category_id_str = category.clone().unwrap_or_else(|| "default".to_string());
+                                    let is_expanded_id = body.ui_mut().make_persistent_id(format!("trig_cat_{}", category_id_str));
+                                    let is_expanded = body.ui_mut().data(|d| d.get_temp::<bool>(is_expanded_id).unwrap_or(true));
+
+                                    // Group Header Row
+                                    body.row(24.0, |mut row| {
+                                        row.col(|ui| {
+                                            let icon = if is_expanded { "▼" } else { "▶" };
+                                            if ui.button(icon).clicked() {
+                                                ui.data_mut(|d| d.insert_temp(is_expanded_id, !is_expanded));
+                                            }
+                                        });
+                                        row.col(|_| {}); // Source placeholder
+                                        row.col(|ui| {
+                                            let cat_name = category.as_deref().unwrap_or("未分類");
+                                            ui.strong(cat_name);
+                                        });
+                                        row.col(|ui| {
+                                            // Batch toggle category enabled
+                                            if !items.is_empty() {
+                                                let all_enabled = items.iter().all(|i| i.4);
+                                                let mut current_all = all_enabled;
+                                                if ui.checkbox(&mut current_all, "(全選)").changed() {
+                                                    to_toggle_category = Some((category.clone(), current_all));
+                                                }
+                                            }
+                                        });
+                                        row.col(|_| {}); // Pattern placeholder 
+                                        row.col(|_| {}); // Action placeholder
+                                    });
+
+                                    if is_expanded {
+                                        for (name, pattern_text, clean_pattern, cat, enabled, is_script, action_str, source) in items {
+                                            body.row(24.0, |mut row| {
+                                                // 1. 啟用
+                                                row.col(|ui| {
+                                                    let mut is_enabled = enabled;
+                                                    if ui.checkbox(&mut is_enabled, "").changed() {
+                                                        to_toggle_name = Some((name.clone(), is_enabled));
+                                                    }
+                                                });
+
+                                                // 2. 來源圖示
+                                                row.col(|ui| {
+                                                    match source {
+                                                        TriggerSource::Global => { ui.label("🌍").on_hover_text("全域設定 (Global)"); },
+                                                        TriggerSource::Profile => { ui.label("👤").on_hover_text("Profile 專屬"); },
+                                                        TriggerSource::Override => { ui.label("⚠️").on_hover_text("已覆蓋全域設定 (Override)"); },
+                                                    }
+                                                });
+
+                                                // 3. 分類 (Empty in row, shown in header)
+                                                row.col(|_ui| {
+                                                    // ui.label(cat.as_deref().unwrap_or("-")); // Optional: Leave empty to reduce clutter
+                                                });
+
+                                                // 4. 名稱
+                                                row.col(|ui| {
+                                                    ui.label(&name);
+                                                });
+
+                                                // 5. 觸發內容
+                                                row.col(|ui| {
+                                                    ui.label(&pattern_text).on_hover_text(&pattern_text);
+                                                });
+
+                                                // 6. 操作
+                                                row.col(|ui| {
+                                                    ui.horizontal(|ui| {
+                                                        ui.spacing_mut().item_spacing.x = 8.0; 
+                                                        
+                                                        if ui.button("✏️").on_hover_text("編輯").clicked() {
+                                                            to_edit = Some((name.clone(), clean_pattern.clone(), action_str.clone(), is_script, cat.clone().unwrap_or_default()));
+                                                        }
+
+                                                        if self.settings_scope == SettingsScope::Profile {
+                                                            ui.menu_button(" ⋮ ", |ui| {
+                                                                ui.set_min_width(120.0);
+                                                                match source {
+                                                                    TriggerSource::Profile => {
+                                                                        if ui.button("🌍 移至全域").clicked() {
+                                                                            op_action = Some(TriggerOp::MoveToGlobal(name.clone()));
+                                                                            ui.close_menu();
+                                                                        }
+                                                                        if ui.button("📋 複製至全域").clicked() {
+                                                                            op_action = Some(TriggerOp::CopyToGlobal(name.clone()));
+                                                                            ui.close_menu();
+                                                                        }
+                                                                    },
+                                                                    TriggerSource::Global => {
+                                                                        if ui.button("👤 獨立為 Profile").clicked() {
+                                                                            op_action = Some(TriggerOp::MoveToProfile(name.clone()));
+                                                                            ui.close_menu();
+                                                                        }
+                                                                        if ui.button("✏️ 覆蓋 (Override)").clicked() {
+                                                                            to_edit = Some((name.clone(), clean_pattern.clone(), action_str.clone(), is_script, cat.clone().unwrap_or_default()));
+                                                                            ui.close_menu();
+                                                                        }
+                                                                    },
+                                                                    TriggerSource::Override => {
+                                                                        if ui.button("🔙 還原至全域").clicked() {
+                                                                            op_action = Some(TriggerOp::RevertToGlobal(name.clone()));
+                                                                            ui.close_menu();
+                                                                        }
+                                                                        if ui.button("🌍 更新至全域").clicked() {
+                                                                            op_action = Some(TriggerOp::MoveToGlobal(name.clone()));
+                                                                            ui.close_menu();
+                                                                        }
                                                                     }
                                                                 }
-                                                             }
-                                                         }
-                                                         ui.label(format!("{} [{}]", name, pattern_text));
-                                                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                                             if ui.small_button("🗑️").clicked() {
-                                                                 to_delete = Some(name.clone());
-                                                             }
-                                                             if ui.small_button("✏️").clicked() {
-                                                                 to_edit = Some((name.clone(), clean_pattern.clone(), action_str.clone(), is_script, cat.unwrap_or_default()));
-                                                             }
-                                                         });
-                                                     });
-                                                 }
-                                             });
-                                     });
+                                                            });
+                                                        }
+                                                        
+                                                        if ui.button("🗑️").on_hover_text("刪除").clicked() {
+                                                            to_delete = Some(name.clone());
+                                                        }
+                                                    });
+                                                });
+                                            });
+                                        }
+                                    }
                                 }
-                            }
-                        });
+                            });
                         
                         // 處理操作
                         if let Some((cat, enabled)) = to_toggle_category {
@@ -1912,6 +2266,24 @@ impl MudApp {
                             }
                             needs_save = true;
                         }
+
+                        if let Some((name, enabled)) = to_toggle_name {
+                             match self.settings_scope {
+                                SettingsScope::Profile => {
+                                    if let Some(trigger) = session.trigger_manager.triggers.get_mut(&name) {
+                                        trigger.enabled = enabled;
+                                        needs_save = true;
+                                    }
+                                },
+                                SettingsScope::Global => {
+                                    if let Some(trigger) = self.global_config.global_triggers.iter_mut().find(|t| t.name == name) {
+                                        trigger.enabled = enabled;
+                                        needs_save = true;
+                                    }
+                                }
+                            }
+                        }
+
                         if let Some(name) = to_delete {
                             match self.settings_scope {
                                 SettingsScope::Profile => { session.trigger_manager.remove(&name); },
@@ -1919,6 +2291,7 @@ impl MudApp {
                             }
                             needs_save = true;
                         }
+
                         if let Some((name, pattern, action, is_script, category)) = to_edit {
                             self.editing_trigger_name = Some(name.clone());
                             self.trigger_edit_name = name;
@@ -1927,6 +2300,54 @@ impl MudApp {
                             self.trigger_edit_category = category;
                             self.trigger_edit_is_script = is_script;
                             self.show_trigger_window = true;
+                        }
+
+                        // 處理範圍操作
+                        if let Some(op) = op_action {
+                            match op {
+                                TriggerOp::MoveToGlobal(name) | TriggerOp::CopyToGlobal(name) => {
+                                    if let Some(t) = session.trigger_manager.get(&name) {
+                                        let (action_str, is_script) = t.actions.iter().find_map(|a| {
+                                            match a {
+                                                TriggerAction::SendCommand(cmd) => Some((cmd.clone(), false)),
+                                                TriggerAction::ExecuteScript(code) => Some((code.clone(), true)),
+                                                _ => None,
+                                            }
+                                        }).unwrap_or_default();
+                                        
+                                        let new_config = crate::config::TriggerConfig {
+                                            name: t.name.clone(),
+                                            pattern: match &t.pattern {
+                                                TriggerPattern::Contains(s) | TriggerPattern::StartsWith(s) | 
+                                                TriggerPattern::EndsWith(s) | TriggerPattern::Regex(s) => s.clone(),
+                                            },
+                                            action: action_str,
+                                            category: t.category.clone(),
+                                            is_script,
+                                            enabled: t.enabled,
+                                        };
+
+                                        if let Some(existing) = self.global_config.global_triggers.iter_mut().find(|gt| gt.name == name) {
+                                            *existing = new_config;
+                                        } else {
+                                            self.global_config.global_triggers.push(new_config);
+                                        }
+                                        needs_save = true;
+                                    }
+                                },
+                                TriggerOp::MoveToProfile(name) => {
+                                    self.global_config.global_triggers.retain(|t| t.name != name);
+                                    needs_save = true;
+                                },
+                                TriggerOp::RevertToGlobal(name) => {
+                                    if let Some(gt) = self.global_config.global_triggers.iter().find(|t| t.name == name) {
+                                        if let Some(trigger) = crate::session::Session::create_trigger_from_config(gt) {
+                                            session.trigger_manager.add(trigger);
+                                            needs_save = true;
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                     SettingsTab::Path => {

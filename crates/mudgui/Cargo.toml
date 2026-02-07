@@ -13,6 +13,7 @@ eframe = { version = "0.30", default-features = false, features = [
     "glow",
     "persistence",
 ] }
+egui_extras = { version = "0.30", features = ["all_loaders"] }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
