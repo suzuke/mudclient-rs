@@ -94,8 +94,10 @@ pub struct MudApp {
 
     // === 並排模式 ===
     /// 並排顯示的第二個 Session ID（None 表示非並排模式）
+    #[allow(dead_code)]
     split_session_id: Option<crate::session::SessionId>,
     /// 並排模式下的焦點面板（true = 左, false = 右）
+    #[allow(dead_code)]
     split_focus_left: bool,
 }
 
@@ -3200,8 +3202,11 @@ enum PendingAction {
     ToggleProfile,
     ClearActiveWindow,
     CloseSession(crate::session::SessionId),
+    #[allow(dead_code)]
     ToggleSplit,
+    #[allow(dead_code)]
     SetSplitSession(crate::session::SessionId),
+    #[allow(dead_code)]
     SwitchSplitFocus,
 }
 
