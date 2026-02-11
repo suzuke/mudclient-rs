@@ -4,7 +4,6 @@ mod ansi;
 mod app;
 mod config;
 mod session;
-mod assets;
  
 use app::MudApp;
 use image::GenericImageView;

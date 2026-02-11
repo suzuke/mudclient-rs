@@ -417,73 +417,78 @@ impl Session {
         }
     }
 
-    /// 載入並執行腳本
-    /// 優先從 scripts/ 目錄下讀取，若無則從內嵌資產載入
+    /// 載入並執行 scripts/ 目錄下的所有 .lua 腳本
+    /// 搜尋順序：1) 工作目錄下的 scripts/  2) 執行檔旁的 scripts/
     fn load_startup_scripts(&mut self) {
-        use crate::assets::Assets;
-        use std::collections::HashSet;
+        let scripts_dir = Self::resolve_scripts_dir();
 
-        let mut loaded_scripts = HashSet::new();
+        let Some(scripts_dir) = scripts_dir else {
+            let _ = self.logger.log("找不到 scripts 目錄（工作目錄與執行檔目錄皆無）");
+            return;
+        };
 
-        // 1. 嘗試從外部檔案系統讀取
-        let scripts_dir = std::path::Path::new("scripts");
-        if scripts_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(scripts_dir) {
-                let mut file_scripts = Vec::new();
+        // 設定 scripts_dir 的絕對路徑，供 dofile 查找
+        self.script_engine.set_scripts_dir(scripts_dir.to_string_lossy().as_ref());
+
+        match std::fs::read_dir(&scripts_dir) {
+            Ok(entries) => {
+                let mut valid_scripts = Vec::new();
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.extension().map_or(false, |ext| ext == "lua") {
-                        file_scripts.push(path);
+                        valid_scripts.push(path);
                     }
                 }
-                file_scripts.sort();
+                valid_scripts.sort();
 
-                for path in file_scripts {
+                for path in valid_scripts {
                     if let Ok(code) = std::fs::read_to_string(&path) {
-                        let filename = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-                        self.execute_startup_script(&filename, &code, false);
-                        loaded_scripts.insert(filename);
+                        let filename = path.file_name().unwrap_or_default().to_string_lossy();
+                        match self.script_engine.execute_inline(&code, "STARTUP", &[], false) {
+                            Ok(context) => {
+                                self.apply_script_context(context);
+                                let _ = self.logger.log(&format!("已自動載入腳本: {}", filename));
+                                
+                                self.window_manager.route_message("main", mudcore::WindowMessage {
+                                    content: format!("\n[System] 自動載入腳本: {}\n", filename),
+                                    preserve_ansi: true,
+                                    byte_widths: Vec::new(),
+                                });
+                            }
+                            Err(e) => {
+                                let msg = format!("腳本載入錯誤 ({}): {}", filename, e);
+                                let _ = self.logger.log(&msg);
+                                self.system_message(&msg);
+                            }
+                        }
                     }
                 }
             }
-        }
-
-        // 2. 從內嵌資產載入 (僅載入外部不存在的腳本)
-        for file in Assets::iter() {
-            let filename = file.as_ref();
-            if !filename.ends_with(".lua") || loaded_scripts.contains(filename) {
-                continue;
-            }
-
-            if let Some(embedded_file) = Assets::get(filename) {
-                if let Ok(code) = std::str::from_utf8(embedded_file.data.as_ref()) {
-                    self.execute_startup_script(filename, code, true);
-                }
+            Err(e) => {
+                let _ = self.logger.log(&format!("無法讀取 scripts 目錄: {}", e));
             }
         }
     }
 
-    /// 執行啟動腳本的輔助方法
-    fn execute_startup_script(&mut self, filename: &str, code: &str, is_embedded: bool) {
-        match self.script_engine.execute_inline(code, "STARTUP", &[], false) {
-            Ok(context) => {
-                self.apply_script_context(context);
-                let source = if is_embedded { "(內嵌)" } else { "(外部)" };
-                let msg = format!("\n[System] 自動載入腳本 {}: {}\n", source, filename);
-                
-                let _ = self.logger.log(&msg);
-                self.window_manager.route_message("main", mudcore::WindowMessage {
-                    content: msg,
-                    preserve_ansi: true,
-                    byte_widths: Vec::new(),
-                });
-            }
-            Err(e) => {
-                let msg = format!("腳本載入錯誤 ({}): {}", filename, e);
-                let _ = self.logger.log(&msg);
-                self.system_message(&msg);
+    /// 解析 scripts 目錄的實際位置
+    fn resolve_scripts_dir() -> Option<std::path::PathBuf> {
+        // 1. 工作目錄下的 scripts/
+        let cwd_scripts = std::path::Path::new("scripts");
+        if cwd_scripts.exists() && cwd_scripts.is_dir() {
+            return std::fs::canonicalize(cwd_scripts).ok();
+        }
+
+        // 2. 執行檔旁的 scripts/
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(exe_dir) = exe.parent() {
+                let exe_scripts = exe_dir.join("scripts");
+                if exe_scripts.exists() && exe_scripts.is_dir() {
+                    return std::fs::canonicalize(exe_scripts).ok();
+                }
             }
         }
+
+        None
     }
 
     /// 核心：將腳本執行結果套用到 Session

@@ -155,6 +155,7 @@ impl AnsiState {
 }
 
 /// 解析 ANSI 轉義碼，返回帶顏色的文字片段
+#[allow(dead_code)]
 pub fn parse_ansi(input: &str) -> Vec<AnsiSpan> {
     parse_ansi_with_widths(input, None)
 }

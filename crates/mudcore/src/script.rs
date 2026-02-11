@@ -64,6 +64,8 @@ pub struct ScriptEngine {
     scripts: HashMap<String, String>,
     /// 持久化變數（跨觸發器共享）
     persistent_vars: std::cell::RefCell<HashMap<String, String>>,
+    /// 腳本目錄的絕對路徑，用於 dofile 查找
+    scripts_dir: Option<String>,
 }
 
 impl ScriptEngine {
@@ -74,7 +76,13 @@ impl ScriptEngine {
             lua,
             scripts: HashMap::new(),
             persistent_vars: std::cell::RefCell::new(HashMap::new()),
+            scripts_dir: None,
         }
+    }
+
+    /// 設定腳本目錄路徑（供 dofile 查找）
+    pub fn set_scripts_dir(&mut self, dir: impl Into<String>) {
+        self.scripts_dir = Some(dir.into());
     }
 
     /// 載入腳本
@@ -268,6 +276,44 @@ impl ScriptEngine {
                 captures_table.set(i + 1, cap.as_str())?;
             }
             self.lua.globals().set("captures", captures_table)?;
+
+            // 覆寫 dofile：支援從 scripts_dir 查找腳本
+            if let Some(dir) = &self.scripts_dir {
+                self.lua.globals().set("__scripts_dir", dir.as_str())?;
+                let custom_dofile = self.lua.load(r#"
+                    local original_dofile = dofile
+                    function dofile(path)
+                        -- 如果檔案已存在，直接執行
+                        local f = io.open(path, "r")
+                        if f then
+                            f:close()
+                            return original_dofile(path)
+                        end
+                        -- 嘗試從 scripts_dir 查找
+                        local full = __scripts_dir .. "/" .. path
+                        f = io.open(full, "r")
+                        if f then
+                            f:close()
+                            return original_dofile(full)
+                        end
+                        -- 嘗試只用檔名 (basename)
+                        local basename = path:match("([^/\\]+)$") or path
+                        if basename ~= path then
+                            full = __scripts_dir .. "/" .. basename
+                            f = io.open(full, "r")
+                            if f then
+                                f:close()
+                                return original_dofile(full)
+                            end
+                        end
+                        -- 回退到原始 dofile（會拋出錯誤）
+                        return original_dofile(path)
+                    end
+                "#).exec();
+                if let Err(e) = custom_dofile {
+                    tracing::warn!("Failed to override dofile: {}", e);
+                }
+            }
             
             // 執行腳本
             self.lua.load(code).exec()?;
