@@ -1326,6 +1326,13 @@ impl SessionManager {
     pub fn get_by_index_mut(&mut self, index: usize) -> Option<&mut Session> {
         self.sessions.get_mut(index)
     }
+
+    /// 取得 active session 之外的下一個 Session ID（用於並排預設選擇）
+    pub fn next_session_id(&self) -> Option<SessionId> {
+        if self.sessions.len() < 2 { return None; }
+        let next_idx = (self.active_index + 1) % self.sessions.len();
+        Some(self.sessions[next_idx].id)
+    }
 }
 
 impl Default for SessionManager {

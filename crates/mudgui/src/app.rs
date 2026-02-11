@@ -91,6 +91,12 @@ pub struct MudApp {
     active_guide_content: String,
     /// 當前選中的攻略檔案名稱
     active_guide_name: Option<String>,
+
+    // === 並排模式 ===
+    /// 並排顯示的第二個 Session ID（None 表示非並排模式）
+    split_session_id: Option<crate::session::SessionId>,
+    /// 並排模式下的焦點面板（true = 左, false = 右）
+    split_focus_left: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -188,6 +194,10 @@ impl MudApp {
             guide_file_list: Vec::new(),
             active_guide_content: String::new(),
             active_guide_name: None,
+
+            // 並排模式
+            split_session_id: None,
+            split_focus_left: true,
         }
     }
 
@@ -3157,6 +3167,9 @@ impl eframe::App for MudApp {
                     }
                     self.session_manager.close_session(id);
                 }
+                PendingAction::ToggleSplit | PendingAction::SetSplitSession(_) | PendingAction::SwitchSplitFocus => {
+                    // TODO: split view 功能尚未實作
+                }
             }
         }
 
@@ -3187,6 +3200,9 @@ enum PendingAction {
     ToggleProfile,
     ClearActiveWindow,
     CloseSession(crate::session::SessionId),
+    ToggleSplit,
+    SetSplitSession(crate::session::SessionId),
+    SwitchSplitFocus,
 }
 
 

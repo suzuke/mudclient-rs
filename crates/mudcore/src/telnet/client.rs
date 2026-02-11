@@ -196,24 +196,32 @@ impl TelnetClient {
         let mut final_output = String::new();
         let mut final_widths = Vec::new();
         let mut i = 0;
+        // 暫存被 Big5 先導位元組打斷的 ANSI 序列
+        let mut pending_ansi: Vec<(String, usize)> = Vec::new(); // (ansi_str, char_count)
         
         while i < text_bytes.len() {
             if text_bytes[i] == 0x1B && i + 1 < text_bytes.len() && text_bytes[i+1] == b'[' {
-                // 1. 解碼累積文字並記錄寬度
-                if !self.text_buffer.is_empty() {
-                    let mut decoded = String::with_capacity(self.text_buffer.len() * 2);
-                    let (_result, read, _replaced) = self.decoder.decode_to_string(&self.text_buffer, &mut decoded, false);
-                    
-                    // 關鍵：將 Wide (Big5) 對應到原始位元組
-                    for ch in decoded.chars() {
-                        let w = if ch.is_ascii() { 1 } else { 2 }; // Big5 中文字佔 2 bytes
-                        final_widths.push(w);
-                        final_output.push(ch);
+                // 檢查 text_buffer 末尾是否為 Big5 先導位元組 (0x81-0xFE)
+                let has_pending_lead = self.text_buffer.last()
+                    .map_or(false, |&b| b >= 0x81 && b <= 0xFE);
+                
+                if !has_pending_lead {
+                    // 正常情況：先解碼累積文字
+                    if !self.text_buffer.is_empty() {
+                        let mut decoded = String::with_capacity(self.text_buffer.len() * 2);
+                        let (_result, read, _replaced) = self.decoder.decode_to_string(&self.text_buffer, &mut decoded, false);
+                        
+                        for ch in decoded.chars() {
+                            let w = if ch.is_ascii() { 1 } else { 2 };
+                            final_widths.push(w);
+                            final_output.push(ch);
+                        }
+                        self.text_buffer.drain(..read);
                     }
-                    self.text_buffer.drain(..read);
                 }
+                // else: Big5 先導位元組尚未完成，不觸發解碼
 
-                // 2. 提取 ANSI 序列 (不佔寬度)
+                // 提取 ANSI 序列
                 let start = i;
                 i += 2;
                 while i < text_bytes.len() {
@@ -224,14 +232,61 @@ impl TelnetClient {
                     }
                 }
                 if let Ok(ansi_str) = std::str::from_utf8(&text_bytes[start..i]) {
-                    for ch in ansi_str.chars() {
-                        final_output.push(ch);
-                        final_widths.push(0); // ANSI 控制碼不計入字元格子寬度
+                    if has_pending_lead {
+                        // 暫存 ANSI 碼，等 Big5 字元完整後再輸出
+                        pending_ansi.push((ansi_str.to_string(), ansi_str.chars().count()));
+                    } else {
+                        for ch in ansi_str.chars() {
+                            final_output.push(ch);
+                            final_widths.push(0);
+                        }
                     }
                 }
             } else {
                 self.text_buffer.push(text_bytes[i]);
                 i += 1;
+                
+                // 如果有暫存的 ANSI 碼，且現在 Big5 字元已經完整（buffer 末尾不再是先導位元組）
+                // 則解碼字元並輸出暫存的 ANSI 碼
+                if !pending_ansi.is_empty() {
+                    let last = *self.text_buffer.last().unwrap();
+                    // Big5 後續位元組範圍: 0x40-0x7E, 0xA1-0xFE
+                    let is_complete = last < 0x81 || (self.text_buffer.len() >= 2);
+                    if is_complete {
+                        // 先解碼 Big5 字元
+                        let mut decoded = String::with_capacity(self.text_buffer.len() * 2);
+                        let (_result, read, _replaced) = self.decoder.decode_to_string(&self.text_buffer, &mut decoded, false);
+                        
+                        // 輸出解碼後的字元，但要在正確的位置插入暫存的 ANSI 碼
+                        // Big5 字元在先導位元組之前的部分已經被輸出了
+                        // 現在只需要輸出暫存 ANSI 之前的字元 + 暫存 ANSI + 後續字元
+                        let chars: Vec<char> = decoded.chars().collect();
+                        if chars.len() >= 1 {
+                            // 最後一個解碼出的字元就是被打斷的那個
+                            // 但前面可能還有其他字元
+                            // 先輸出除最後一個之外的所有字元
+                            for &ch in &chars[..chars.len()-1] {
+                                let w = if ch.is_ascii() { 1 } else { 2 };
+                                final_widths.push(w);
+                                final_output.push(ch);
+                            }
+                            // 輸出暫存的 ANSI 碼
+                            for (ansi_str, _count) in &pending_ansi {
+                                for ch in ansi_str.chars() {
+                                    final_output.push(ch);
+                                    final_widths.push(0);
+                                }
+                            }
+                            // 輸出最後那個被打斷的字元
+                            let last_ch = chars[chars.len()-1];
+                            let w = if last_ch.is_ascii() { 1 } else { 2 };
+                            final_widths.push(w);
+                            final_output.push(last_ch);
+                        }
+                        self.text_buffer.drain(..read);
+                        pending_ansi.clear();
+                    }
+                }
             }
         }
 
