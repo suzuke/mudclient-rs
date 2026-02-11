@@ -89,6 +89,10 @@ pub struct Profile {
     #[serde(default)]
     pub script_paths: Vec<String>,
     
+    /// 用戶筆記
+    #[serde(default)]
+    pub notes: String,
+    
     // === 帳號資訊 ===
     /// 登入帳號
     #[serde(default)]
@@ -115,6 +119,7 @@ impl Default for Profile {
             triggers: Vec::new(),
             paths: Vec::new(),
             script_paths: Vec::new(),
+            notes: String::new(),
             username: None,
             password: None,
             created_at: current_timestamp(),
@@ -512,6 +517,7 @@ pub fn migrate_legacy_config() -> MigrationResult {
         triggers: legacy.triggers,
         paths: Vec::new(),
         script_paths: Vec::new(),
+        notes: String::new(),
         username: None,
         password: None,
         created_at: current_timestamp(),

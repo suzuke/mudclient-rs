@@ -82,6 +82,15 @@ pub struct MudApp {
 
     /// 設定範圍 (Global/Profile)
     settings_scope: SettingsScope,
+    
+    // === 側邊欄狀態 ===
+    side_panel_tab: SidePanelTab,
+    /// 攻略檔案列表快取 (PathBuf)
+    guide_file_list: Vec<std::path::PathBuf>,
+    /// 當前選中的攻略檔案內容
+    active_guide_content: String,
+    /// 當前選中的攻略檔案名稱
+    active_guide_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +109,14 @@ enum SettingsTab {
     General,
 }
 
+/// 側邊欄標籤頁
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SidePanelTab {
+    Tools,
+    Guide,
+    Notes,
+}
+
 /// 發送給網路執行緒的命令
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -114,7 +131,7 @@ impl MudApp {
     /// 創建新的 MUD 客戶端應用程式
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         // 設定字型
-        Self::configure_fonts(&cc.egui_ctx);
+        Self::setup_fonts(&cc.egui_ctx);
 
         // 創建 Tokio 運行時
         let runtime = Runtime::new().expect("無法創建 Tokio 運行時");
@@ -166,6 +183,11 @@ impl MudApp {
             settings_scope: SettingsScope::Profile,
             alias_search_text: String::new(),
             trigger_search_text: String::new(),
+            
+            side_panel_tab: SidePanelTab::Tools,
+            guide_file_list: Vec::new(),
+            active_guide_content: String::new(),
+            active_guide_name: None,
         }
     }
 
@@ -260,6 +282,7 @@ impl MudApp {
                   profile.aliases = new_aliases;
                   profile.triggers = new_triggers;
                   profile.paths = new_paths;
+                  profile.notes = session.notes.clone();
                   
                   // 儲存到磁碟
                  let p = profile.clone();
@@ -277,43 +300,28 @@ impl MudApp {
         }
     }
 
-    /// 設定字型（支援中文）
-    fn configure_fonts(ctx: &egui::Context) {
+    /// 初始化字型設定
+    fn setup_fonts(ctx: &egui::Context) {
         let mut fonts = egui::FontDefinitions::default();
 
-        // 嘗試載入系統中文字型作為 fallback
+        // 嘗試載入系統中文字型作為優先，滿足使用者對 LiHei Pro 的偏好
         if let Some(cjk_font_data) = Self::load_system_cjk_font() {
             fonts.font_data.insert(
                 "cjk".to_owned(),
                 std::sync::Arc::new(egui::FontData::from_owned(cjk_font_data)),
             );
 
-            // 設定字型優先順序
-            // 強制將 CJK 字型放在最前面，確保嚴格對齊 (犧牲部分英數美觀)
+            // 為 Monospace 加入 CJK 並設為最高優先級，確保 MUD 畫面文字與對齊
             if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
                 family.insert(0, "cjk".to_owned());
-            } else {
-                fonts.families.insert(
-                    egui::FontFamily::Monospace,
-                    vec![
-                        "cjk".to_owned(),
-                        "Monaco".to_owned(),
-                        "Hack".to_owned(),
-                        "Ubuntu-Mono".to_owned(),
-                    ],
-                );
+            }
+            
+            // 為 Proportional 加入 CJK，確保 UI 按鈕、標籤等不會出現方框
+            if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+                family.push("cjk".to_owned()); // UI 部分通常不需要設為第一優先，但必須有 fallback
             }
 
-            // Proportional: 作為 fallback 添加到最後
-            fonts
-                .families
-                .entry(egui::FontFamily::Proportional)
-                .or_default()
-                .push("cjk".to_owned());
-
-            tracing::info!("已載入系統中文字型");
-        } else {
-            tracing::warn!("無法載入系統中文字型，中文可能無法正確顯示");
+            tracing::info!("已載入系統中文字型 (專屬對齊優化版)");
         }
 
         ctx.set_fonts(fonts);
@@ -326,32 +334,11 @@ impl MudApp {
         use font_kit::source::SystemSource;
 
         let source = SystemSource::new();
-
-        // 嘗試載入常見的中文字型（優先使用等寬字型以解決對齊問題）
         let font_names = [
-            // 優先：現代等寬中文字型 (如果使用者有安裝)
-            FamilyName::Title("Noto Sans Mono CJK TC".to_string()),
-            FamilyName::Title("Noto Sans Mono CJK SC".to_string()),
-            FamilyName::Title("Sarasa Mono TC".to_string()),
-            // 優先備選：macOS 嚴格等寬字型 (雖然較舊但對齊準確)
-            FamilyName::Title("LiHei Pro".to_string()),           // 儷黑 Pro (舊名)
-            FamilyName::Title("Apple LiGothic Medium".to_string()), // 儷黑 Pro (新名)
-            FamilyName::Title("MingLiU".to_string()),             // 細明體 (Windows 移植)
-            FamilyName::Title("PMingLiU".to_string()),            // 新細明體
-            FamilyName::Title("BiauKai".to_string()),             // 標楷體
-            FamilyName::Title("Lisong Pro".to_string()),          // 儷宋 Pro
-            // 再次備選：冬青黑體/華文黑體
-            FamilyName::Title("Hiragino Sans GB".to_string()), 
-            FamilyName::Title("STHeiti TC".to_string()),       
-            FamilyName::Title("STHeiti SC".to_string()),   
-            FamilyName::Title("Heiti TC".to_string()),         
+            FamilyName::Title("LiHei Pro".to_string()),
+            FamilyName::Title("Heiti TC".to_string()),
             FamilyName::Title("Heiti SC".to_string()),
-            // 最後 fallback
-            // 系統預設黑體 (macOS 標準) - 雖然不是嚴格等寬，但比舊式字型美觀
             FamilyName::Title("PingFang TC".to_string()),
-            FamilyName::Title("PingFang SC".to_string()),
-            FamilyName::Title("Microsoft JhengHei".to_string()),
-            FamilyName::Title("WenQuanYi Micro Hei".to_string()),
         ];
 
         for family in font_names {
@@ -364,7 +351,6 @@ impl MudApp {
                 }
             }
         }
-
         None
     }
 
@@ -378,7 +364,7 @@ impl MudApp {
             let session_id = self.session_manager.create_session(profile);
             
             // 啟動連線
-            self.start_connection(session_id, ctx);
+            self.start_connection(session_id, ctx.clone());
             
             // 顯示本地訊息
             if let Some(session) = self.session_manager.get_mut(session_id) {
@@ -651,34 +637,120 @@ impl MudApp {
             .stick_to_bottom(true)
             .show(ui, |ui| {
                 let font_id = FontId::monospace(14.0);
+                
+                // 測量 LiHei Pro 下的基準寬度
+                // 為了達成精確對齊，我們以中文字寬度的一半作單位 (1.0 單位)
+                let wide_w = ui.fonts(|f| f.glyph_width(&font_id, '中'));
+                let cell_w = wide_w / 2.0;
 
                 if let Some(window) = session.window_manager.get(active_window_id) {
                     for msg in window.messages() {
-                        // 解析 ANSI 顏色碼
                         let spans = parse_ansi(&msg.content);
+                        let mut main_job = LayoutJob::default();
+                        let mut overlay_job = LayoutJob::default();
+                        let mut has_dual_color = false;
                         
-                        // 使用 LayoutJob 來正確渲染多顏色文字
-                        let mut job = LayoutJob::default();
+                        // 記錄哪些 section 屬於雙色字： section_idx -> (左色, 右色)
+                        let mut section_color_map = std::collections::HashMap::new();
                         
                         for span in spans {
-                            let color = span.fg_color;
+                            let italics = span.blink;
                             let background = span.bg_color.unwrap_or(Color32::TRANSPARENT);
-                            let italics = span.blink; // 使用斜體來標示閃爍
                             
-                            job.append(
-                                &span.text,
-                                0.0,
-                                egui::TextFormat {
+                            for ch in span.text.chars() {
+                                if ch == '\n' || ch == '\r' {
+                                    let fmt = egui::TextFormat { font_id: font_id.clone(), color: span.fg_color, background, italics, ..Default::default() };
+                                    main_job.append(&ch.to_string(), 0.0, fmt.clone());
+                                    overlay_job.append(&ch.to_string(), 0.0, egui::TextFormat { color: Color32::TRANSPARENT, background: Color32::TRANSPARENT, ..fmt });
+                                    continue;
+                                }
+
+                                let u_w = if (ch >= '\u{2500}' && ch <= '\u{257f}') || ch == '|' || ch == '§' { 1 } else {
+                                    use unicode_width::UnicodeWidthChar;
+                                    ch.width().unwrap_or(1).max(1)
+                                };
+                                let target_w = (u_w as f32) * cell_w;
+                                let actual_w = ui.fonts(|f| f.glyph_width(&font_id, ch));
+                                let extra = target_w - actual_w;
+
+                                let mut main_fmt = egui::TextFormat {
                                     font_id: font_id.clone(),
-                                    color,
+                                    color: span.fg_color,
                                     background,
                                     italics,
+                                    extra_letter_spacing: extra,
                                     ..Default::default()
-                                },
-                            );
+                                };
+
+                                let section_idx = main_job.sections.len();
+                                if let Some(left_color) = span.fg_color_left {
+                                    has_dual_color = true;
+                                    section_color_map.insert(section_idx, (left_color, span.fg_color));
+                                    
+                                    // 主層設為透明（保留背景），覆蓋層內容設為白色，著色時使用
+                                    let mut overlay_fmt = main_fmt.clone();
+                                    main_fmt.color = Color32::TRANSPARENT;
+                                    overlay_fmt.color = Color32::WHITE;
+                                    overlay_fmt.background = Color32::TRANSPARENT;
+                                    
+                                    main_job.append(&ch.to_string(), 0.0, main_fmt);
+                                    overlay_job.append(&ch.to_string(), 0.0, overlay_fmt);
+                                } else {
+                                    let mut overlay_fmt = main_fmt.clone();
+                                    overlay_fmt.color = Color32::TRANSPARENT;
+                                    overlay_fmt.background = Color32::TRANSPARENT;
+                                    
+                                    main_job.append(&ch.to_string(), 0.0, main_fmt);
+                                    overlay_job.append(&ch.to_string(), 0.0, overlay_fmt);
+                                }
+                            }
                         }
                         
-                        ui.label(job);
+                        let response = ui.label(main_job);
+                        let rect = response.rect;
+
+                        if has_dual_color {
+                            let overlay_galley = ui.fonts(|f| f.layout_job(overlay_job));
+                            
+                            for row in &overlay_galley.rows {
+                                for glyph in &row.glyphs {
+                                    if let Some(&(left_color, right_color)) = section_color_map.get(&(glyph.section_index as usize)) {
+                                        let char_pos = rect.min + glyph.pos.to_vec2();
+                                        let char_w = glyph.advance_width;
+                                        let char_rect = egui::Rect::from_min_max(
+                                            egui::pos2(char_pos.x, rect.min.y + row.rect.min.y),
+                                            egui::pos2(char_pos.x + char_w, rect.min.y + row.rect.max.y)
+                                        );
+
+                                        // 繪製左半部
+                                        let left_clip = egui::Rect::from_min_max(
+                                            char_rect.min,
+                                            egui::pos2(char_rect.center().x, char_rect.max.y)
+                                        );
+                                        ui.painter().with_clip_rect(left_clip).text(
+                                            char_rect.min,
+                                            egui::Align2::LEFT_TOP,
+                                            glyph.chr.to_string(),
+                                            font_id.clone(),
+                                            left_color,
+                                        );
+
+                                        // 繪製右半部
+                                        let right_clip = egui::Rect::from_min_max(
+                                            egui::pos2(char_rect.center().x, char_rect.min.y),
+                                            char_rect.max
+                                        );
+                                        ui.painter().with_clip_rect(right_clip).text(
+                                            char_rect.min,
+                                            egui::Align2::LEFT_TOP,
+                                            glyph.chr.to_string(),
+                                            font_id.clone(),
+                                            right_color,
+                                        );
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             });
@@ -1109,17 +1181,202 @@ impl MudApp {
             });
     }
 
+    /// 繪製側邊欄
+    fn render_side_panel(&mut self, ctx: &egui::Context, active_window_id: String, _active_id: Option<crate::session::SessionId>, pending_action: &mut Option<PendingAction>) {
+        egui::SidePanel::right("tools_panel")
+            .resizable(true)
+            .default_width(250.0) // 增加寬度以容納攻略
+            .show(ctx, |ui| {
+                // 1. 標籤頁切換
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.side_panel_tab, SidePanelTab::Tools, "🛠️ 工具");
+                    ui.selectable_value(&mut self.side_panel_tab, SidePanelTab::Guide, "📖 攻略");
+                    ui.selectable_value(&mut self.side_panel_tab, SidePanelTab::Notes, "📝 筆記");
+                });
+                ui.separator();
+
+                // 2. 內容渲染
+                match self.side_panel_tab {
+                    SidePanelTab::Tools => {
+                        self.render_tools_tab(ui, &active_window_id, pending_action);
+                    }
+                    SidePanelTab::Guide => {
+                        self.render_guide_tab(ui);
+                    }
+                    SidePanelTab::Notes => {
+                        self.render_notes_tab(ui);
+                    }
+                }
+            });
+    }
+
+    /// 繪製工具分頁 (原有的側邊欄內容)
+    fn render_tools_tab(&mut self, ui: &mut egui::Ui, active_window_id: &str, pending_action: &mut Option<PendingAction>) {
+        if let Some(session) = self.session_manager.active_session() {
+            ui.heading("視窗");
+            ui.separator();
+
+            for window in session.window_manager.windows() {
+                let is_active = window.id == active_window_id;
+                if ui.selectable_label(is_active, &window.title).clicked() {
+                    *pending_action = Some(PendingAction::SwitchWindow(window.id.clone()));
+                }
+            }
+
+            ui.add_space(15.0);
+            ui.heading("管理");
+            ui.separator();
+
+            if ui.button("⚙ 設定中心").clicked() {
+                *pending_action = Some(PendingAction::ToggleSettings);
+            }
+            if ui.button("👤 連線管理").clicked() {
+                *pending_action = Some(PendingAction::ToggleProfile);
+            }
+        } else {
+            ui.heading("管理");
+            ui.separator();
+            if ui.button("👤 連線管理").clicked() {
+                *pending_action = Some(PendingAction::ToggleProfile);
+            }
+        }
+    }
+
+    /// 繪製攻略分頁
+    fn render_guide_tab(&mut self, ui: &mut egui::Ui) {
+        // 1. 檔案列表區 (上方可摺疊或限制高度)
+        ui.group(|ui| {
+            ui.label("📚 攻略檔案 (docs/)");
+            ui.separator();
+            
+            // 重新整理按鈕
+            if ui.button("🔄 重新整理列表").clicked() || self.guide_file_list.is_empty() {
+                self.guide_file_list.clear();
+                let docs_dir = std::path::Path::new("docs");
+                if docs_dir.exists() {
+                     if let Ok(entries) = std::fs::read_dir(docs_dir) {
+                        for entry in entries.flatten() {
+                            let path = entry.path();
+                            if path.is_file() {
+                                if let Some(ext) = path.extension() {
+                                    if ext == "md" || ext == "txt" {
+                                        self.guide_file_list.push(path);
+                                    }
+                                }
+                            }
+                        }
+                        self.guide_file_list.sort();
+                    }
+                }
+            }
+
+            // 檔案列表 Scroll
+            ui.push_id("guide_files_scroll", |ui| {
+                egui::ScrollArea::vertical().max_height(100.0).show(ui, |ui| {
+                    if self.guide_file_list.is_empty() {
+                        ui.label(egui::RichText::new("未找到 .md 或 .txt 檔案").color(egui::Color32::GRAY));
+                    } else {
+                        for path in &self.guide_file_list {
+                            let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                            let is_active = self.active_guide_name.as_ref() == Some(&filename);
+                            
+                            if ui.selectable_label(is_active, &filename).clicked() {
+                                self.active_guide_name = Some(filename);
+                                if let Ok(content) = std::fs::read_to_string(path) {
+                                    self.active_guide_content = content;
+                                } else {
+                                    self.active_guide_content = "無法讀取檔案內容".to_string();
+                                }
+                            }
+                        }
+                    }
+                });
+            });
+        });
+
+        ui.add_space(5.0);
+        ui.separator();
+
+        // 2. 內容顯示區
+        egui::ScrollArea::vertical()
+            .id_salt("guide_content_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                if self.active_guide_content.is_empty() {
+                    ui.centered_and_justified(|ui| {
+                        ui.label(egui::RichText::new("請選擇一個攻略檔案以檢視").color(egui::Color32::GRAY));
+                    });
+                } else {
+                    // 簡易 Markdown 渲染
+                    let mut in_code_block = false;
+                    for line in self.active_guide_content.lines() {
+                        if line.starts_with("```") {
+                            in_code_block = !in_code_block;
+                            continue;
+                        }
+
+                        if in_code_block {
+                             // 程式碼區塊樣式
+                             ui.label(egui::RichText::new(line).font(egui::FontId::monospace(13.0)).color(egui::Color32::LIGHT_GREEN));
+                        } else if line.starts_with("# ") {
+                            ui.heading(&line[2..]);
+                            ui.add_space(5.0);
+                        } else if line.starts_with("## ") {
+                             ui.label(egui::RichText::new(&line[3..]).heading().size(18.0));
+                             ui.add_space(3.0);
+                        } else if line.starts_with("### ") {
+                             ui.label(egui::RichText::new(&line[4..]).strong().size(16.0));
+                        } else if line.starts_with("- ") || line.starts_with("* ") {
+                             ui.horizontal(|ui| {
+                                 ui.label("•");
+                                 ui.label(&line[2..]);
+                             });
+                        } else {
+                            // 普通文字 (支援自動換行)
+                            ui.label(line);
+                        }
+                    }
+                }
+            });
+    }
+
+    /// 繪製筆記分頁
+    fn render_notes_tab(&mut self, ui: &mut egui::Ui) {
+         if let Some(session) = self.session_manager.active_session_mut() {
+             ui.label("在此輸入您的個人筆記 (自動儲存)：");
+             egui::ScrollArea::vertical().show(ui, |ui| {
+                 ui.add(
+                     egui::TextEdit::multiline(&mut session.notes)
+                         .desired_width(f32::INFINITY)
+                         .desired_rows(20)
+                         .font(egui::FontId::monospace(14.0)) // 使用等寬字型方便對齊資料
+                 );
+             });
+         } else {
+             ui.centered_and_justified(|ui| {
+                 ui.label("請先連線以使用筆記功能");
+             });
+         }
+    }
+
     /// 繪製輸入區
     fn render_input_area(ui: &mut egui::Ui, session: &mut crate::session::Session, any_popup_open: bool) {
         ui.horizontal(|ui| {
+            // 先攔截 Tab 鍵，避免 egui 預設的焦點切換行為
+            // 必須在 widget 渲染之前消耗，否則 egui 會先處理焦點切換
+            let tab_pressed = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab));
+            
             let response = ui.add(
                 TextEdit::singleline(&mut session.input)
                     .desired_width(ui.available_width())
                     .font(FontId::monospace(14.0))
-                    .hint_text("輸入指令..."),
+                    .hint_text("輸入指令...")
+                    .lock_focus(true), // 防止 Tab 鍵切換焦點
             );
 
-            if !any_popup_open && !response.has_focus() {
+            // 如果當前沒有焦點在任何 widget 上，且沒有 popup 開啟，才自動聚焦到輸入框
+            // 這樣可以避免搶走 Notes 或其他輸入框的焦點
+            if !any_popup_open && !response.has_focus() && ui.ctx().memory(|m| m.focused().is_none()) {
                 response.request_focus();
             }
 
@@ -1186,8 +1443,8 @@ impl MudApp {
                     Self::navigate_history_for_session(session, 1);
                     session.tab_completion_prefix = None;
                 }
-                // Tab 補齊
-                if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab)) {
+                // Tab 補齊 (使用之前攔截的結果)
+                if tab_pressed {
                     Self::tab_complete_for_session(session);
                     ui.ctx().request_repaint();
                 }
@@ -2481,29 +2738,26 @@ impl eframe::App for MudApp {
             self.connect_to_profile(&profile_name, ctx.clone());
         }
 
-        // 處理計時器與自動喚醒
-        if let Some(session) = self.session_manager.active_session_mut() {
+        // 處理所有 Session 的計時器（即使非活躍分頁也要執行）
+        for session in self.session_manager.sessions_mut() {
             session.check_timers();
-            
-            // 計算最近的計時器到期時間以喚醒 UI
-            if !session.active_timers.is_empty() {
-                let now = Instant::now();
-                let mut next_wake = None;
-                
-                for timer in &session.active_timers {
-                    let remaining = timer.expires_at.saturating_duration_since(now);
-                    match next_wake {
-                        None => next_wake = Some(remaining),
-                        Some(d) if remaining < d => next_wake = Some(remaining),
-                        _ => {}
-                    }
-                }
-                
-                if let Some(duration) = next_wake {
-                    // 加上一點緩衝確保確實過期
-                    ctx.request_repaint_after(duration + std::time::Duration::from_millis(10));
+        }
+        
+        // 計算最近的計時器到期時間以喚醒 UI
+        let mut next_wake: Option<std::time::Duration> = None;
+        let now = Instant::now();
+        for session in self.session_manager.sessions_mut() {
+            for timer in &session.active_timers {
+                let remaining = timer.expires_at.saturating_duration_since(now);
+                match next_wake {
+                    None => next_wake = Some(remaining),
+                    Some(d) if remaining < d => next_wake = Some(remaining),
+                    _ => {}
                 }
             }
+        }
+        if let Some(duration) = next_wake {
+            ctx.request_repaint_after(duration + std::time::Duration::from_millis(10));
         }
 
         // 繪製其他視窗
@@ -2683,39 +2937,7 @@ impl eframe::App for MudApp {
         });
 
         // === 右側：工具面板 ===
-        egui::SidePanel::right("tools_panel")
-            .resizable(true)
-            .default_width(140.0)
-            .show(ctx, |ui| {
-                if let Some(session) = self.session_manager.active_session() {
-                    ui.heading("視窗");
-                    ui.separator();
-
-                    for window in session.window_manager.windows() {
-                        let is_active = window.id == active_window_id;
-                        if ui.selectable_label(is_active, &window.title).clicked() {
-                            pending_action = Some(PendingAction::SwitchWindow(window.id.clone()));
-                        }
-                    }
-
-                    ui.add_space(15.0);
-                    ui.heading("管理");
-                    ui.separator();
-
-                    if ui.button("⚙ 設定中心").clicked() {
-                        pending_action = Some(PendingAction::ToggleSettings);
-                    }
-                    if ui.button("👤 連線管理").clicked() {
-                        pending_action = Some(PendingAction::ToggleProfile);
-                    }
-                } else {
-                    ui.heading("管理");
-                    ui.separator();
-                    if ui.button("👤 連線管理").clicked() {
-                        pending_action = Some(PendingAction::ToggleProfile);
-                    }
-                }
-            });
+        self.render_side_panel(ctx, active_window_id.clone(), active_id, &mut pending_action);
 
         // === 底部：輸入區 ===
         if let Some(id) = active_id {
@@ -2771,6 +2993,12 @@ impl eframe::App for MudApp {
                     }
                 }
                 PendingAction::CloseSession(id) => {
+                    // 先發送斷線指令給網路執行緒
+                    if let Some(session) = self.session_manager.get_mut(id) {
+                        if let Some(tx) = session.command_tx.take() {
+                            let _ = tx.blocking_send(crate::session::Command::Disconnect);
+                        }
+                    }
                     self.session_manager.close_session(id);
                 }
             }

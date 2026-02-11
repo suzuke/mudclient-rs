@@ -14,7 +14,7 @@ _G.Practice.spell_info = _G.Practice.spell_info or {} -- 動態儲存法術資�
 _G.Practice.target = "student"       -- 預設目標 (生物)
 _G.Practice.targetobject = "life"     -- 預設物品 (用於 identify/locate 等)
 _G.Practice.interval = 5.0           -- 基本施法間隔 (秒)
-_G.Practice.soulsteal_count = 8      -- soulsteal 連發次數
+_G.Practice.soulsteal_count = 7      -- soulsteal 連發次數
 
 -- 狀態旗標
 _G.Practice.running = false
@@ -33,6 +33,13 @@ _G.Practice.scan_state = {
 -- 特殊指令覆蓋表
 _G.Practice.special_cmds = {
     ["ventriloquate"] = "cast 'ventriloquate' someone hit me!",
+}
+
+-- 已知法術類型 (用於解決 help 指令衝突的問題)
+-- 例如 help sleep 會顯示姿勢指令而非法術說明
+_G.Practice.known_spell_types = {
+    ["sleep"] = "target",    -- cast sleep <victim>
+    ["soulsteal"] = "target",
 }
 
 -- ===== Hook 系統 =====
@@ -159,6 +166,28 @@ function _G.Practice.process_next_candidate()
     end
     
     local next_skill = table.remove(_G.Practice.scan_state.candidates, 1)
+    
+    -- 檢查是否在已知類型表中 (解決 help 衝突問題)
+    if _G.Practice.known_spell_types and _G.Practice.known_spell_types[next_skill] then
+        local spell_type = _G.Practice.known_spell_types[next_skill]
+        
+        -- 直接加入，不需要查詢 help
+        local exists = false
+        for _, s in ipairs(_G.Practice.spells) do
+            if s == next_skill then exists = true break end
+        end
+        
+        if not exists then
+            table.insert(_G.Practice.spells, next_skill)
+            _G.Practice.spell_info[next_skill] = { type = spell_type }
+            mud.echo("✅ 加入法術: " .. next_skill .. " (類型: " .. spell_type .. ") [已知]")
+        end
+        
+        -- 繼續下一個
+        _G.Practice.process_next_candidate()
+        return
+    end
+    
     _G.Practice.scan_state.current_check = next_skill
     _G.Practice.scan_state.pending_prompts = 1
     

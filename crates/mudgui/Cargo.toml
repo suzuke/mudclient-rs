@@ -23,4 +23,6 @@ serde_json = "1.0"
 dirs = "6.0"
 regex = "1.12.2"
 image = "0.25"
+unicode-width = "0.2"
+rust-embed = { version = "8.6", features = ["interpolate-folder-path"] }
 

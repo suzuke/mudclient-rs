@@ -110,6 +110,9 @@ pub struct Session {
     /// 顯示名稱（用於分頁標題）
     pub display_name: String,
 
+    /// 用戶筆記
+    pub notes: String,
+
     // === 連線資訊 ===
     /// 主機位址
     pub host: String,
@@ -280,6 +283,7 @@ impl Session {
             id: SessionId::new(),
             profile_name: profile.name.clone(),
             display_name: profile.display_name.clone(),
+            notes: profile.notes.clone(),
             host: profile.connection.host.clone(),
             port: profile.connection.port.clone(),
             username,
@@ -413,56 +417,70 @@ impl Session {
         }
     }
 
-    /// 載入並執行 scripts/ 目錄下的所有 .lua 腳本
+    /// 載入並執行腳本
+    /// 優先從 scripts/ 目錄下讀取，若無則從內嵌資產載入
     fn load_startup_scripts(&mut self) {
+        use crate::assets::Assets;
+        use std::collections::HashSet;
+
+        let mut loaded_scripts = HashSet::new();
+
+        // 1. 嘗試從外部檔案系統讀取
         let scripts_dir = std::path::Path::new("scripts");
-        if !scripts_dir.exists() {
-            // 如果目錄不存在，嘗試建立它
-            if let Err(e) = std::fs::create_dir_all(scripts_dir) {
-                let _ = self.logger.log(&format!("無法建立 scripts 目錄: {}", e));
-                return;
+        if scripts_dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(scripts_dir) {
+                let mut file_scripts = Vec::new();
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().map_or(false, |ext| ext == "lua") {
+                        file_scripts.push(path);
+                    }
+                }
+                file_scripts.sort();
+
+                for path in file_scripts {
+                    if let Ok(code) = std::fs::read_to_string(&path) {
+                        let filename = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                        self.execute_startup_script(&filename, &code, false);
+                        loaded_scripts.insert(filename);
+                    }
+                }
             }
         }
 
-        match std::fs::read_dir(scripts_dir) {
-            Ok(entries) => {
-                let mut valid_scripts = Vec::new();
-                for entry in entries {
-                    if let Ok(entry) = entry {
-                        let path = entry.path();
-                        if path.extension().map_or(false, |ext| ext == "lua") {
-                            valid_scripts.push(path);
-                        }
-                    }
-                }
-                // 排序以保證載入順序確定性
-                valid_scripts.sort();
+        // 2. 從內嵌資產載入 (僅載入外部不存在的腳本)
+        for file in Assets::iter() {
+            let filename = file.as_ref();
+            if !filename.ends_with(".lua") || loaded_scripts.contains(filename) {
+                continue;
+            }
 
-                for path in valid_scripts {
-                    if let Ok(code) = std::fs::read_to_string(&path) {
-                        let filename = path.file_name().unwrap_or_default().to_string_lossy();
-                        match self.script_engine.execute_inline(&code, "STARTUP", &[], false) {
-                            Ok(context) => {
-                                self.apply_script_context(context);
-                                let _ = self.logger.log(&format!("已自動載入腳本: {}", filename));
-                                
-                                // 回顯到系統視窗，讓用戶知道發生了什麼
-                                self.window_manager.route_message("main", mudcore::WindowMessage {
-                                    content: format!("\n[System] 自動載入腳本: {}\n", filename),
-                                    preserve_ansi: true,
-                                });
-                            }
-                            Err(e) => {
-                                let msg = format!("腳本載入錯誤 ({}): {}", filename, e);
-                                let _ = self.logger.log(&msg);
-                                self.system_message(&msg); 
-                            }
-                        }
-                    }
+            if let Some(embedded_file) = Assets::get(filename) {
+                if let Ok(code) = std::str::from_utf8(embedded_file.data.as_ref()) {
+                    self.execute_startup_script(filename, code, true);
                 }
             }
+        }
+    }
+
+    /// 執行啟動腳本的輔助方法
+    fn execute_startup_script(&mut self, filename: &str, code: &str, is_embedded: bool) {
+        match self.script_engine.execute_inline(code, "STARTUP", &[], false) {
+            Ok(context) => {
+                self.apply_script_context(context);
+                let source = if is_embedded { "(內嵌)" } else { "(外部)" };
+                let msg = format!("\n[System] 自動載入腳本 {}: {}\n", source, filename);
+                
+                let _ = self.logger.log(&msg);
+                self.window_manager.route_message("main", mudcore::WindowMessage {
+                    content: msg,
+                    preserve_ansi: true,
+                });
+            }
             Err(e) => {
-                let _ = self.logger.log(&format!("無法讀取 scripts 目錄: {}", e));
+                let msg = format!("腳本載入錯誤 ({}): {}", filename, e);
+                let _ = self.logger.log(&msg);
+                self.system_message(&msg);
             }
         }
     }
@@ -529,15 +547,12 @@ impl Session {
                 }
 
                 // 遞歸調用處理單行
-                // 注意：這裡我們傳遞 is_echo 為 false，因為只有第一行可能是 echo（取決於調用上下文），
-                // 但通常 handle_text 收到包含換行符的 msg 時都是來自伺服器的封包，非 echo。
-                // 如果是使用者輸入的回顯，通常是單行。為求保險，若原為 echo 且是第一行才視為 echo?
-                // 簡化起見：伺服器訊息通常是一大塊，is_echo=false。使用者輸入是單行，is_echo=true。
                 // 所以這裡直接傳遞原始 is_echo flag 應該是可以的，因為這主要影響是否觸發 'look' 狀態。
                 result &= self.handle_text(line, is_echo);
             }
             return result;
         }
+
 
         let mut gagged = false;
         let mut targets = vec!["main".to_string()];
@@ -1252,6 +1267,11 @@ impl SessionManager {
         &self.sessions
     }
 
+    /// 取得所有 Session 的可變參照
+    pub fn sessions_mut(&mut self) -> &mut [Session] {
+        &mut self.sessions
+    }
+
     /// 取得目前分頁索引
     pub fn active_index(&self) -> usize {
         self.active_index
@@ -1328,6 +1348,8 @@ mod tests {
             password: None,
             created_at: 0,
             last_connected: None,
+            notes: String::new(),
+            paths: vec![],
         };
 
         let session = Session::from_profile(&profile);

@@ -10,6 +10,7 @@ pub struct AnsiSpan {
     pub text: String,
     pub fg_color: Color32,
     pub bg_color: Option<Color32>,
+    pub fg_color_left: Option<Color32>,
     pub blink: bool,
 }
 
@@ -19,6 +20,7 @@ impl Default for AnsiSpan {
             text: String::new(),
             fg_color: Color32::from_rgb(200, 200, 200),
             bg_color: None,
+            fg_color_left: None,
             blink: false,
         }
     }
@@ -163,8 +165,11 @@ pub fn parse_ansi(input: &str) -> Vec<AnsiSpan> {
         text: String::new(),
         fg_color: state.current_fg(),
         bg_color: state.current_bg(),
+        fg_color_left: None,
         blink: state.blink,
     };
+
+    let mut pending_fg_left: Option<Color32> = None;
 
     let mut chars = input.chars().peekable();
 
@@ -188,8 +193,10 @@ pub fn parse_ansi(input: &str) -> Vec<AnsiSpan> {
 
                     // 2. 處理 SGR (顏色/樣式)
                     if cmd == 'm' {
-                        if !current_span.text.is_empty() {
+                        let was_empty = current_span.text.is_empty();
+                        if !was_empty {
                             spans.push(current_span);
+                            pending_fg_left = None;
                         }
 
                         let mut params = Vec::new();
@@ -203,16 +210,30 @@ pub fn parse_ansi(input: &str) -> Vec<AnsiSpan> {
                             }
                         }
 
-                        if params.is_empty() && sequence_content.is_empty() {
+                        // 雙色字偵測：中文 MUD 用連續兩組 SGR 碼（如 \x1b[31m\x1b[m）
+                        // 來編碼 CJK 字元的左右半色。當裸重置出現在另一個 SGR 碼之後
+                        // 且中間無文字時，推斷為雙色模式，將第一個顏色存為左半色。
+                        let is_bare_reset = (params.is_empty() && sequence_content.is_empty())
+                            || (params.len() == 1 && params[0] == 0);
+                        
+                        if is_bare_reset && was_empty {
+                            // 雙色字觸發！紀錄當前顏色為「左半色」，然後執行重置
+                            pending_fg_left = Some(state.current_fg());
                             state.reset();
                         } else {
-                            state.apply_code(&params);
+                            // 正常 SGR 處理（非雙色字模式）
+                            if params.is_empty() && sequence_content.is_empty() {
+                                state.reset();
+                            } else {
+                                state.apply_code(&params);
+                            }
                         }
 
                         current_span = AnsiSpan {
                             text: String::new(),
                             fg_color: state.current_fg(),
                             bg_color: state.current_bg(),
+                            fg_color_left: pending_fg_left,
                             blink: state.blink,
                         };
                     } else if cmd != '\0' {
@@ -387,5 +408,41 @@ mod tests {
         // 應產出 1 個 span: "Color"（顏色狀態已更新，但文字不含轉義雜訊）
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].text, "Color");
+    }
+
+    #[test]
+    fn test_dual_color_keeps_first_color() {
+        // 雙色字模式：\x1b[31m\x1b[m蠻 → 紅色碼後跟裸重置，應保留紅色於左半部，右半部為預設
+        let input = "\x1b[31m\x1b[m蠻\x1b[31m\x1b[m荒";
+        let spans = parse_ansi(input);
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].text, "蠻");
+        assert_eq!(spans[0].fg_color_left, Some(Color32::from_rgb(187, 0, 0))); // Red
+        assert_eq!(spans[0].fg_color, Color32::from_rgb(200, 200, 200)); // Default reset
+    }
+
+    #[test]
+    fn test_normal_reset_still_works() {
+        // 正常的 reset（有文字後的重置）不應被跳過
+        let input = "\x1b[31mRed\x1b[0m Normal";
+        let spans = parse_ansi(input);
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].text, "Red");
+        assert_eq!(spans[0].fg_color, Color32::from_rgb(187, 0, 0));
+        assert_eq!(spans[1].text, " Normal");
+        assert_eq!(spans[1].fg_color, Color32::from_rgb(200, 200, 200)); // Default
+    }
+
+    #[test]
+    fn test_dual_color_multi_sgr() {
+        // 更複雜的雙色字：\x1b[1;31m\x1b[m\x1b[1m桃 → bold red + reset + bold
+        // 第一層捕捉到 bold red，第二層 reset，第三層設 bold。
+        // 結果應該是：左半 bold red，右半 bold white。
+        let input = "\x1b[1;31m\x1b[m\x1b[1m桃";
+        let spans = parse_ansi(input);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].text, "桃");
+        assert_eq!(spans[0].fg_color_left, Some(Color32::from_rgb(255, 85, 85))); // Bold Red
+        assert_eq!(spans[0].fg_color, Color32::from_rgb(255, 255, 255)); // Bold White
     }
 }
