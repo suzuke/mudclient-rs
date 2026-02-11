@@ -415,13 +415,14 @@ mod tests {
 
     #[test]
     fn test_dual_color_keeps_first_color() {
-        // 雙色字模式：\x1b[31m\x1b[m蠻 → 紅色碼後跟裸重置，應保留紅色於左半部，右半部為預設
+        // 雙色字模式：\x1b[31m\x1b[m蠻 → 紅色碼後跟裸重置
+        // 解析器標記 fg_color_left（渲染器負責判斷是否真正雙色字）
         let input = "\x1b[31m\x1b[m蠻\x1b[31m\x1b[m荒";
         let spans = parse_ansi(input);
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].text, "蠻");
-        assert_eq!(spans[0].fg_color_left, Some(Color32::from_rgb(187, 0, 0))); // Red
-        assert_eq!(spans[0].fg_color, Color32::from_rgb(200, 200, 200)); // Default reset
+        assert_eq!(spans[0].fg_color_left, Some(Color32::from_rgb(187, 0, 0)));
+        assert_eq!(spans[0].fg_color, Color32::from_rgb(200, 200, 200));
     }
 
     #[test]
@@ -438,14 +439,13 @@ mod tests {
 
     #[test]
     fn test_dual_color_multi_sgr() {
-        // 更複雜的雙色字：\x1b[1;31m\x1b[m\x1b[1m桃 → bold red + reset + bold
-        // 第一層捕捉到 bold red，第二層 reset，第三層設 bold。
-        // 結果應該是：左半 bold red，右半 bold white。
+        // 雙色字：\x1b[1;31m\x1b[m\x1b[1m桃 → bold red + reset + bold
         let input = "\x1b[1;31m\x1b[m\x1b[1m桃";
         let spans = parse_ansi(input);
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].text, "桃");
         assert_eq!(spans[0].fg_color_left, Some(Color32::from_rgb(255, 85, 85))); // Bold Red
-        assert_eq!(spans[0].fg_color, Color32::from_rgb(255, 255, 255)); // Bold White
+        assert_eq!(spans[0].fg_color, Color32::from_rgb(200, 200, 200)); // Default（bold 亮度在渲染器提升）
+        assert!(spans[0].bold);
     }
 }

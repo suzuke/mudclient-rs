@@ -91,14 +91,6 @@ pub struct MudApp {
     active_guide_content: String,
     /// 當前選中的攻略檔案名稱
     active_guide_name: Option<String>,
-
-    // === 並排模式 ===
-    /// 並排顯示的第二個 Session ID（None 表示非並排模式）
-    #[allow(dead_code)]
-    split_session_id: Option<crate::session::SessionId>,
-    /// 並排模式下的焦點面板（true = 左, false = 右）
-    #[allow(dead_code)]
-    split_focus_left: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,10 +188,6 @@ impl MudApp {
             guide_file_list: Vec::new(),
             active_guide_content: String::new(),
             active_guide_name: None,
-
-            // 並排模式
-            split_session_id: None,
-            split_focus_left: true,
         }
     }
 
@@ -673,9 +661,13 @@ impl MudApp {
                             } else {
                                 (span.fg_color, false)
                             };
-
-                            // 非雙色字渲染
-                            if span.fg_color_left.is_none() {
+                            // 判斷是否為真正的雙色字：fg_color_left 有值且 span 只有一個可見字元
+                            // 多字元 span（如「紅龍護符」）→ 非雙色字，用 fg_color_left 為統一顏色
+                            let visible_chars = span.text.chars().filter(|c| *c != '\n' && *c != '\r').count();
+                            let is_real_dual_color = span.fg_color_left.is_some() && visible_chars == 1;
+                            
+                            // 非雙色字渲染（多字元 span 直接用 fg_color 即 reset 後預設色）
+                            if !is_real_dual_color {
                                 if span.text.is_ascii() {
                                     let format = egui::TextFormat {
                                         font_id: current_font_id.clone(),
@@ -714,10 +706,16 @@ impl MudApp {
                                         let actual_w = ui.fonts(|f| f.glyph_width(&current_font_id, ch));
                                         let extra = (if actual_w <= 0.0 { target_w } else { target_w - actual_w }).max(0.0);
                                         // 框線繪圖字元：隱藏字型字形（佔位），稍後用 2x 字型大小重繪
+                                        // 多字元 span 有 fg_color_left：CJK 字元用 fg_color_left，ASCII 用 render_color
+                                        let char_color = if let Some(left_color) = span.fg_color_left {
+                                            if !ch.is_ascii() { left_color } else { render_color }
+                                        } else {
+                                            render_color
+                                        };
                                         let glyph_color = if ch >= '\u{2500}' && ch <= '\u{259f}' {
                                             Color32::TRANSPARENT
                                         } else {
-                                            render_color
+                                            char_color
                                         };
                                         let fmt = egui::TextFormat {
                                             font_id: current_font_id.clone(),
@@ -727,7 +725,7 @@ impl MudApp {
                                             line_height: Some(font_size + 4.0),
                                             ..Default::default()
                                         };
-                                        section_fg_colors.push(render_color); // 記錄真實顏色供幾何繪製
+                                        section_fg_colors.push(char_color); // 記錄真實顏色供幾何繪製
                                         // 用 leading_space 代替 extra_letter_spacing（後者對單字元 section 不生效）
                                         main_job.append(&ch.to_string(), extra, fmt.clone());
                                         overlay_job.append(&ch.to_string(), extra, egui::TextFormat { color: Color32::TRANSPARENT, background: Color32::TRANSPARENT, ..fmt });
@@ -3169,9 +3167,6 @@ impl eframe::App for MudApp {
                     }
                     self.session_manager.close_session(id);
                 }
-                PendingAction::ToggleSplit | PendingAction::SetSplitSession(_) | PendingAction::SwitchSplitFocus => {
-                    // TODO: split view 功能尚未實作
-                }
             }
         }
 
@@ -3202,12 +3197,6 @@ enum PendingAction {
     ToggleProfile,
     ClearActiveWindow,
     CloseSession(crate::session::SessionId),
-    #[allow(dead_code)]
-    ToggleSplit,
-    #[allow(dead_code)]
-    SetSplitSession(crate::session::SessionId),
-    #[allow(dead_code)]
-    SwitchSplitFocus,
 }
 
 
