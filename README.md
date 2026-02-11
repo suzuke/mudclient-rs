@@ -1,59 +1,78 @@
-# Rust MUD Client
+# MUD Client (mudclient-rs)
 
-一個使用 Rust 開發的高效能、功能豐富的 MUD 客戶端。
+一個使用 Rust 開發的高效能、跨平台 MUD 客戶端。
 
 ## 特色功能
 
-- **多語言支援**: 穩定處理 Big5 編碼，完美顯示中文。
-- **ANSI 顏色**: 完整解析並顯示 MUD 中的 ANSI 顏色碼（含 256 色與 TrueColor）。
-- **別名系統 (Alias)**: 支援命令縮寫與參數展開（例如：`kk $1` -> `kill $1;loot`）。
-- **觸發器系統 (Trigger)**: 正則表達式匹配、自動發送命令、Lua 腳本執行。
-- **Lua 腳本**: 內嵌 Lua 引擎，支援進階自動化邏輯。
-- **多視窗管理**: 支援將不同的訊息（如聊天、戰鬥）路由到獨立的子視窗。
-- **日誌記錄**: 支援純文字與 HTML 格式的日誌存儲，顏色外觀完美重現。
-- **Tab 補齊**: 按 Tab 鍵可快速補齊歷史指令。
-- **命令回顯**: 發送的指令會直接顯示在視窗中，方便追蹤。
-- **自動重連**: 斷線後自動嘗試重新連線。
+- **多語言支援**：穩定處理 Big5 編碼，完美顯示中文
+- **ANSI 顏色**：完整解析 256 色與 TrueColor
+- **別名系統 (Alias)**：命令縮寫與參數展開（如 `kk $1` → `kill $1;loot`）
+- **觸發器系統 (Trigger)**：正則表達式匹配、自動發送命令、Lua 腳本執行
+- **Lua 腳本引擎**：內嵌 Lua 5.4，支援進階自動化邏輯
+- **多視窗管理**：將聊天、戰鬥等不同訊息路由到獨立子視窗
+- **路徑記錄與迴圈偵測**：自動記錄移動路徑，偵測迷宮迴圈
+- **日誌記錄**：純文字與 HTML 格式日誌，顏色完美重現
+- **Tab 補齊**：畫面上的 Mob 名稱智慧補齊
+- **自動重連**：斷線後自動嘗試重新連線
+- **Profile 管理**：多角色設定檔、自動登入
 
-## 下載與安裝
+## 下載
+
+到 [Releases](https://github.com/suzuke/mudclient-rs/releases) 頁面下載預編譯的執行檔，或從 [Actions](https://github.com/suzuke/mudclient-rs/actions) 下載最新建置。
+
+支援平台：
+- **macOS** (Apple Silicon)
+- **Windows** (x86_64)
+
+## 從原始碼編譯
 
 ### 前置要求
 - [Rust](https://rustup.rs/) (最新穩定版)
 
-### 編譯
+### 編譯與執行
 ```bash
-cargo build --release
+cargo build -p mudgui --release
 ```
 
-## 使用指南
+執行檔將產生在 `target/release/mudgui`。
+將 `scripts/` 資料夾放在執行檔旁邊即可使用所有腳本功能。
 
-### 管理中心
-點擊側邊欄的 **「設定中心」** 按鈕即可進入管理介面，檢視當前已載入的：
-- 別名 (Alias)
-- 觸發器 (Trigger)
-- 日誌狀態 (Logger)
+## 目錄結構
 
-### Lua 腳本 API
-在觸發器中啟用「使用 Lua 腳本」後，可使用以下 API：
+```
+mudclient-rs/
+├── crates/
+│   ├── mudcore/     # 核心：協定、編碼、別名、觸發器、Lua 腳本引擎
+│   └── mudgui/      # GUI：基於 egui 的跨平台圖形介面
+├── scripts/         # Lua 腳本（隨執行檔一起部署）
+└── docs/            # 文件
+```
+
+## Lua 腳本 API
+
+在觸發器或別名中使用 Lua 腳本，或用 `/lua` 指令直接執行：
+
 ```lua
-mud.send("north")           -- 發送指令
-mud.echo("Hello!")          -- 本地顯示訊息
-mud.log("記錄訊息")          -- 寫入日誌
-mud.window("chat", text)    -- 輸出到子視窗
+mud.send("north")               -- 發送指令到伺服器
+mud.echo("Hello!")               -- 本地顯示訊息
+mud.log("記錄")                  -- 寫入日誌
+mud.window("chat", text)         -- 輸出到子視窗
+mud.timer(2.5, "mud.send('hi')") -- 延遲執行
+mud.gag_message()                -- 攔截當前行
+mud.enable_trigger("name", true) -- 啟用/禁用觸發器
 ```
 
-### 快捷鍵
-- **Tab**: 歷史指令補齊
-- **↑/↓**: 瀏覽歷史指令
-- **Escape**: 關閉彈出視窗
-- **F2-F4**: 開啟設定中心
+更多細節請參考 [Scripting_and_Commands.md](docs/Scripting_and_Commands.md)。
 
-## 開發架構
+## 快捷鍵
 
-- `mudcore`: 核心協定、編碼、別名、觸發器與腳本邏輯。
-- `mudgui`: 基於 `egui` 的跨平台圖形介面。
-
----
+| 按鍵 | 功能 |
+|------|------|
+| Tab | 智慧補齊（Mob 名稱 / 歷史指令） |
+| ↑ / ↓ | 瀏覽歷史指令 |
+| Escape | 關閉彈出視窗 |
+| F2-F4 | 開啟設定中心 |
 
 ## 授權
+
 MIT License

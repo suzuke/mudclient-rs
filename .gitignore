@@ -1,6 +1,23 @@
+# Build
 /target
-/logs
+
+# Logs
+**/logs/
 **/*.log
-*.txt
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Editor
 *.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Data files (game guides, keep locally only)
+docs/7777/
+
+# Maps output
+map_output.mermaid
