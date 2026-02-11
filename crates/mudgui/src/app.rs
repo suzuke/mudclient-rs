@@ -12,7 +12,7 @@ use mudcore::{
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 
-use crate::ansi::parse_ansi;
+// 移除未使用匯入
 use crate::config::{GlobalConfig, ProfileManager, TriggerConfig};
 use crate::session::SessionManager;
 
@@ -303,55 +303,34 @@ impl MudApp {
     /// 初始化字型設定
     fn setup_fonts(ctx: &egui::Context) {
         let mut fonts = egui::FontDefinitions::default();
+        
+        // 內嵌常規與粗體字型
+        let reg_bytes = include_bytes!("../assets/fonts/SarasaMonoTC-Regular.ttf");
+        let bold_bytes = include_bytes!("../assets/fonts/SarasaMonoTC-Bold.ttf");
+        
+        // 1. 註冊常規體 (cjk)
+        fonts.font_data.insert(
+            "cjk".to_owned(),
+            std::sync::Arc::new(egui::FontData::from_owned(reg_bytes.to_vec())),
+        );
+        
+        fonts.families.get_mut(&egui::FontFamily::Monospace)
+            .map(|f| f.insert(0, "cjk".to_owned()));
+        fonts.families.get_mut(&egui::FontFamily::Proportional)
+            .map(|f| f.insert(0, "cjk".to_owned()));
 
-        // 嘗試載入系統中文字型作為優先，滿足使用者對 LiHei Pro 的偏好
-        if let Some(cjk_font_data) = Self::load_system_cjk_font() {
-            fonts.font_data.insert(
-                "cjk".to_owned(),
-                std::sync::Arc::new(egui::FontData::from_owned(cjk_font_data)),
-            );
+        // 2. 註冊真正的粗體 (cjk_bold)
+        fonts.font_data.insert(
+            "cjk_bold".to_owned(),
+            std::sync::Arc::new(egui::FontData::from_owned(bold_bytes.to_vec())),
+        );
+        fonts.families.insert(
+            egui::FontFamily::Name("cjk_bold".into()),
+            vec!["cjk_bold".to_owned()],
+        );
 
-            // 為 Monospace 加入 CJK 並設為最高優先級，確保 MUD 畫面文字與對齊
-            if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
-                family.insert(0, "cjk".to_owned());
-            }
-            
-            // 為 Proportional 加入 CJK，確保 UI 按鈕、標籤等不會出現方框
-            if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
-                family.push("cjk".to_owned()); // UI 部分通常不需要設為第一優先，但必須有 fallback
-            }
-
-            tracing::info!("已載入系統中文字型 (專屬對齊優化版)");
-        }
-
+        tracing::info!("字型載入狀態: 已內嵌 SarasaMonoTC Regular 與 Bold");
         ctx.set_fonts(fonts);
-    }
-
-    /// 載入系統 CJK 字型
-    fn load_system_cjk_font() -> Option<Vec<u8>> {
-        use font_kit::family_name::FamilyName;
-        use font_kit::properties::Properties;
-        use font_kit::source::SystemSource;
-
-        let source = SystemSource::new();
-        let font_names = [
-            FamilyName::Title("LiHei Pro".to_string()),
-            FamilyName::Title("Heiti TC".to_string()),
-            FamilyName::Title("Heiti SC".to_string()),
-            FamilyName::Title("PingFang TC".to_string()),
-        ];
-
-        for family in font_names {
-            if let Ok(handle) = source.select_best_match(&[family], &Properties::new()) {
-                if let Ok(font) = handle.load() {
-                    if let Some(data) = font.copy_font_data() {
-                        tracing::info!("找到字型: {:?}", font.full_name());
-                        return Some((*data).clone());
-                    }
-                }
-            }
-        }
-        None
     }
 
     /// 從 Profile 建立連線
@@ -413,7 +392,7 @@ impl MudApp {
         // 創建 channels
         use crate::session::Command as SessionCommand;
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<SessionCommand>(32);
-        let (msg_tx, msg_rx) = mpsc::channel::<String>(1024);
+        let (msg_tx, msg_rx) = mpsc::channel::<(String, Vec<u8>)>(1024);
 
         if let Some(session) = self.session_manager.get_mut(session_id) {
             session.command_tx = Some(cmd_tx.clone());
@@ -433,14 +412,14 @@ impl MudApp {
                             SessionCommand::Connect(h, p, u, pwd) => {
                                 match client.connect(&h, p).await {
                                     Ok(_) => {
-                                        let _ = msg_tx.send(format!(">>> 已連線到 {}:{}\n", h, p)).await;
+                                        let _ = msg_tx.send((format!(">>> 已連線到 {}:{}\n", h, p), Vec::new())).await;
 
                                         // 自動登入邏輯
                                         if let Some(username) = u {
                                             // 稍微延遲一點點確保連線穩定（簡易版）
                                             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                                             if let Err(e) = client.send(&username).await {
-                                                let _ = msg_tx.send(format!(">>> 自動登入(帳號)失敗: {}\n", e)).await;
+                                                let _ = msg_tx.send((format!(">>> 自動登入(帳號)失敗: {}\n", e), Vec::new())).await;
                                             } else {
                                                 // let _ = msg_tx.send(">>> 已發送帳號\n".to_string()).await;
                                             }
@@ -448,9 +427,9 @@ impl MudApp {
                                             if let Some(password) = pwd {
                                                 tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
                                                 if let Err(e) = client.send(&password).await {
-                                                     let _ = msg_tx.send(format!(">>> 自動登入(密碼)失敗: {}\n", e)).await;
+                                                     let _ = msg_tx.send((format!(">>> 自動登入(密碼)失敗: {}\n", e), Vec::new())).await;
                                                 } else {
-                                                    let _ = msg_tx.send(">>> 已嘗試自動登入\n".to_string()).await;
+                                                    let _ = msg_tx.send((">>> 已嘗試自動登入\n".to_string(), Vec::new())).await;
                                                 }
                                             }
                                         }
@@ -458,18 +437,18 @@ impl MudApp {
                                         // 開始讀取迴圈
                                         loop {
                                             tokio::select! {
-                                                result = client.read() => {
+                                                result = client.read_with_widths() => {
                                                     match result {
-                                                        Ok(text) if !text.is_empty() => {
-                                                            let _ = msg_tx.send(text).await;
+                                                        Ok((text, widths)) if !text.is_empty() => {
+                                                            let _ = msg_tx.send((text, widths)).await;
                                                             ctx.request_repaint();
                                                         }
                                                         Ok(_) => {
-                                                            let _ = msg_tx.send(">>> 連線已關閉\n".to_string()).await;
+                                                            let _ = msg_tx.send((">>> 連線已關閉\n".to_string(), Vec::new())).await;
                                                             break;
                                                         }
                                                         Err(e) => {
-                                                            let _ = msg_tx.send(format!(">>> 連線已關閉 (錯誤: {})\n", e)).await;
+                                                            let _ = msg_tx.send((format!(">>> 連線已關閉 (錯誤: {})\n", e), Vec::new())).await;
                                                             break;
                                                         }
                                                     }
@@ -478,12 +457,12 @@ impl MudApp {
                                                     match cmd {
                                                         SessionCommand::Send(text) => {
                                                             if let Err(e) = client.send(&text).await {
-                                                                let _ = msg_tx.send(format!(">>> 發送失敗: {}\n", e)).await;
+                                                                let _ = msg_tx.send((format!(">>> 發送失敗: {}\n", e), Vec::new())).await;
                                                             }
                                                         }
                                                         SessionCommand::Disconnect => {
                                                             client.disconnect().await;
-                                                            let _ = msg_tx.send(">>> 已斷開連線\n".to_string()).await;
+                                                            let _ = msg_tx.send((">>> 已斷開連線\n".to_string(), Vec::new())).await;
                                                             break;
                                                         }
                                                         _ => {}
@@ -493,7 +472,7 @@ impl MudApp {
                                         }
                                     }
                                     Err(e) => {
-                                        let _ = msg_tx.send(format!(">>> 連線已關閉 (連線失敗: {})\n", e)).await;
+                                        let _ = msg_tx.send((format!(">>> 連線已關閉 (連線失敗: {})\n", e), Vec::new())).await;
                                     }
                                 }
                             }
@@ -595,15 +574,19 @@ impl MudApp {
             // 處理收集到的訊息
             if !messages.is_empty() {
                 if let Some(session) = self.session_manager.get_mut(id) {
-                    for msg in messages {
-                        session.handle_text(&msg, false);
+                    for (text, widths) in messages {
+                        if widths.is_empty() {
+                            session.handle_text(&text, false);
+                        } else {
+                            session.handle_text_with_widths(&text, false, Some(&widths));
+                        }
 
                         use crate::session::ConnectionStatus as SessionStatus;
-                        if msg.contains("已連線到") {
-                            let info = msg.replace(">>> 已連線到 ", "").replace("\n", "");
+                        if text.contains("已連線到") {
+                            let info = text.replace(">>> 已連線到 ", "").replace("\n", "");
                             session.status = SessionStatus::Connected(info);
                             session.connected_at = Some(Instant::now());
-                        } else if msg.contains("連線已關閉") || msg.contains("已斷開連線") {
+                        } else if text.contains("連線已關閉") || text.contains("已斷開連線") {
                             session.connected_at = None;
                             if session.auto_reconnect {
                                 use std::time::Duration;
@@ -636,78 +619,254 @@ impl MudApp {
             .max_height(available_height)
             .stick_to_bottom(true)
             .show(ui, |ui| {
-                let font_id = FontId::monospace(14.0);
+                let font_size = 14.0;
+                let font_id = FontId::monospace(font_size);
+                let bold_font_id = FontId::new(font_size, egui::FontFamily::Name("cjk_bold".into()));
                 
-                // 測量 LiHei Pro 下的基準寬度
-                // 為了達成精確對齊，我們以中文字寬度的一半作單位 (1.0 單位)
-                let wide_w = ui.fonts(|f| f.glyph_width(&font_id, '中'));
-                let cell_w = wide_w / 2.0;
+                // 穩定測量：使用空格寬度作為 Mono 單元格寬度基準
+                // 穩定測量：使用空格寬度作為 Mono 單元格寬度基準
+                let cell_w = ui.fonts(|f| f.glyph_width(&font_id, ' '));
+
+                let mut main_job = LayoutJob::default();
+                let mut overlay_job = LayoutJob::default();
+                main_job.wrap.max_width = f32::INFINITY;
+                overlay_job.wrap.max_width = f32::INFINITY;
+                
+                let mut section_color_map = std::collections::HashMap::new();
+                let mut section_font_map = std::collections::HashMap::new();
+                let mut section_fg_colors: Vec<Color32> = Vec::new(); // 記錄每個 section 的前景色
+                let mut has_dual_color = false;
 
                 if let Some(window) = session.window_manager.get(active_window_id) {
                     for msg in window.messages() {
-                        let spans = parse_ansi(&msg.content);
-                        let mut main_job = LayoutJob::default();
-                        let mut overlay_job = LayoutJob::default();
-                        let mut has_dual_color = false;
-                        
-                        // 記錄哪些 section 屬於雙色字： section_idx -> (左色, 右色)
-                        let mut section_color_map = std::collections::HashMap::new();
-                        
+                        use crate::ansi::parse_ansi_with_widths;
+                        let spans = parse_ansi_with_widths(&msg.content, Some(&msg.byte_widths));
+
+                         
                         for span in spans {
                             let italics = span.blink;
                             let background = span.bg_color.unwrap_or(Color32::TRANSPARENT);
+                            let mut current_font_id = font_id.clone();
                             
-                            for ch in span.text.chars() {
+                            let (render_color, _) = if span.bold {
+                                let [r, g, b, a] = span.fg_color.to_array();
+                                let bright_color = Color32::from_rgba_unmultiplied(
+                                    r.saturating_add(30),
+                                    g.saturating_add(30),
+                                    b.saturating_add(30),
+                                    a
+                                );
+                                current_font_id = bold_font_id.clone();
+                                (bright_color, true)
+                            } else {
+                                (span.fg_color, false)
+                            };
+
+                            // 非雙色字渲染
+                            if span.fg_color_left.is_none() {
+                                if span.text.is_ascii() {
+                                    let format = egui::TextFormat {
+                                        font_id: current_font_id.clone(),
+                                        color: render_color,
+                                        background,
+                                        italics,
+                                        line_height: Some(font_size + 4.0),
+                                        ..Default::default()
+                                    };
+                                    section_fg_colors.push(render_color);
+                                    main_job.append(&span.text, 0.0, format.clone());
+                                    overlay_job.append(&span.text, 0.0, egui::TextFormat { color: Color32::TRANSPARENT, ..format });
+                                } else {
+                                    for (idx, ch) in span.text.chars().enumerate() {
+                                        if ch == '\n' || ch == '\r' {
+                                            let fmt = egui::TextFormat { font_id: current_font_id.clone(), color: render_color, background, italics, line_height: Some(font_size + 4.0), ..Default::default() };
+                                            section_fg_colors.push(render_color);
+                                            main_job.append(&ch.to_string(), 0.0, fmt.clone());
+                                            overlay_job.append(&ch.to_string(), 0.0, egui::TextFormat { color: Color32::TRANSPARENT, background: Color32::TRANSPARENT, ..fmt });
+                                            continue;
+                                        }
+                                        let u_w = if let Some(bw) = span.byte_widths.get(idx).copied() {
+                                            bw as usize
+                                        } else {
+                                            if ch.is_ascii() || ch == '|' { 1 }
+                                            else if ch == '\u{2103}' || ch == '\u{00a7}' { 2 }
+                                            else {
+                                                use unicode_width::UnicodeWidthChar;
+                                                ch.width().unwrap_or(1).max(1)
+                                            }
+                                        };
+
+                                        // CJK 終端環境：框線繪圖字元始終佔 2 列寬
+                                        let u_w = if ch >= '\u{2500}' && ch <= '\u{259f}' { u_w.max(2) } else { u_w };
+                                        let target_w = (u_w as f32) * cell_w;
+                                        let actual_w = ui.fonts(|f| f.glyph_width(&current_font_id, ch));
+                                        let extra = (if actual_w <= 0.0 { target_w } else { target_w - actual_w }).max(0.0);
+                                        // 框線繪圖字元：隱藏字型字形（佔位），稍後用 2x 字型大小重繪
+                                        let glyph_color = if ch >= '\u{2500}' && ch <= '\u{259f}' {
+                                            Color32::TRANSPARENT
+                                        } else {
+                                            render_color
+                                        };
+                                        let fmt = egui::TextFormat {
+                                            font_id: current_font_id.clone(),
+                                            color: glyph_color,
+                                            background,
+                                            italics,
+                                            line_height: Some(font_size + 4.0),
+                                            ..Default::default()
+                                        };
+                                        section_fg_colors.push(render_color); // 記錄真實顏色供幾何繪製
+                                        // 用 leading_space 代替 extra_letter_spacing（後者對單字元 section 不生效）
+                                        main_job.append(&ch.to_string(), extra, fmt.clone());
+                                        overlay_job.append(&ch.to_string(), extra, egui::TextFormat { color: Color32::TRANSPARENT, background: Color32::TRANSPARENT, ..fmt });
+                                    }
+                                }
+                                continue;
+                            }
+
+                            // 雙色字逐字元網格對齊模式
+                            for (idx, ch) in span.text.chars().enumerate() {
                                 if ch == '\n' || ch == '\r' {
-                                    let fmt = egui::TextFormat { font_id: font_id.clone(), color: span.fg_color, background, italics, ..Default::default() };
+                                    let fmt = egui::TextFormat { font_id: current_font_id.clone(), color: render_color, background, italics, line_height: Some(font_size + 4.0), ..Default::default() };
+                                    section_fg_colors.push(render_color);
                                     main_job.append(&ch.to_string(), 0.0, fmt.clone());
                                     overlay_job.append(&ch.to_string(), 0.0, egui::TextFormat { color: Color32::TRANSPARENT, background: Color32::TRANSPARENT, ..fmt });
                                     continue;
                                 }
 
-                                let u_w = if (ch >= '\u{2500}' && ch <= '\u{257f}') || ch == '|' || ch == '§' { 1 } else {
-                                    use unicode_width::UnicodeWidthChar;
-                                    ch.width().unwrap_or(1).max(1)
+                                let u_w = if let Some(bw) = span.byte_widths.get(idx).copied() {
+                                    bw as usize
+                                } else {
+                                    if ch.is_ascii() || ch == '|' { 1 }
+                                    else if ch == '\u{2103}' || ch == '\u{00a7}' { 2 }
+                                    else {
+                                        use unicode_width::UnicodeWidthChar;
+                                        ch.width().unwrap_or(1).max(1)
+                                    }
                                 };
-                                let target_w = (u_w as f32) * cell_w;
-                                let actual_w = ui.fonts(|f| f.glyph_width(&font_id, ch));
-                                let extra = target_w - actual_w;
 
-                                let mut main_fmt = egui::TextFormat {
-                                    font_id: font_id.clone(),
-                                    color: span.fg_color,
+                                // CJK 終端環境：框線繪圖字元始終佔 2 列寬
+                                let u_w = if ch >= '\u{2500}' && ch <= '\u{259f}' { u_w.max(2) } else { u_w };
+                                let target_w = (u_w as f32) * cell_w;
+                                let actual_w = ui.fonts(|f| f.glyph_width(&current_font_id, ch));
+                                let extra = (if actual_w <= 0.0 { target_w } else { target_w - actual_w }).max(0.0);
+
+                                let extra_leading = extra; // 用 leading_space 代替 extra_letter_spacing
+                                let mut format = egui::TextFormat {
+                                    font_id: current_font_id.clone(),
+                                    color: render_color,
                                     background,
                                     italics,
-                                    extra_letter_spacing: extra,
+                                    line_height: Some(font_size + 4.0),
                                     ..Default::default()
                                 };
 
                                 let section_idx = main_job.sections.len();
                                 if let Some(left_color) = span.fg_color_left {
                                     has_dual_color = true;
-                                    section_color_map.insert(section_idx, (left_color, span.fg_color));
+                                    section_color_map.insert(section_idx, (left_color, render_color));
+                                    section_font_map.insert(section_idx, current_font_id.clone());
                                     
-                                    // 主層設為透明（保留背景），覆蓋層內容設為白色，著色時使用
-                                    let mut overlay_fmt = main_fmt.clone();
-                                    main_fmt.color = Color32::TRANSPARENT;
+                                    let mut overlay_fmt = format.clone();
+                                    format.color = Color32::TRANSPARENT;
                                     overlay_fmt.color = Color32::WHITE;
                                     overlay_fmt.background = Color32::TRANSPARENT;
                                     
-                                    main_job.append(&ch.to_string(), 0.0, main_fmt);
-                                    overlay_job.append(&ch.to_string(), 0.0, overlay_fmt);
+                                    section_fg_colors.push(render_color);
+                                    main_job.append(&ch.to_string(), extra_leading, format);
+                                    overlay_job.append(&ch.to_string(), extra_leading, overlay_fmt);
                                 } else {
-                                    let mut overlay_fmt = main_fmt.clone();
+                                    let mut overlay_fmt = format.clone();
                                     overlay_fmt.color = Color32::TRANSPARENT;
                                     overlay_fmt.background = Color32::TRANSPARENT;
                                     
-                                    main_job.append(&ch.to_string(), 0.0, main_fmt);
-                                    overlay_job.append(&ch.to_string(), 0.0, overlay_fmt);
+                                    section_fg_colors.push(render_color);
+                                    main_job.append(&ch.to_string(), extra_leading, format);
+                                    overlay_job.append(&ch.to_string(), extra_leading, overlay_fmt);
                                 }
                             }
                         }
                         
-                        let response = ui.label(main_job);
-                        let rect = response.rect;
+                        // 確保訊息之間有換行
+                        if !main_job.text.is_empty() && !main_job.text.ends_with('\n') {
+                            let nl_fmt = egui::TextFormat { font_id: font_id.clone(), line_height: Some(font_size + 4.0), ..Default::default() };
+                            section_fg_colors.push(Color32::TRANSPARENT);
+                            main_job.append("\n", 0.0, nl_fmt.clone());
+                            overlay_job.append("\n", 0.0, egui::TextFormat { color: Color32::TRANSPARENT, ..nl_fmt });
+                        }
+                    }
+                }
+                
+                // 使用可選取的 Label 支援文字選取（Cmd+C 複製）
+                let main_galley = ui.fonts(|f| f.layout_job(main_job.clone()));
+                let label_response = ui.add(
+                    egui::Label::new(egui::WidgetText::LayoutJob(main_job))
+                        .selectable(true)
+                        .wrap_mode(egui::TextWrapMode::Extend)
+                );
+                let rect = label_response.rect;
+                
+                // 右鍵選單：複製全文
+                label_response.context_menu(|ui| {
+                    if ui.button("複製全文").clicked() {
+                        let mut all_text = String::new();
+                        if let Some(window) = session.window_manager.get(active_window_id) {
+                            for msg in window.messages() {
+                                use crate::ansi::parse_ansi_with_widths;
+                                let spans = parse_ansi_with_widths(&msg.content, Some(&msg.byte_widths));
+                                for span in &spans {
+                                    all_text.push_str(&span.text);
+                                }
+                                if !all_text.ends_with('\n') {
+                                    all_text.push('\n');
+                                }
+                            }
+                        }
+                        ui.output_mut(|o| o.copied_text = all_text);
+                        ui.close_menu();
+                    }
+                });
+                    
+                    // 2x 字型純文字渲染框線字元（取代幾何線段）
+                    let painter = ui.painter();
+                    let box_font = FontId::monospace(font_size * 2.0);
+                    for row in &main_galley.rows {
+                        for glyph in &row.glyphs {
+                            let ch = glyph.chr;
+                            if ch < '\u{2500}' || ch > '\u{259f}' { continue; }
+                            
+                            let fg_color = section_fg_colors.get(glyph.section_index as usize)
+                                .copied().unwrap_or(Color32::WHITE);
+                            
+                            // cell 座標（含 leading_space）
+                            let leading = main_galley.job.sections
+                                .get(glyph.section_index as usize)
+                                .map(|s| s.leading_space)
+                                .unwrap_or(0.0);
+                            let x = rect.min.x + glyph.pos.x - leading;
+                            let y = rect.min.y + row.rect.min.y;
+                            let w = leading + glyph.advance_width;
+                            let h = row.rect.height();
+                            
+                            // 裁剪到 cell 邊界
+                            let cell_rect = egui::Rect::from_min_size(
+                                egui::pos2(x, y),
+                                egui::vec2(w, h),
+                            );
+                            let clipped = painter.with_clip_rect(cell_rect);
+                            
+                            // 2x 字型大小字形剛好 14px 寬，填滿 cell
+                            clipped.text(
+                                egui::pos2(x + w * 0.5, y + h * 0.5),
+                                egui::Align2::CENTER_CENTER,
+                                ch.to_string(),
+                                box_font.clone(),
+                                fg_color,
+                            );
+                        }
+                    }
+                
+                ui.spacing_mut().item_spacing.y = 0.0;
 
                         if has_dual_color {
                             let overlay_galley = ui.fonts(|f| f.layout_job(overlay_job));
@@ -715,13 +874,14 @@ impl MudApp {
                             for row in &overlay_galley.rows {
                                 for glyph in &row.glyphs {
                                     if let Some(&(left_color, right_color)) = section_color_map.get(&(glyph.section_index as usize)) {
+                                        let char_font = section_font_map.get(&(glyph.section_index as usize)).unwrap_or(&font_id);
                                         let char_pos = rect.min + glyph.pos.to_vec2();
                                         let char_w = glyph.advance_width;
                                         let char_rect = egui::Rect::from_min_max(
                                             egui::pos2(char_pos.x, rect.min.y + row.rect.min.y),
                                             egui::pos2(char_pos.x + char_w, rect.min.y + row.rect.max.y)
                                         );
-
+ 
                                         // 繪製左半部
                                         let left_clip = egui::Rect::from_min_max(
                                             char_rect.min,
@@ -731,7 +891,7 @@ impl MudApp {
                                             char_rect.min,
                                             egui::Align2::LEFT_TOP,
                                             glyph.chr.to_string(),
-                                            font_id.clone(),
+                                            char_font.clone(),
                                             left_color,
                                         );
 
@@ -751,8 +911,6 @@ impl MudApp {
                                 }
                             }
                         }
-                    }
-                }
             });
 
         // 如果需要強制捲到底部，直接設定 offset
@@ -2722,8 +2880,6 @@ impl MudApp {
             self.show_settings_window = false;
         }
     }
-
-
 }
 
 impl eframe::App for MudApp {

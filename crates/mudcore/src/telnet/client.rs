@@ -166,29 +166,24 @@ impl TelnetClient {
 
     /// 讀取資料並處理 Telnet 協定
     ///
-    /// 返回解碼後的 UTF-8 文字
-    pub async fn read(&mut self) -> Result<String, TelnetError> {
+    /// 返回 (解碼後的 UTF-8 文字, 每個字元對應的原始位元組寬度)
+    pub async fn read_with_widths(&mut self) -> Result<(String, Vec<u8>), TelnetError> {
         let stream = self.stream.as_mut().ok_or(TelnetError::NotConnected)?;
 
         let mut buffer = vec![0u8; self.config.read_buffer_size];
         let n = stream.read(&mut buffer).await?;
 
         if n == 0 {
-            // 真正收到 EOF，切換狀態
             self.state = ConnectionState::Disconnected;
             return Err(TelnetError::NotConnected);
         }
 
-        // 將新資料加入 raw_buffer
         self.raw_buffer.extend_from_slice(&buffer[..n]);
         crate::debug_log::DebugLogger::log_bytes("READ_RAW", &buffer[..n]);
 
-        // 1. 解析 Telnet 協定（處理 IAC）
         let (text_bytes, events, consumed) = parse_telnet_data(&self.raw_buffer);
-        crate::debug_log::DebugLogger::log_bytes("TEXT_BYTES", &text_bytes);
         self.raw_buffer.drain(..consumed);
 
-        // 2. 處理 Telnet 命令
         for event in events {
             if let TelnetEvent::Command(cmd, option) = event {
                 let response = generate_refusal(cmd, option);
@@ -198,24 +193,29 @@ impl TelnetClient {
             }
         }
 
-        // 3. 處理 text_bytes：分離 ANSI 與文字位元組，避免 ANSI 截斷 Big5 字元
         let mut final_output = String::new();
+        let mut final_widths = Vec::new();
         let mut i = 0;
         
         while i < text_bytes.len() {
-            // 尋找下一個 ESC [
             if text_bytes[i] == 0x1B && i + 1 < text_bytes.len() && text_bytes[i+1] == b'[' {
-                // 1. 先將累積在 text_buffer 的純文字位元組解碼
+                // 1. 解碼累積文字並記錄寬度
                 if !self.text_buffer.is_empty() {
                     let mut decoded = String::with_capacity(self.text_buffer.len() * 2);
                     let (_result, read, _replaced) = self.decoder.decode_to_string(&self.text_buffer, &mut decoded, false);
-                    final_output.push_str(&decoded);
+                    
+                    // 關鍵：將 Wide (Big5) 對應到原始位元組
+                    for ch in decoded.chars() {
+                        let w = if ch.is_ascii() { 1 } else { 2 }; // Big5 中文字佔 2 bytes
+                        final_widths.push(w);
+                        final_output.push(ch);
+                    }
                     self.text_buffer.drain(..read);
                 }
 
-                // 2. 提取完整的 ANSI 序列 (直到 0x40-0x7E)
+                // 2. 提取 ANSI 序列 (不佔寬度)
                 let start = i;
-                i += 2; // 跳過 ESC [
+                i += 2;
                 while i < text_bytes.len() {
                     let b = text_bytes[i];
                     i += 1;
@@ -223,9 +223,11 @@ impl TelnetClient {
                         break;
                     }
                 }
-                // 直接將 ANSI 序列轉為字串並加入輸出
                 if let Ok(ansi_str) = std::str::from_utf8(&text_bytes[start..i]) {
-                    final_output.push_str(ansi_str);
+                    for ch in ansi_str.chars() {
+                        final_output.push(ch);
+                        final_widths.push(0); // ANSI 控制碼不計入字元格子寬度
+                    }
                 }
             } else {
                 self.text_buffer.push(text_bytes[i]);
@@ -233,24 +235,23 @@ impl TelnetClient {
             }
         }
 
-        // 4. 最後解碼剩餘的 text_buffer
         if !self.text_buffer.is_empty() {
             let mut decoded = String::with_capacity(self.text_buffer.len() * 2);
-            let (_result, read, replaced) = self.decoder.decode_to_string(&self.text_buffer, &mut decoded, false);
-            
-            if replaced {
-                debug!("Big5 解碼包含無效字元。Raw: {:02X?}", &self.text_buffer[..read.min(32)]);
+            let (_result, read, _replaced) = self.decoder.decode_to_string(&self.text_buffer, &mut decoded, false);
+            for ch in decoded.chars() {
+                let w = if ch.is_ascii() { 1 } else { 2 };
+                final_widths.push(w);
+                final_output.push(ch);
             }
-            
-            final_output.push_str(&decoded);
             self.text_buffer.drain(..read);
         }
 
-        if !final_output.is_empty() {
-            debug!("成功處理 {} 字元 (含 ANSI)", final_output.chars().count());
-        }
+        Ok((final_output, final_widths))
+    }
 
-        Ok(final_output)
+    /// 向後相容的 read
+    pub async fn read(&mut self) -> Result<String, TelnetError> {
+        self.read_with_widths().await.map(|(s, _)| s)
     }
 
     /// 啟動非同步讀取迴圈，將接收到的資料發送到 channel

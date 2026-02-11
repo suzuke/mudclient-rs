@@ -14,6 +14,23 @@ pub struct WindowMessage {
     pub content: String,
     /// 是否保留 ANSI 顏色
     pub preserve_ansi: bool,
+    /// 原始位元組寬度映射 (選填)
+    pub byte_widths: Vec<u8>,
+}
+
+impl WindowMessage {
+    pub fn new(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            preserve_ansi: true,
+            byte_widths: Vec::new(),
+        }
+    }
+    
+    pub fn with_widths(mut self, widths: Vec<u8>) -> Self {
+        self.byte_widths = widths;
+        self
+    }
 }
 
 /// 子視窗定義
@@ -154,14 +171,18 @@ impl WindowManager {
             .collect()
     }
 
-    /// 路由訊息到指定視窗
-    pub fn route_message(&mut self, window_id: &str, message: WindowMessage) {
+    /// 路由訊息到指定視窗 (帶寬度資訊)
+    pub fn route_message_with_widths(&mut self, window_id: &str, message: WindowMessage) {
         if let Some(window) = self.windows.get_mut(window_id) {
             window.push(message);
         } else {
-            // 預設路由到主視窗
             self.main_window_mut().push(message);
         }
+    }
+
+    /// 路由訊息到指定視窗
+    pub fn route_message(&mut self, window_id: &str, message: WindowMessage) {
+        self.route_message_with_widths(window_id, message);
     }
 
     /// 發送訊息到主視窗
@@ -169,6 +190,7 @@ impl WindowManager {
         self.main_window_mut().push(WindowMessage {
             content: content.into(),
             preserve_ansi: true,
+            byte_widths: Vec::new(),
         });
     }
 }
@@ -201,6 +223,7 @@ mod tests {
         manager.route_message("chat", WindowMessage {
             content: "Hello".to_string(),
             preserve_ansi: true,
+            byte_widths: Vec::new(),
         });
         
         assert_eq!(manager.get("chat").unwrap().messages().len(), 1);
@@ -220,6 +243,7 @@ mod tests {
             window.push(WindowMessage {
                 content: format!("Message {}", i),
                 preserve_ansi: false,
+                byte_widths: Vec::new(),
             });
         }
         

@@ -132,8 +132,8 @@ pub struct Session {
     /// 發送訊息到網路執行緒的 channel
     pub command_tx: Option<mpsc::Sender<Command>>,
     
-    /// 從網路執行緒接收訊息的 channel
-    pub message_rx: Option<mpsc::Receiver<String>>,
+    /// 從網路執行緒接收訊息的 channel (內容, 原始位元組寬度)
+    pub message_rx: Option<mpsc::Receiver<(String, Vec<u8>)>>,
     
     /// 連線開始時間
     pub connected_at: Option<Instant>,
@@ -475,6 +475,7 @@ impl Session {
                 self.window_manager.route_message("main", mudcore::WindowMessage {
                     content: msg,
                     preserve_ansi: true,
+                    byte_widths: Vec::new(),
                 });
             }
             Err(e) => {
@@ -506,6 +507,7 @@ impl Session {
                 WindowMessage {
                     content: text,
                     preserve_ansi: true,
+                    byte_widths: Vec::new(),
                 },
             );
         }
@@ -536,22 +538,41 @@ impl Session {
     /// 處理接收到的文字與觸發器
     /// 處理接收到的文字與觸發器
     pub fn handle_text(&mut self, text: &str, is_echo: bool) -> bool {
-        // 如果文字包含換行符，則逐行處理以確保狀態機能正確運作
+        self.handle_text_with_widths(text, is_echo, None)
+    }
+
+    /// 帶有位元組寬度的文字處理
+    pub fn handle_text_with_widths(&mut self, text: &str, is_echo: bool, byte_widths: Option<&[u8]>) -> bool {
+        // 如果文字包含換行符，則逐行處理
         if text.contains('\n') {
             let mut result = true;
-            for line in text.lines() {
-                // 過濾掉伺服器輸出的空行，以修正雙倍行距問題
-                // 但保留使用者的輸入回顯 (is_echo = true)
-                if !is_echo && line.trim().is_empty() {
-                    continue;
-                }
+            let mut current_pos = 0;
+            
+            let lines: Vec<&str> = text.split('\n').collect();
+            for line in lines {
+                // 計算該行的位元組寬度切片
+                let line_widths = if let Some(widths) = byte_widths {
+                    let char_count = line.chars().count();
+                    let start = current_pos;
+                    let end = (start + char_count).min(widths.len());
+                    
+                    // 下一行的起始位置需跳過這行的字元數 + 1 (換行符)
+                    current_pos += char_count + 1;
+                    
+                    if start < widths.len() {
+                        Some(&widths[start..end])
+                    } else {
+                        Some(&[] as &[u8])
+                    }
+                } else {
+                    None
+                };
 
-                // 遞歸調用處理單行
-                // 所以這裡直接傳遞原始 is_echo flag 應該是可以的，因為這主要影響是否觸發 'look' 狀態。
-                result &= self.handle_text(line, is_echo);
+                result &= self.handle_text_with_widths(line, is_echo, line_widths);
             }
             return result;
         }
+
 
 
         let mut gagged = false;
@@ -633,12 +654,19 @@ impl Session {
 
         // 路由到視窗
         for target_id in targets {
-            self.window_manager.route_message(
+            let mut msg = WindowMessage {
+                content: text.to_string(),
+                preserve_ansi: !is_echo,
+                byte_widths: Vec::new(),
+            };
+            
+            if let Some(widths) = byte_widths {
+                msg.byte_widths = widths.to_vec();
+            }
+
+            self.window_manager.route_message_with_widths(
                 &target_id,
-                WindowMessage {
-                    content: text.to_string(),
-                    preserve_ansi: !is_echo, 
-                },
+                msg,
             );
         }
 
@@ -1067,10 +1095,11 @@ impl Session {
 
         // 6. 標準指令處理 (本地回顯 + 發送)
         
-        // 恢復回顯：
+        // 改進回顯格式：緊隨 Prompt 且使用明顯前綴
         self.window_manager.route_message("main", mudcore::window::WindowMessage {
-            content: format!("{}{}\n", if input.is_empty() { "" } else { "\n" }, input), 
+            content: format!("> {}\n", input), 
             preserve_ansi: true,
+            byte_widths: Vec::new(),
         });
 
         // Clone tx to avoid borrow check issues when calling system_message
@@ -1112,6 +1141,7 @@ impl Session {
         self.window_manager.route_message("main", mudcore::window::WindowMessage {
             content: format!("\n[System] {}\n", msg),
             preserve_ansi: true,
+            byte_widths: Vec::new(),
         });
     }
 

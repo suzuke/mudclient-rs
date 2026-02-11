@@ -12,6 +12,9 @@ pub struct AnsiSpan {
     pub bg_color: Option<Color32>,
     pub fg_color_left: Option<Color32>,
     pub blink: bool,
+    pub bold: bool,
+    /// 每個字元對應的原始編碼位元組數 (用於對齊校正)
+    pub byte_widths: Vec<u8>,
 }
 
 impl Default for AnsiSpan {
@@ -22,6 +25,8 @@ impl Default for AnsiSpan {
             bg_color: None,
             fg_color_left: None,
             blink: false,
+            bold: false,
+            byte_widths: Vec::new(),
         }
     }
 }
@@ -65,7 +70,6 @@ impl AnsiState {
                 0 => self.reset(),
                 1 => {
                     self.bold = true;
-                    self.brighten_current_color();
                 }
                 2 | 22 => self.bold = false,
                 5 => self.blink = true,
@@ -147,18 +151,16 @@ impl AnsiState {
         }
     }
 
-    fn brighten_current_color(&mut self) {
-        let [r, g, b, _] = self.fg_color.to_array();
-        self.fg_color = Color32::from_rgb(
-            r.saturating_add(68),
-            g.saturating_add(68),
-            b.saturating_add(68),
-        );
-    }
+    // 已廢棄：亮度補償已移至渲染器統一處理
 }
 
 /// 解析 ANSI 轉義碼，返回帶顏色的文字片段
 pub fn parse_ansi(input: &str) -> Vec<AnsiSpan> {
+    parse_ansi_with_widths(input, None)
+}
+
+/// 帶有原始位元組寬度資訊的 ANSI 解析
+pub fn parse_ansi_with_widths(input: &str, byte_widths: Option<&[u8]>) -> Vec<AnsiSpan> {
     let mut spans = Vec::new();
     let mut state = AnsiState::new();
     let mut current_span = AnsiSpan {
@@ -167,31 +169,37 @@ pub fn parse_ansi(input: &str) -> Vec<AnsiSpan> {
         bg_color: state.current_bg(),
         fg_color_left: None,
         blink: state.blink,
+        bold: state.bold,
+        byte_widths: Vec::new(),
     };
 
     let mut pending_fg_left: Option<Color32> = None;
-
     let mut chars = input.chars().peekable();
+    let mut width_idx = 0;
 
     while let Some(c) = chars.next() {
+        let current_w = byte_widths.and_then(|bw| bw.get(width_idx).copied()).unwrap_or(1);
+        width_idx += 1;
+
         if c == '\x1b' {
             match chars.peek() {
                 Some(&'[') => {
                     chars.next(); // 消耗 '['
+                    width_idx += 1;
                     
-                    // 1. 提取序列內容直至終止符
                     let mut sequence_content = String::new();
                     let mut cmd = '\0';
                     while let Some(&ch) = chars.peek() {
                         let b = ch as u8;
                         if (0x40..=0x7E).contains(&b) {
                             cmd = chars.next().unwrap();
+                            width_idx += 1;
                             break;
                         }
                         sequence_content.push(chars.next().unwrap());
+                        width_idx += 1;
                     }
 
-                    // 2. 處理 SGR (顏色/樣式)
                     if cmd == 'm' {
                         let was_empty = current_span.text.is_empty();
                         if !was_empty {
@@ -210,18 +218,13 @@ pub fn parse_ansi(input: &str) -> Vec<AnsiSpan> {
                             }
                         }
 
-                        // 雙色字偵測：中文 MUD 用連續兩組 SGR 碼（如 \x1b[31m\x1b[m）
-                        // 來編碼 CJK 字元的左右半色。當裸重置出現在另一個 SGR 碼之後
-                        // 且中間無文字時，推斷為雙色模式，將第一個顏色存為左半色。
                         let is_bare_reset = (params.is_empty() && sequence_content.is_empty())
                             || (params.len() == 1 && params[0] == 0);
                         
                         if is_bare_reset && was_empty {
-                            // 雙色字觸發！紀錄當前顏色為「左半色」，然後執行重置
                             pending_fg_left = Some(state.current_fg());
                             state.reset();
                         } else {
-                            // 正常 SGR 處理（非雙色字模式）
                             if params.is_empty() && sequence_content.is_empty() {
                                 state.reset();
                             } else {
@@ -235,24 +238,23 @@ pub fn parse_ansi(input: &str) -> Vec<AnsiSpan> {
                             bg_color: state.current_bg(),
                             fg_color_left: pending_fg_left,
                             blink: state.blink,
+                            bold: state.bold,
+                            byte_widths: Vec::new(),
                         };
-                    } else if cmd != '\0' {
-                        // 非 SGR 指令被忽略，cmd 與 sequence_content 都已從 chars 中消耗
-                        // 且不會進入 else 分支加入 current_span.text
                     }
                 }
                 Some(&'(') | Some(&')') => {
                     chars.next(); // 消耗 '(' 或 ')'
+                    width_idx += 1;
                     chars.next(); // 消耗字集識別碼
+                    width_idx += 1;
                 }
-                _ => {
-                    // 其他 ESC 序列暫不處理
-                }
+                _ => {}
             }
         } else {
-            // 基本字元處理
             if c >= ' ' || c == '\n' || c == '\r' || c == '\t' {
                 current_span.text.push(c);
+                current_span.byte_widths.push(current_w);
             }
         }
     }
