@@ -636,6 +636,7 @@ impl MudApp {
                 let mut section_font_map = std::collections::HashMap::new();
                 let mut section_fg_colors: Vec<Color32> = Vec::new(); // 記錄每個 section 的前景色
                 let mut has_dual_color = false;
+                let mut pending_trailing_space: f32 = 0.0; // 用於置中對齊：記錄上一個字元的後半部間距
 
                 if let Some(window) = session.window_manager.get(active_window_id) {
                     for msg in window.messages() {
@@ -666,70 +667,68 @@ impl MudApp {
                             let visible_chars = span.text.chars().filter(|c| *c != '\n' && *c != '\r').count();
                             let is_real_dual_color = span.fg_color_left.is_some() && visible_chars == 1;
                             
-                            // 非雙色字渲染（多字元 span 直接用 fg_color 即 reset 後預設色）
+                            // 非雙色字渲染
                             if !is_real_dual_color {
-                                if span.text.is_ascii() {
-                                    let format = egui::TextFormat {
+                                for (idx, ch) in span.text.chars().enumerate() {
+                                    if ch == '\n' || ch == '\r' {
+                                        let fmt = egui::TextFormat { font_id: current_font_id.clone(), color: render_color, background, italics, line_height: Some(font_size + 4.0), ..Default::default() };
+                                        section_fg_colors.push(render_color);
+                                        main_job.append(&ch.to_string(), pending_trailing_space, fmt.clone());
+                                        overlay_job.append(&ch.to_string(), pending_trailing_space, egui::TextFormat { color: Color32::TRANSPARENT, background: Color32::TRANSPARENT, ..fmt });
+                                        pending_trailing_space = 0.0;
+                                        continue;
+                                    }
+                                    let u_w = if let Some(bw) = span.byte_widths.get(idx).copied() {
+                                        bw as usize
+                                    } else {
+                                        if ch.is_ascii() || ch == '|' { 1 }
+                                        else if ch == '\u{2103}' || ch == '\u{00a7}' { 2 }
+                                        else {
+                                            use unicode_width::UnicodeWidthChar;
+                                            ch.width().unwrap_or(1).max(1)
+                                        }
+                                    };
+
+                                    // CJK 終端環境：框線繪圖字元始終佔 2 列寬
+                                    let u_w = if ch >= '\u{2500}' && ch <= '\u{259f}' { u_w.max(2) } else { u_w };
+                                    let target_w = (u_w as f32) * cell_w;
+                                    let actual_w = ui.fonts(|f| f.glyph_width(&current_font_id, ch));
+                                    
+                                    // 置中對齊策略：
+                                    // 1. 框線字元 (\u2500-\u259f) 或原本就佔滿 2 單元的 CJK：不置中，維持靠左以確保接縫對齊
+                                    // 2. 窄字元 (如 §, \u2103) 但宣告為 2 單元寬：置中補位
+                                    let extra = (if actual_w <= 0.0 { target_w } else { target_w - actual_w }).max(0.0);
+                                    let is_box_or_full_cjk = (ch >= '\u{2500}' && ch <= '\u{259f}') || (u_w >= 2 && actual_w >= target_w * 0.9);
+                                    
+                                    let (current_leading, next_trailing) = if is_box_or_full_cjk {
+                                        (extra + pending_trailing_space, 0.0)
+                                    } else {
+                                        (extra / 2.0 + pending_trailing_space, extra / 2.0)
+                                    };
+                                    pending_trailing_space = next_trailing;
+
+                                    // 多字元 span 有 fg_color_left：CJK 字元用 fg_color_left，ASCII 用 render_color
+                                    let char_color = if let Some(left_color) = span.fg_color_left {
+                                        if !ch.is_ascii() { left_color } else { render_color }
+                                    } else {
+                                        render_color
+                                    };
+                                    let glyph_color = if ch >= '\u{2500}' && ch <= '\u{259f}' {
+                                        Color32::TRANSPARENT
+                                    } else {
+                                        char_color
+                                    };
+                                    let fmt = egui::TextFormat {
                                         font_id: current_font_id.clone(),
-                                        color: render_color,
+                                        color: glyph_color,
                                         background,
                                         italics,
                                         line_height: Some(font_size + 4.0),
                                         ..Default::default()
                                     };
-                                    section_fg_colors.push(render_color);
-                                    main_job.append(&span.text, 0.0, format.clone());
-                                    overlay_job.append(&span.text, 0.0, egui::TextFormat { color: Color32::TRANSPARENT, ..format });
-                                } else {
-                                    for (idx, ch) in span.text.chars().enumerate() {
-                                        if ch == '\n' || ch == '\r' {
-                                            let fmt = egui::TextFormat { font_id: current_font_id.clone(), color: render_color, background, italics, line_height: Some(font_size + 4.0), ..Default::default() };
-                                            section_fg_colors.push(render_color);
-                                            main_job.append(&ch.to_string(), 0.0, fmt.clone());
-                                            overlay_job.append(&ch.to_string(), 0.0, egui::TextFormat { color: Color32::TRANSPARENT, background: Color32::TRANSPARENT, ..fmt });
-                                            continue;
-                                        }
-                                        let u_w = if let Some(bw) = span.byte_widths.get(idx).copied() {
-                                            bw as usize
-                                        } else {
-                                            if ch.is_ascii() || ch == '|' { 1 }
-                                            else if ch == '\u{2103}' || ch == '\u{00a7}' { 2 }
-                                            else {
-                                                use unicode_width::UnicodeWidthChar;
-                                                ch.width().unwrap_or(1).max(1)
-                                            }
-                                        };
-
-                                        // CJK 終端環境：框線繪圖字元始終佔 2 列寬
-                                        let u_w = if ch >= '\u{2500}' && ch <= '\u{259f}' { u_w.max(2) } else { u_w };
-                                        let target_w = (u_w as f32) * cell_w;
-                                        let actual_w = ui.fonts(|f| f.glyph_width(&current_font_id, ch));
-                                        let extra = (if actual_w <= 0.0 { target_w } else { target_w - actual_w }).max(0.0);
-                                        // 框線繪圖字元：隱藏字型字形（佔位），稍後用 2x 字型大小重繪
-                                        // 多字元 span 有 fg_color_left：CJK 字元用 fg_color_left，ASCII 用 render_color
-                                        let char_color = if let Some(left_color) = span.fg_color_left {
-                                            if !ch.is_ascii() { left_color } else { render_color }
-                                        } else {
-                                            render_color
-                                        };
-                                        let glyph_color = if ch >= '\u{2500}' && ch <= '\u{259f}' {
-                                            Color32::TRANSPARENT
-                                        } else {
-                                            char_color
-                                        };
-                                        let fmt = egui::TextFormat {
-                                            font_id: current_font_id.clone(),
-                                            color: glyph_color,
-                                            background,
-                                            italics,
-                                            line_height: Some(font_size + 4.0),
-                                            ..Default::default()
-                                        };
-                                        section_fg_colors.push(char_color); // 記錄真實顏色供幾何繪製
-                                        // 用 leading_space 代替 extra_letter_spacing（後者對單字元 section 不生效）
-                                        main_job.append(&ch.to_string(), extra, fmt.clone());
-                                        overlay_job.append(&ch.to_string(), extra, egui::TextFormat { color: Color32::TRANSPARENT, background: Color32::TRANSPARENT, ..fmt });
-                                    }
+                                    section_fg_colors.push(char_color);
+                                    main_job.append(&ch.to_string(), current_leading, fmt.clone());
+                                    overlay_job.append(&ch.to_string(), current_leading, egui::TextFormat { color: Color32::TRANSPARENT, background: Color32::TRANSPARENT, ..fmt });
                                 }
                                 continue;
                             }
@@ -739,8 +738,9 @@ impl MudApp {
                                 if ch == '\n' || ch == '\r' {
                                     let fmt = egui::TextFormat { font_id: current_font_id.clone(), color: render_color, background, italics, line_height: Some(font_size + 4.0), ..Default::default() };
                                     section_fg_colors.push(render_color);
-                                    main_job.append(&ch.to_string(), 0.0, fmt.clone());
-                                    overlay_job.append(&ch.to_string(), 0.0, egui::TextFormat { color: Color32::TRANSPARENT, background: Color32::TRANSPARENT, ..fmt });
+                                    main_job.append(&ch.to_string(), pending_trailing_space, fmt.clone());
+                                    overlay_job.append(&ch.to_string(), pending_trailing_space, egui::TextFormat { color: Color32::TRANSPARENT, background: Color32::TRANSPARENT, ..fmt });
+                                    pending_trailing_space = 0.0;
                                     continue;
                                 }
 
@@ -759,9 +759,17 @@ impl MudApp {
                                 let u_w = if ch >= '\u{2500}' && ch <= '\u{259f}' { u_w.max(2) } else { u_w };
                                 let target_w = (u_w as f32) * cell_w;
                                 let actual_w = ui.fonts(|f| f.glyph_width(&current_font_id, ch));
+                                
                                 let extra = (if actual_w <= 0.0 { target_w } else { target_w - actual_w }).max(0.0);
+                                let is_box_or_full_cjk = (ch >= '\u{2500}' && ch <= '\u{259f}') || (u_w >= 2 && actual_w >= target_w * 0.9);
+                                
+                                let (current_leading, next_trailing) = if is_box_or_full_cjk {
+                                    (extra + pending_trailing_space, 0.0)
+                                } else {
+                                    (extra / 2.0 + pending_trailing_space, extra / 2.0)
+                                };
+                                pending_trailing_space = next_trailing;
 
-                                let extra_leading = extra; // 用 leading_space 代替 extra_letter_spacing
                                 let mut format = egui::TextFormat {
                                     font_id: current_font_id.clone(),
                                     color: render_color,
@@ -783,26 +791,27 @@ impl MudApp {
                                     overlay_fmt.background = Color32::TRANSPARENT;
                                     
                                     section_fg_colors.push(render_color);
-                                    main_job.append(&ch.to_string(), extra_leading, format);
-                                    overlay_job.append(&ch.to_string(), extra_leading, overlay_fmt);
+                                    main_job.append(&ch.to_string(), current_leading, format);
+                                    overlay_job.append(&ch.to_string(), current_leading, overlay_fmt);
                                 } else {
                                     let mut overlay_fmt = format.clone();
                                     overlay_fmt.color = Color32::TRANSPARENT;
                                     overlay_fmt.background = Color32::TRANSPARENT;
                                     
                                     section_fg_colors.push(render_color);
-                                    main_job.append(&ch.to_string(), extra_leading, format);
-                                    overlay_job.append(&ch.to_string(), extra_leading, overlay_fmt);
+                                    main_job.append(&ch.to_string(), current_leading, format);
+                                    overlay_job.append(&ch.to_string(), current_leading, overlay_fmt);
                                 }
                             }
                         }
-                        
-                        // 確保訊息之間有換行
+
+                        // 確保訊息之間有換行，並重置置中間距
                         if !main_job.text.is_empty() && !main_job.text.ends_with('\n') {
                             let nl_fmt = egui::TextFormat { font_id: font_id.clone(), line_height: Some(font_size + 4.0), ..Default::default() };
                             section_fg_colors.push(Color32::TRANSPARENT);
-                            main_job.append("\n", 0.0, nl_fmt.clone());
-                            overlay_job.append("\n", 0.0, egui::TextFormat { color: Color32::TRANSPARENT, ..nl_fmt });
+                            main_job.append("\n", pending_trailing_space, nl_fmt.clone());
+                            overlay_job.append("\n", pending_trailing_space, egui::TextFormat { color: Color32::TRANSPARENT, ..nl_fmt });
+                            pending_trailing_space = 0.0;
                         }
                     }
                 }
