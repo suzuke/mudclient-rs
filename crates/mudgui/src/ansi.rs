@@ -162,6 +162,8 @@ pub fn parse_ansi(input: &str) -> Vec<AnsiSpan> {
 
 /// 帶有原始位元組寬度資訊的 ANSI 解析
 pub fn parse_ansi_with_widths(input: &str, byte_widths: Option<&[u8]>) -> Vec<AnsiSpan> {
+    // 診斷：含有特定關鍵字時印出原始十六進制
+    // 診斷：追蹤含 pending_fg_left 的行
     let mut spans = Vec::new();
     let mut state = AnsiState::new();
     let mut current_span = AnsiSpan {
