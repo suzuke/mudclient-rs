@@ -310,29 +310,44 @@ impl TelnetClient {
             }
         }
 
-        // 4. 標點符號正規化：將半形逗號統一為全形
+        // 4. 標點符號正規化：將半形標點統一為全形
         let mut normalized_output = String::with_capacity(final_output.len());
         let mut normalized_widths = Vec::with_capacity(final_widths.len());
         let chars: Vec<char> = final_output.chars().collect();
         let mut j = 0;
+        
         while j < chars.len() {
             let ch = chars[j];
             let w = final_widths[j];
             
-            // 偵測 ", " (逗號 + 空格) -> "，"
-            if ch == ',' && w == 1 && j + 1 < chars.len() && chars[j+1] == ' ' && final_widths[j+1] == 1 {
-                normalized_output.push('，');
-                normalized_widths.push(2);
-                j += 2;
-                continue;
-            }
-            
-            // 偵測單個 "," -> "，"
-            if ch == ',' && w == 1 {
-                normalized_output.push('，');
-                normalized_widths.push(2);
-                j += 1;
-                continue;
+            // 定義轉換對應表 (半形 -> 全形)
+            let full_width = match ch {
+                ',' => Some('，'),
+                ':' => Some('：'),
+                ';' => Some('；'),
+                '!' => Some('！'),
+                '?' => Some('？'),
+                '(' => Some('（'),
+                ')' => Some('）'),
+                _ => None,
+            };
+
+            if let Some(fw) = full_width {
+                if w == 1 {
+                    // 偵測 "標點 + 空格" (例: ", ", ": ") -> 合併為全形標點
+                    if j + 1 < chars.len() && chars[j+1] == ' ' && final_widths[j+1] == 1 {
+                        normalized_output.push(fw);
+                        normalized_widths.push(2);
+                        j += 2;
+                        continue;
+                    }
+                    
+                    // 單個標點 -> 直接轉全形
+                    normalized_output.push(fw);
+                    normalized_widths.push(2);
+                    j += 1;
+                    continue;
+                }
             }
             
             normalized_output.push(ch);
@@ -466,24 +481,30 @@ mod tests {
     }
 
     #[test]
-    fn test_comma_normalization() {
+    fn test_punctuation_normalization() {
         let mut client = TelnetClient::default();
         
-        // 測試單獨逗號 (ASCII comma without space after it)
-        let (out1, w1) = client.process_byte_stream(b"Hello,world");
-        assert_eq!(out1, "Hello，world");
-        assert_eq!(w1, vec![1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1]); // '，' 寬度為 2
+        // 測試逗號與空格
+        let (out1, w1) = client.process_byte_stream(b"A, B, C");
+        assert_eq!(out1, "A，B，C");
+        assert_eq!(w1, vec![1, 2, 1, 2, 1]);
         
         client = TelnetClient::default();
-        // 測試逗號+空格組合 (常用的 ", ") -> 應合併為 "，"
-        let (out2, w2) = client.process_byte_stream(b"A, B, C");
-        assert_eq!(out2, "A，B，C");
-        assert_eq!(w2, vec![1, 2, 1, 2, 1]);
+        // 測試冒號與空格
+        let (out2, w2) = client.process_byte_stream(b"Level: 100");
+        assert_eq!(out2, "Level：100");
+        assert_eq!(w2, vec![1, 1, 1, 1, 1, 2, 1, 1, 1]);
         
         client = TelnetClient::default();
-        // 測試 ANSI 中夾帶逗號 (不應轉換，因為 w 位元 0)
-        let (out3, _w3) = client.process_byte_stream(b"\x1b[31m,\x1b[m");
-        assert_eq!(out3, "\x1b[31m，\x1b[m"); 
+        // 測試問號、驚嘆號與括號
+        let (out3, _w3) = client.process_byte_stream(b"Is it? (Yes!)");
+        // 修正預期：Is (1) i (1) t (1) ？ (2) （ (2) Y (1) e (1) s (1) ！ (2) ） (2)
+        assert_eq!(out3, "Is it？（Yes！）");
+        
+        client = TelnetClient::default();
+        // 測試混合 ANSI
+        let (out4, _w4) = client.process_byte_stream(b"Error: \x1b[31mbad\x1b[m!");
+        assert_eq!(out4, "Error：\x1b[31mbad\x1b[m！");
     }
 
 }
