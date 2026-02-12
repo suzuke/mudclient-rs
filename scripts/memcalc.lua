@@ -278,20 +278,27 @@ end
 -- 確保與 Practice 等其他腳本共存
 if not _G.MemCalc.hook_installed then
     local old_hook = _G.on_server_message
-    _G.on_server_message = function(line)
+    _G.on_server_message = function(line, clean_line)
         -- 先執行舊的 hook (例如 Practice)
-        if old_hook then old_hook(line) end
+        if old_hook then old_hook(line, clean_line) end
         -- 再執行 MemCalc 的處理
         if _G.MemCalc and _G.MemCalc.on_server_message then
-            _G.MemCalc.on_server_message(line)
+            _G.MemCalc.on_server_message(line, clean_line)
         end
     end
     _G.MemCalc.hook_installed = true
 end
 
-function _G.MemCalc.on_server_message(line)
-    local clean_line = string.match(line, "^%s*(.-)%s*$")
-    clean_line = string.gsub(clean_line, "\27%[[0-9;]*[mK]", "")
+function _G.MemCalc.on_server_message(line, clean_line)
+    -- local clean_line = string.match(line, "^%s*(.-)%s*$") -- 這裡先不 match，保留原始空白結構，或使用 Rust 傳來的版本
+    --Rust 傳來的 clean_line 已經去除了 ANSI code，但不保證 trim。
+    -- 原本邏輯有 trim: string.match(line, "^%s*(.-)%s*$")
+    -- 我們這裡簡單 trim 一下 clean_line 即可，或者直接用。
+    
+    -- 為了相容原本邏輯 (Match ^%s*(.-)%s*$)，我們對 clean_line 做一次 trim
+    if not clean_line then return end
+    local clean_line = string.match(clean_line, "^%s*(.-)%s*$")
+    -- clean_line = string.gsub(clean_line, "\27%[[0-9;]*[mK]", "") -- 已由 Rust 處理
     
     -- 掃描模式解析
     if _G.MemCalc.scan_state.scanning then

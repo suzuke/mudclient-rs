@@ -29,19 +29,20 @@ end
 -- Hook
 if not _G.Benumb.hook_installed then
     local old_hook = _G.on_server_message
-    _G.on_server_message = function(line)
-        if old_hook then old_hook(line) end
+    _G.on_server_message = function(line, clean_line)
+        if old_hook then old_hook(line, clean_line) end
         if _G.Benumb and _G.Benumb.on_msg then
-            _G.Benumb.on_msg(line)
+            _G.Benumb.on_msg(line, clean_line)
         end
     end
     _G.Benumb.hook_installed = true
 end
 
-function _G.Benumb.on_msg(line)
+function _G.Benumb.on_msg(line, clean_line)
     if not _G.Benumb.scanning then return end
 
-    local clean = line:gsub("\27%[[0-9;]*m", "")
+    local clean = clean_line -- 直接使用 Rust 傳入的 clean_line
+    -- local clean = line:gsub("\27%[[0-9;]*m", "")
 
     -- 掃描箱子內容，記錄找到的物品
     for _, item in ipairs(_G.Benumb.items) do

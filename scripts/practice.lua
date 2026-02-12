@@ -46,23 +46,25 @@ _G.Practice.known_spell_types = {
 -- 確保與 MemCalc 等其他腳本共存
 if not _G.Practice.hook_installed then
     local old_hook = _G.on_server_message
-    _G.on_server_message = function(line)
+    _G.on_server_message = function(line, clean_line)
         -- 先執行舊的 (例如 MemCalc)
-        if old_hook then old_hook(line) end
+        if old_hook then old_hook(line, clean_line) end
         -- 再執行我們的
         if _G.Practice and _G.Practice.on_server_message then
-            _G.Practice.on_server_message(line)
+            _G.Practice.on_server_message(line, clean_line)
         end
     end
     _G.Practice.hook_installed = true
 end
 
 -- 伺服器訊息處理 (掃描核心)
-function _G.Practice.on_server_message(line)
+function _G.Practice.on_server_message(line, clean_line)
     if not _G.Practice.scan_state.active then return end
     
-    local clean_line = string.match(line, "^%s*(.-)%s*$")
-    clean_line = string.gsub(clean_line, "\27%[[0-9;]*[mK]", "")
+    -- 使用 clean_line 並進行 trim
+    if not clean_line then return end
+    local clean_line = string.match(clean_line, "^%s*(.-)%s*$")
+    -- clean_line = string.gsub(clean_line, "\27%[[0-9;]*[mK]", "") -- 已由 Rust 處理
     
     -- 階段 1: 解析 pra 輸出
     if _G.Practice.scan_state.stage == "parsing_pra" then

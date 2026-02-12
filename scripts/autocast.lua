@@ -31,19 +31,21 @@ elseif _G.AutoCast._base_hook then
 end
 _G.AutoCast._base_hook = base_hook
 
-_G.on_server_message = function(line)
-    if base_hook then base_hook(line) end
+_G.on_server_message = function(line, clean_line)
+    if base_hook then base_hook(line, clean_line) end
     if _G.AutoCast and _G.AutoCast.on_server_message then
-        _G.AutoCast.on_server_message(line)
+        _G.AutoCast.on_server_message(line, clean_line)
     end
 end
 _G.AutoCast.hook_installed = true
 
-function _G.AutoCast.on_server_message(line)
+function _G.AutoCast.on_server_message(line, clean_line)
     if _G.AutoCast.state.mode == "stopped" then return end
 
-    local clean_line = string.match(line, "^%s*(.-)%s*$")
-    clean_line = string.gsub(clean_line, "\27%[[0-9;]*[mK]", "") -- 去除 ANSI
+    -- 使用 clean_line 並進行 trim
+    if not clean_line then return end
+    local clean_line = string.match(clean_line, "^%s*(.-)%s*$")
+    -- clean_line = string.gsub(clean_line, "\27%[[0-9;]*[mK]", "") -- 去除 ANSI (Rust 已處理)
 
     -- 1. 偵測耗盡訊息 (觸發睡覺)
     if string.find(clean_line, "耗盡") and string.find(clean_line, "精神力") then
