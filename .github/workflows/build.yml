@@ -15,10 +15,8 @@ jobs:
         include:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: mudgui.exe
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact: mudgui
 
     runs-on: ${{ matrix.os }}
 
@@ -42,6 +40,7 @@ jobs:
       - name: Build
         run: cargo build -p mudgui --release --target ${{ matrix.target }}
 
+      # ── Windows: zip with scripts & docs ──
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -52,17 +51,43 @@ jobs:
           Copy-Item -Recurse docs dist/docs
           Compress-Archive -Path dist/* -DestinationPath mudgui-windows-x64.zip
 
-      - name: Package (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          mkdir -p dist
-          cp "target/${{ matrix.target }}/release/mudgui" dist/
-          cp -r scripts dist/scripts
-          cp -r docs dist/docs
-          cd dist && zip -r ../mudgui-macos-arm64.zip .
-
-      - name: Upload artifact
+      - name: Upload artifact (Windows)
+        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: mudgui-${{ matrix.target }}
-          path: mudgui-*.zip
+          name: mudgui-windows-x64
+          path: mudgui-windows-x64.zip
+
+      # ── macOS: .app bundle ──
+      - name: Package (macOS .app)
+        if: runner.os == 'macOS'
+        run: |
+          APP="MudClient.app"
+          mkdir -p "$APP/Contents/MacOS"
+          mkdir -p "$APP/Contents/Resources"
+
+          # Copy executable
+          cp "target/${{ matrix.target }}/release/mudgui" "$APP/Contents/MacOS/"
+          chmod +x "$APP/Contents/MacOS/mudgui"
+
+          # Copy Info.plist
+          cp packaging/macos/Info.plist "$APP/Contents/"
+
+          # Copy resources
+          cp -r scripts "$APP/Contents/Resources/scripts"
+          cp -r docs "$APP/Contents/Resources/docs"
+
+          # Copy icon if exists
+          if [ -f packaging/macos/AppIcon.icns ]; then
+            cp packaging/macos/AppIcon.icns "$APP/Contents/Resources/"
+          fi
+
+          # Create DMG-like zip
+          zip -r mudgui-macos-arm64.zip "$APP"
+
+      - name: Upload artifact (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mudgui-macos-arm64
+          path: mudgui-macos-arm64.zip

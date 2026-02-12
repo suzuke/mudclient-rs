@@ -471,6 +471,7 @@ impl Session {
     }
 
     /// 解析 scripts 目錄的實際位置
+    /// 搜尋順序：1) 工作目錄 → 2) .app bundle Resources → 3) 執行檔旁邊
     fn resolve_scripts_dir() -> Option<std::path::PathBuf> {
         // 1. 工作目錄下的 scripts/
         let cwd_scripts = std::path::Path::new("scripts");
@@ -478,9 +479,19 @@ impl Session {
             return std::fs::canonicalize(cwd_scripts).ok();
         }
 
-        // 2. 執行檔旁的 scripts/
         if let Ok(exe) = std::env::current_exe() {
             if let Some(exe_dir) = exe.parent() {
+                // 2. macOS .app bundle: Contents/MacOS/mudgui → Contents/Resources/scripts/
+                if exe_dir.ends_with("Contents/MacOS") {
+                    if let Some(contents_dir) = exe_dir.parent() {
+                        let res_scripts = contents_dir.join("Resources").join("scripts");
+                        if res_scripts.exists() && res_scripts.is_dir() {
+                            return std::fs::canonicalize(res_scripts).ok();
+                        }
+                    }
+                }
+
+                // 3. 執行檔旁的 scripts/
                 let exe_scripts = exe_dir.join("scripts");
                 if exe_scripts.exists() && exe_scripts.is_dir() {
                     return std::fs::canonicalize(exe_scripts).ok();
