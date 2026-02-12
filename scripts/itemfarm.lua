@@ -63,7 +63,7 @@ _G.ItemFarm.jobs = {
         search_type = "locate",
         search_cmd = "c loc hamburg",
         target_mob = "不動明王",
-        attack_cmd = "c star;c star;c star",
+        attack_cmd = "c star;c star;c nu",
         dispel_cmd = "c 'dispel m' sentinel",
         dispel_indicator = "白色聖光",    -- look 後此字消失 = dispel 成功
         hp_threshold = 100,               -- 特定怪物才檢查血量
