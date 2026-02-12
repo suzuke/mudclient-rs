@@ -668,25 +668,7 @@ impl Session {
             targets.retain(|t| t != "main");
         }
 
-        // 路由到視窗
-        for target_id in targets {
-            let mut msg = WindowMessage {
-                content: text.to_string(),
-                preserve_ansi: !is_echo,
-                byte_widths: Vec::new(),
-            };
-            
-            if let Some(widths) = byte_widths {
-                msg.byte_widths = widths.to_vec();
-            }
-
-            self.window_manager.route_message_with_widths(
-                &target_id,
-                msg,
-            );
-        }
-
-        // 提取單字用於自動補齊
+        // 提取單字用於自動補齊與狀態判斷
         let clean_text = if text.contains('\x1b') {
             let re = regex::Regex::new(r"\x1b\[[0-9;]*[mK]").unwrap();
             re.replace_all(text, "").to_string()
@@ -699,6 +681,50 @@ impl Session {
         let is_prompt = clean_lower.contains('(') && clean_lower.contains('/') && 
                         (clean_lower.contains('h') || clean_lower.contains('m') || clean_lower.contains('v'));
 
+        // 如果是房間敘述，且非出口行、非 Prompt、非 Echo，則進行標點轉換
+        let is_exit_line = clean_text.contains("[出口:");
+        
+        let final_text = text.to_string();
+        let mut final_widths = Vec::new();
+
+        // 預查原始寬度
+        if let Some(widths) = byte_widths {
+            final_widths = widths.to_vec();
+        } else {
+            for ch in text.chars() {
+                if ch.is_ascii() {
+                    final_widths.push(1);
+                } else {
+                    final_widths.push(2);
+                }
+            }
+        }
+
+        // 判定是否為指令回顯，並提取核心內容用於狀態判斷
+        let (is_command_echo, detection_text) = if is_echo && clean_text.trim().starts_with('>') {
+            (true, clean_text.trim().trim_start_matches('>').trim())
+        } else {
+            (is_echo, clean_text.trim())
+        };
+        let trim_detection = detection_text.to_lowercase();
+        let is_dir_cmd = ["n", "s", "e", "w", "u", "d", "nw", "ne", "sw", "se", 
+                          "north", "south", "east", "west", "up", "down", 
+                          "northwest", "northeast", "southwest", "southeast"].contains(&trim_detection.as_str());
+
+        // 路由到視窗
+        for target_id in targets {
+            let msg = WindowMessage {
+                content: final_text.clone(),
+                preserve_ansi: !is_echo,
+                byte_widths: final_widths.clone(),
+            };
+            
+            self.window_manager.route_message_with_widths(
+                &target_id,
+                msg,
+            );
+        }
+
         // 更新 Line Buffer (只存非空、非 Prompt、非系統訊息)
         if !text.trim().is_empty() && !is_prompt && !text.starts_with(">>>") {
             if self.line_buffer.len() >= 5 {
@@ -707,9 +733,6 @@ impl Session {
             self.line_buffer.push_back(text.trim().to_string());
         }
 
-        let is_exit_line = clean_text.contains("[出口:");
-        
-        // --- 迴圈偵測 ---
         // --- 迴圈偵測 ---
         if is_exit_line && self.path_recorder.is_recording {
             // 嘗試從 buffer 抓取房間名稱 (通常是出口行的上一行)
@@ -736,14 +759,8 @@ impl Session {
             }
         }
         
-        let trim_text = text.trim().to_lowercase();
-        // 擴展方向指令偵測
-        let is_dir = ["n", "s", "e", "w", "u", "d", "nw", "ne", "sw", "se", 
-                      "north", "south", "east", "west", "up", "down", 
-                      "northwest", "northeast", "southwest", "southeast"].contains(&trim_text.as_str());
-        
         // 狀態機：進入房間描述模式
-        if is_echo && (trim_text == "l" || trim_text == "look" || is_dir) {
+        if is_command_echo && (trim_detection == "l" || trim_detection == "look" || is_dir_cmd) {
             self.in_room_description = true;
         }
 
@@ -751,8 +768,6 @@ impl Session {
         if is_prompt {
             self.in_room_description = false;
         }
-
-        let is_exit_line = clean_text.contains("[出口:");
         let has_mob_brackets = clean_text.contains('(') && clean_text.contains(')');
         // 只要包含斜線且周圍有文字，很可能是 "中文名稱/English ID" 的格式
         let is_slash_line = clean_text.contains('/') && clean_text.len() > 5;
@@ -1109,14 +1124,9 @@ impl Session {
             }
         }
 
-        // 6. 標準指令處理 (本地回顯 + 發送)
-        
-        // 改進回顯格式：緊隨 Prompt 且使用明顯前綴
-        self.window_manager.route_message("main", mudcore::window::WindowMessage {
-            content: format!("> {}\n", input), 
-            preserve_ansi: true,
-            byte_widths: Vec::new(),
-        });
+        // 標準指令處理 (本地回顯 + 發送)
+        // 改進回顯格式：緊隨 Prompt 且使用明顯前綴，並透過 handle_text 觸發狀態機
+        self.handle_text(&format!("> {}\n", input), true);
 
         // Clone tx to avoid borrow check issues when calling system_message
         if let Some(tx) = self.command_tx.clone() {

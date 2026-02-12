@@ -65,7 +65,7 @@ _G.ItemFarm.jobs = {
         target_mob = "不動明王",
         attack_cmd = "c star;c star;c nu",
         dispel_cmd = "c 'dispel m' sentinel",
-        dispel_indicator = "白色聖光",    -- look 後此字消失 = dispel 成功
+        dispel_indicator = {"白色聖光"}, -- 多重指標偵測
         hp_threshold = 100,               -- 特定怪物才檢查血量
         hp_recover_cmd = "c heal",         -- 自定義恢復 HP 的指令
         buff_cmds = {"c sa", "c pro", "c b"},
@@ -94,6 +94,7 @@ _G.ItemFarm.state = {
     jobs_checked = 0,      -- 本輪已檢查的任務數
     last_score_time = 0,   -- 上次發送 score 的時間
     has_sanctuary = false, -- 是否有聖光
+    score_timer_id = nil,  -- 狀態檢查計時器 ID (超時或延遲)
     -- 路徑佇列（prompt 驅動）
     path_queue = {},
     path_index = 0,
@@ -130,6 +131,15 @@ end
 local function send_cmds(str)
     for _, cmd in ipairs(parse_cmds(str)) do
         mud.send(cmd)
+    end
+end
+
+-- 清除目前掛載的所有 Score 相關計時器
+function _G.ItemFarm.clear_score_timer()
+    local s = _G.ItemFarm.state
+    if s.score_timer_id then
+        mud.timer_stop(s.score_timer_id)
+        s.score_timer_id = nil
     end
 end
 
@@ -506,21 +516,49 @@ function _G.ItemFarm.summon_and_attack()
 end
 
 -- 3. 發送攻擊前檢查 (現在改用 score)
-function _G.ItemFarm.do_attack()
+function _G.ItemFarm.do_attack(force)
     if not _G.ItemFarm.state.running then return end
     
     local s = _G.ItemFarm.state
+    local now = os.time()
+    
+    -- 如果是非強制模式且間隔不足，則跳過 score 直接判定
+    if not force and now - s.last_score_time < _G.ItemFarm.config.score_interval then
+        _G.ItemFarm.evaluate_status_and_fight()
+        return
+    end
+
+    _G.ItemFarm.clear_score_timer()
     s.stage = "checking_status_pre_fight"
-    s.last_score_time = os.time()
+    s.last_score_time = now
     mud.echo("📊 戰鬥前檢查狀態 (發送 score)...")
     mud.send("score")
     mud.send("save")
+
+    -- 加入 5 秒超時保險，防止解析卡死
+    s.score_timer_id = mud.timer(5.0, "_G.ItemFarm.pre_fight_timeout()")
+end
+
+-- 戰鬥前檢查超時保險
+function _G.ItemFarm.pre_fight_timeout()
+    if not _G.ItemFarm.state.running then return end
+    if _G.ItemFarm.state.stage == "checking_status_pre_fight" then
+        mud.echo("⌛ 狀態檢查超時，強制進入評估...")
+        _G.ItemFarm.state.score_timer_id = nil
+        _G.ItemFarm.evaluate_status_and_fight()
+    end
 end
 
 -- 根據狀態評估是否開始戰鬥
 function _G.ItemFarm.evaluate_status_and_fight()
     if not _G.ItemFarm.state.running then return end
     local s = _G.ItemFarm.state
+    
+    -- 確保只在正確的階段處理，防止計時器與訊息觸發重疊
+    if s.stage ~= "checking_status_pre_fight" then return end
+    
+    _G.ItemFarm.clear_score_timer()
+    
     local j = _G.ItemFarm.job()
     local cfg = _G.ItemFarm.config
 
@@ -548,8 +586,9 @@ function _G.ItemFarm.evaluate_status_and_fight()
         mud.echo("🛡️ 聖光已消失，嘗試自動補法: " .. cfg.sanc_cmd)
         mud.send("wa")
         mud.send(cfg.sanc_cmd)
-        -- 補完法後 2s 重新 send score 檢查
-        mud.timer(2.0, "_G.ItemFarm.do_attack()")
+        -- 補完法後強制重新 send score 檢查
+        s.stage = "waiting_for_sanc" -- 臨時狀態防止迴圈
+        mud.timer(2.0, "_G.ItemFarm.do_attack(true)")
         return
     end
     
@@ -810,13 +849,30 @@ function _G.ItemFarm.on_server_message(line)
         if string.find(clean_line, j.target_mob) and
            not string.find(clean_line, "屍體") and
            not string.find(clean_line, "corpse") then
-            if j.dispel_indicator and string.find(clean_line, j.dispel_indicator) then
-                -- indicator 還在 → dispel 未生效
-                s.stage = "dispelling"  -- 暫時切回防止重複
+            
+            local still_has_buff = false
+            local indicators = j.dispel_indicator
+            
+            if type(indicators) == "string" then
+                if string.find(clean_line, indicators) then
+                    still_has_buff = true
+                end
+            elseif type(indicators) == "table" then
+                for _, ind in ipairs(indicators) do
+                    if string.find(clean_line, ind) then
+                        still_has_buff = true
+                        break
+                    end
+                end
+            end
+
+            if still_has_buff then
+                -- 指標還在 → dispel 未生效
+                s.stage = "dispelling"
                 _G.ItemFarm.retry_dispel_with_look()
             else
-                -- indicator 消失 → dispel 成功！
-                mud.echo("✅ Dispel 成功！（" .. (j.dispel_indicator or "") .. " 已消失）")
+                -- 所有指標皆消失 → dispel 成功！
+                mud.echo("✅ Dispel 成功！（指定指標已全數消失）")
                 s.dispel_retries = 0
                 s.stage = "dispelled"
                 mud.timer(0.5, "_G.ItemFarm.buff_and_attack()")
@@ -936,11 +992,21 @@ function _G.ItemFarm.on_server_message(line)
     if string.find(clean_line, "目前對你產生影響的法術或技巧有") then
         s.has_sanctuary = false -- 解析開始前重設
         
+        _G.ItemFarm.clear_score_timer()
         if s.stage == "checking_status_pre_fight" then
             -- 延時 0.8s 確保 spells 全部解析完畢
-            mud.timer(0.8, "_G.ItemFarm.evaluate_status_and_fight()")
+            s.score_timer_id = mud.timer(0.8, "_G.ItemFarm.evaluate_status_and_fight()")
         elseif s.stage == "resting" then
-            mud.timer(0.8, "_G.ItemFarm.evaluate_resting_status()")
+            s.score_timer_id = mud.timer(0.8, "_G.ItemFarm.evaluate_resting_status()")
+        end
+    end
+
+    -- 額外備援：偵測 Ok. (來自 save 命令) 代表 score 結束
+    if clean_line == "Ok." then
+        if s.stage == "checking_status_pre_fight" then
+            _G.ItemFarm.evaluate_status_and_fight()
+        elseif s.stage == "resting" then
+            _G.ItemFarm.evaluate_resting_status()
         end
     end
 end
