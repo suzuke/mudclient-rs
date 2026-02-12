@@ -45,8 +45,8 @@ _G.ItemFarm.jobs = {
     {
         name = "街頭混混",
         mode = "summon",
-        search_type = "locate",
-        search_cmd = "c loc take",
+        search_type = "quest",
+        search_cmd = "q 28.boy",
         target_mob = "街頭混混",
         summon_cmd = "c sum boy",
         attack_cmd = "c fl boy",
@@ -59,8 +59,8 @@ _G.ItemFarm.jobs = {
     {
         name = "不動明王",
         mode = "direct",
-        search_type = "locate",
-        search_cmd = "c loc hamburg",
+        search_type = "quest",
+        search_cmd = "q 6.sentinel",
         target_mob = "不動明王",
         attack_cmd = "c star;c star;c star",
         dispel_cmd = "c 'dispel m' sentinel",
@@ -320,7 +320,9 @@ function _G.ItemFarm.search()
     s.found_target = false
     
     mud.echo("🔍 [" .. j.name .. "] 查詢目標...")
-    mud.send("wa")
+    if j.search_type ~= "quest" then
+        mud.send("wa")
+    end
     mud.send(j.search_cmd)
     
     -- 超時：3 秒後未偵測到 → 視為未重生
@@ -348,6 +350,7 @@ function _G.ItemFarm.go_and_fight()
     _G.ItemFarm.state.stage = "traveling"
     _G.ItemFarm.state.jobs_checked = 0  -- 重置輪替計數
     mud.echo("🚶 [" .. j.name .. "] 前往目標位置...")
+    mud.send("wa")
     
     local callback
     if mode == "direct" then
@@ -748,24 +751,25 @@ function _G.ItemFarm.check_mp()
 end
 
 -- ===== Server Message Hook =====
-if not _G.ItemFarm.hook_installed then
-    local old_hook = _G.on_server_message
-    _G.on_server_message = function(line)
-        if old_hook then old_hook(line) end
-        if _G.ItemFarm and _G.ItemFarm.on_server_message then
-            _G.ItemFarm.on_server_message(line)
-        end
+-- 強制更新 Hook 以支援新的 clean_line 參數 (解決熱重載參數遺失問題)
+_G.on_server_message = function(line, clean_line)
+    -- 注意：這裡為了確保參數能正確傳遞，我們暫時不呼叫 old_hook，
+    -- 除非我們能確定 old_hook 也能接收雙參數。
+    -- 在此環境下直接呼叫 ItemFarm 的處理函數。
+    if _G.ItemFarm and _G.ItemFarm.on_server_message then
+        _G.ItemFarm.on_server_message(line, clean_line)
     end
-    _G.ItemFarm.hook_installed = true
 end
+_G.ItemFarm.hook_installed = true
 
 -- 接收伺服器訊息 Hook
-function _G.ItemFarm.on_server_message(line)
+-- 接收伺服器訊息 Hook
+function _G.ItemFarm.on_server_message(line, clean_line)
     if not _G.ItemFarm.state.running then return end
     
     local s = _G.ItemFarm.state
     local j = _G.ItemFarm.job()
-    local clean_line = string.gsub(line, "\27%[[0-9;]*m", "") -- 去除色碼
+    -- local clean_line = string.gsub(line, "\27%[[0-9;]*m", "") -- 已由 Rust 端傳入
     
     -- 0. 基礎狀態更新 (Walking)
     

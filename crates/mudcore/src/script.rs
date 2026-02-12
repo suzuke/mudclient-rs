@@ -123,7 +123,8 @@ impl ScriptEngine {
             .get(script_name)
             .ok_or_else(|| ScriptError::NotFound(script_name.to_string()))?;
 
-        self.run_code(code, message, captures, is_echo)
+        // 執行腳本時也預設 clean_message = message
+        self.run_code(code, message, message, captures, is_echo)
     }
 
     /// 執行內聯代碼
@@ -134,7 +135,9 @@ impl ScriptEngine {
         captures: &[String],
         is_echo: bool,
     ) -> Result<MudContext, ScriptError> {
-        self.run_code(code, message, captures, is_echo)
+        // inline 執行通常只有 message，沒有特定的 clean_message 來源，預設與 message 相同或空
+        // 這裡為了兼容現有調用，將 clean_message 設為與 message 相同
+        self.run_code(code, message, message, captures, is_echo)
     }
 
     /// 運行 Lua 代碼
@@ -142,6 +145,7 @@ impl ScriptEngine {
         &self,
         code: &str,
         message: &str,
+        clean_message: &str,
         captures: &[String],
         is_echo: bool,
     ) -> Result<MudContext, ScriptError> {
@@ -269,6 +273,7 @@ impl ScriptEngine {
             // 設置全局變數
             self.lua.globals().set("mud", mud)?;
             self.lua.globals().set("message", message)?;
+            self.lua.globals().set("clean_message", clean_message)?;
             
             // 設置 captures 表
             let captures_table = self.lua.create_table()?;
@@ -409,7 +414,7 @@ impl ScriptEngine {
     }
 
     /// 呼叫全域 Lua 鉤子函數
-    pub fn invoke_hook(&self, hook_name: &str, arg: &str) -> Result<Option<MudContext>, ScriptError> {
+    pub fn invoke_hook(&self, hook_name: &str, arg: &str, clean_arg: &str) -> Result<Option<MudContext>, ScriptError> {
         // 檢查函數是否存在
         if !self.lua.globals().contains_key(hook_name)? {
             return Ok(None);
@@ -424,10 +429,10 @@ impl ScriptEngine {
         
         // 為了避免 lifetime 和 borrow 問題，我們使用 execute_inline 的既有路徑
         // 構造一段呼叫代碼
-        let adapter_code = format!("if _G['{0}'] then _G['{0}'](message) end", hook_name);
+        let adapter_code = format!("if _G['{0}'] then _G['{0}'](message, clean_message) end", hook_name);
         // 注意：這裡我們依賴 execute_inline 將 message 注入到全局
         
-        self.run_code(&adapter_code, arg, &[], false).map(Some)
+        self.run_code(&adapter_code, arg, clean_arg, &[], false).map(Some)
     }
 }
 

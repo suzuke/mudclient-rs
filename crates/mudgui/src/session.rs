@@ -595,9 +595,18 @@ impl Session {
         let mut targets = vec!["main".to_string()];
 
         if !is_echo {
+            // 提取單字用於自動補齊與狀態判斷
+            // 提前計算 clean_text 以供 hook 使用
+            let clean_text = if text.contains('\x1b') {
+                let re = regex::Regex::new(r"\x1b\[[0-9;]*[mK]").unwrap();
+                re.replace_all(text, "").to_string()
+            } else {
+                text.to_string()
+            };
+
             // 0. 呼叫全域鉤子 (Global Hook)
             // 這允許 Lua 腳本直接處理每一行伺服器訊息，無需透過正則表達式觸發器
-            if let Ok(Some(context)) = self.script_engine.invoke_hook("on_server_message", text) {
+            if let Ok(Some(context)) = self.script_engine.invoke_hook("on_server_message", text, &clean_text) {
                 if context.gag {
                     gagged = true;
                 }
@@ -668,12 +677,33 @@ impl Session {
             targets.retain(|t| t != "main");
         }
 
-        // 提取單字用於自動補齊與狀態判斷
-        let clean_text = if text.contains('\x1b') {
-            let re = regex::Regex::new(r"\x1b\[[0-9;]*[mK]").unwrap();
-            re.replace_all(text, "").to_string()
+        // 若 clean_text 尚未計算（例如 is_echo=true），則在此計算
+        let clean_text = if !is_echo {
+             // 上面已經計算過了，但為了避免生命週期問題或重複計算，這裡我們可以重新取得
+             // 或是為了效能，我們可以重構讓 clean_text 在更外層宣告
+             // 目前簡單起見，如果是 echo 就重算，如果不是 echo (上面算過了) 就重用...
+             // 但由於 rust 變數遮蔽特性，我們在這裡需要小心。
+             
+             // 簡單方式：統一在 handle_text_with_widths 開頭就計算 clean_text？
+             // 不行，因為有些觸發器可能不需要它。
+             
+             // 為了避免重複代碼，我們上面已經計算了 clean_text 並 move 給了 script 嗎？
+             // 沒有，上面是 &clean_text。
+             
+             if text.contains('\x1b') {
+                let re = regex::Regex::new(r"\x1b\[[0-9;]*[mK]").unwrap();
+                re.replace_all(text, "").to_string()
+            } else {
+                text.to_string()
+            }
         } else {
-            text.to_string()
+             // Echo 也要去色
+             if text.contains('\x1b') {
+                let re = regex::Regex::new(r"\x1b\[[0-9;]*[mK]").unwrap();
+                re.replace_all(text, "").to_string()
+            } else {
+                text.to_string()
+            }
         };
 
         let clean_lower = clean_text.to_lowercase();
