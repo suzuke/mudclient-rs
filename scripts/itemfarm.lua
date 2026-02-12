@@ -18,9 +18,8 @@ _G.ItemFarm.config = {
     hp_threshold = 50,        -- 全局 HP 門檻 (0 表示預設不檢查)
     poll_interval = 30,      -- 全部未重生時的等待秒數
     rest_cmd = "sleep",          -- 休息指令
-    score_interval = 20,     -- score 指令 minimum interval (seconds)
-    require_sanctuary = true, -- 是否強制要求聖光
-    sanc_cmd = "c sa",       -- 聖光術指令
+    score_interval = 20,     -- score 指令最小間隔 (秒)
+    require_sanctuary = false, -- 是否強制要求聖光
 }
 
 -- ===== 任務列表 =====
@@ -63,9 +62,9 @@ _G.ItemFarm.jobs = {
         search_type = "locate",
         search_cmd = "c loc hamburg",
         target_mob = "不動明王",
-        attack_cmd = "c star;c star;c nu",
+        attack_cmd = "c star;c star;c star",
         dispel_cmd = "c 'dispel m' sentinel",
-        dispel_indicator = {"白色聖光"}, -- 多重指標偵測
+        dispel_indicator = "白色聖光",    -- look 後此字消失 = dispel 成功
         hp_threshold = 100,               -- 特定怪物才檢查血量
         hp_recover_cmd = "c heal",         -- 自定義恢復 HP 的指令
         buff_cmds = {"c sa", "c pro", "c b"},
@@ -74,6 +73,7 @@ _G.ItemFarm.jobs = {
         loot_items = {"sword", "potato", "hamburg"},
         remove_nodrop = {},
         sac_corpse = true,
+        require_sanctuary = true,
     },
 }
 
@@ -94,7 +94,6 @@ _G.ItemFarm.state = {
     jobs_checked = 0,      -- 本輪已檢查的任務數
     last_score_time = 0,   -- 上次發送 score 的時間
     has_sanctuary = false, -- 是否有聖光
-    score_timer_id = nil,  -- 狀態檢查計時器 ID (超時或延遲)
     -- 路徑佇列（prompt 驅動）
     path_queue = {},
     path_index = 0,
@@ -131,15 +130,6 @@ end
 local function send_cmds(str)
     for _, cmd in ipairs(parse_cmds(str)) do
         mud.send(cmd)
-    end
-end
-
--- 清除目前掛載的所有 Score 相關計時器
-function _G.ItemFarm.clear_score_timer()
-    local s = _G.ItemFarm.state
-    if s.score_timer_id then
-        mud.timer_stop(s.score_timer_id)
-        s.score_timer_id = nil
     end
 end
 
@@ -359,7 +349,62 @@ function _G.ItemFarm.go_and_fight()
     _G.ItemFarm.state.jobs_checked = 0  -- 重置輪替計數
     mud.echo("🚶 [" .. j.name .. "] 前往目標位置...")
     
-    _G.ItemFarm.walk_path(j.path_to_mob, "_G.ItemFarm.do_attack()")
+    local callback
+    if mode == "direct" then
+        callback = "_G.ItemFarm.engage_direct()"
+    else
+        -- 召喚前先檢查狀態
+        callback = "_G.ItemFarm.check_status_before_summon()"
+    end
+    _G.ItemFarm.walk_path(j.path_to_mob, callback)
+end
+
+-- 2a. 召喚前檢查狀態
+function _G.ItemFarm.check_status_before_summon()
+    if not _G.ItemFarm.state.running then return end
+    
+    local s = _G.ItemFarm.state
+    s.stage = "checking_status_pre_summon"
+    s.last_score_time = os.time()
+    mud.echo("📊 召喚前檢查狀態 (發送 score)...")
+    mud.send("score")
+    mud.send("save")
+end
+
+-- 評估召喚前狀態
+function _G.ItemFarm.evaluate_status_before_summon()
+    if not _G.ItemFarm.state.running then return end
+    local s = _G.ItemFarm.state
+    local j = _G.ItemFarm.job()
+    local cfg = _G.ItemFarm.config
+
+    local j_hp_threshold = j.hp_threshold or cfg.hp_threshold
+    local hp_ok = (s.max_hp == 0) or (j_hp_threshold == 0) or ((s.current_hp / s.max_hp) * 100 >= j_hp_threshold)
+    local mp_ok = (s.max_mp == 0) or ((s.current_mp / s.max_mp) * 100 >= cfg.mp_threshold)
+    local req_sanctuary = cfg.require_sanctuary
+    if j.require_sanctuary ~= nil then req_sanctuary = j.require_sanctuary end
+    local sanc_ok = not req_sanctuary or s.has_sanctuary
+
+    if not hp_ok or not mp_ok then
+        local reason = not hp_ok and "HP" or "MP"
+        local threshold = not hp_ok and j_hp_threshold or cfg.mp_threshold
+        mud.echo("⚠️ " .. reason .. " 不足 (" .. threshold .. "% 門檻)，先休息回滿...")
+        _G.ItemFarm.rest_and_repeat() -- 暫時用原地休息，或可透過 after_return 邏輯
+        -- 若需要回儲存點：
+        -- s.stage = "returning"
+        -- _G.ItemFarm.walk_path(j.path_to_storage, "_G.ItemFarm.after_return()")
+        return
+    end
+
+    if not sanc_ok then
+        mud.echo("🛡️ 聖光不足，嘗試施放 'c san'...")
+        mud.send("c san")
+        mud.timer(2.0, "_G.ItemFarm.check_status_before_summon()")
+        return
+    end
+
+    mud.echo("✅ 狀態良好，開始召喚！")
+    _G.ItemFarm.summon_and_attack()
 end
 
 -- 2b. 直接交戰模式（到場 → 驗證 mob → dispel → buff → 攻擊）
@@ -504,7 +549,9 @@ end
 -- 3. 召喚並攻擊
 function _G.ItemFarm.summon_and_attack()
     if not _G.ItemFarm.state.running then return end
-    if _G.ItemFarm.state.stage ~= "traveling" and _G.ItemFarm.state.stage ~= "summoning" then
+    if _G.ItemFarm.state.stage ~= "traveling" and 
+       _G.ItemFarm.state.stage ~= "summoning" and 
+       _G.ItemFarm.state.stage ~= "checking_status_pre_summon" then
         return
     end
     
@@ -516,49 +563,21 @@ function _G.ItemFarm.summon_and_attack()
 end
 
 -- 3. 發送攻擊前檢查 (現在改用 score)
-function _G.ItemFarm.do_attack(force)
+function _G.ItemFarm.do_attack()
     if not _G.ItemFarm.state.running then return end
     
     local s = _G.ItemFarm.state
-    local now = os.time()
-    
-    -- 如果是非強制模式且間隔不足，則跳過 score 直接判定
-    if not force and now - s.last_score_time < _G.ItemFarm.config.score_interval then
-        _G.ItemFarm.evaluate_status_and_fight()
-        return
-    end
-
-    _G.ItemFarm.clear_score_timer()
     s.stage = "checking_status_pre_fight"
-    s.last_score_time = now
+    s.last_score_time = os.time()
     mud.echo("📊 戰鬥前檢查狀態 (發送 score)...")
     mud.send("score")
     mud.send("save")
-
-    -- 加入 5 秒超時保險，防止解析卡死
-    s.score_timer_id = mud.timer(5.0, "_G.ItemFarm.pre_fight_timeout()")
-end
-
--- 戰鬥前檢查超時保險
-function _G.ItemFarm.pre_fight_timeout()
-    if not _G.ItemFarm.state.running then return end
-    if _G.ItemFarm.state.stage == "checking_status_pre_fight" then
-        mud.echo("⌛ 狀態檢查超時，強制進入評估...")
-        _G.ItemFarm.state.score_timer_id = nil
-        _G.ItemFarm.evaluate_status_and_fight()
-    end
 end
 
 -- 根據狀態評估是否開始戰鬥
 function _G.ItemFarm.evaluate_status_and_fight()
     if not _G.ItemFarm.state.running then return end
     local s = _G.ItemFarm.state
-    
-    -- 確保只在正確的階段處理，防止計時器與訊息觸發重疊
-    if s.stage ~= "checking_status_pre_fight" then return end
-    
-    _G.ItemFarm.clear_score_timer()
-    
     local j = _G.ItemFarm.job()
     local cfg = _G.ItemFarm.config
 
@@ -566,37 +585,33 @@ function _G.ItemFarm.evaluate_status_and_fight()
     local j_hp_threshold = j.hp_threshold or cfg.hp_threshold
     local hp_ok = (s.max_hp == 0) or (j_hp_threshold == 0) or ((s.current_hp / s.max_hp) * 100 >= j_hp_threshold)
     local mp_ok = (s.max_mp == 0) or ((s.current_mp / s.max_mp) * 100 >= cfg.mp_threshold)
-    local sanc_ok = not cfg.require_sanctuary or s.has_sanctuary
+    local req_sanctuary = cfg.require_sanctuary
+    if j.require_sanctuary ~= nil then req_sanctuary = j.require_sanctuary end
+    local sanc_ok = not req_sanctuary or s.has_sanctuary
     
     if not hp_ok or not mp_ok then
         local reason = not hp_ok and "HP" or "MP"
         local threshold = not hp_ok and j_hp_threshold or cfg.mp_threshold
         mud.echo("⚠️ " .. reason .. " 不足，返回休息...「"
             .. "HP:" .. s.current_hp .. "/" .. s.max_hp 
-            .. " MP:" .. s.current_mp .. "/" .. s.max_mp 
-            .. " 聖光:" .. (s.has_sanctuary and "有" or "無") .. "」")
+            .. " MP:" .. s.current_mp .. "/" .. s.max_mp .. "」")
         s.stage = "returning"
         local path = j.path_to_storage or _G.ItemFarm.config.path_to_storage
         _G.ItemFarm.walk_path(path, "_G.ItemFarm.after_return()")
         return
     end
 
-    -- 單獨處理聖光缺失：嘗試自動補法而不返回
     if not sanc_ok then
-        mud.echo("🛡️ 聖光已消失，嘗試自動補法: " .. cfg.sanc_cmd)
-        mud.send("wa")
-        mud.send(cfg.sanc_cmd)
-        -- 補完法後強制重新 send score 檢查
-        s.stage = "waiting_for_sanc" -- 臨時狀態防止迴圈
-        mud.timer(2.0, "_G.ItemFarm.do_attack(true)")
+        mud.echo("🛡️ 聖光不足，嘗試施放 'c san'...")
+        mud.send("c san")
+        -- 延遲 2 秒後重新檢查狀態
+        mud.timer(2.0, "_G.ItemFarm.do_attack()")
         return
     end
     
-    if j.mode == "direct" then
-        _G.ItemFarm.engage_direct()
-    else
-        _G.ItemFarm.summon_and_attack()
-    end
+    s.stage = "fighting"
+    mud.echo("⚔️ [" .. j.name .. "] 狀態良好（含聖光），開始攻擊！")
+    send_cmds(j.attack_cmd)
 end
 
 function _G.ItemFarm.summon_failed_too_many()
@@ -744,14 +759,15 @@ if not _G.ItemFarm.hook_installed then
     _G.ItemFarm.hook_installed = true
 end
 
+-- 接收伺服器訊息 Hook
 function _G.ItemFarm.on_server_message(line)
     if not _G.ItemFarm.state.running then return end
     
-    local clean_line = line:gsub("\27%[[0-9;]*m", "")
     local s = _G.ItemFarm.state
     local j = _G.ItemFarm.job()
+    local clean_line = string.gsub(line, "\27%[[0-9;]*m", "") -- 去除色碼
     
-    -- ===== 路徑行走：prompt 驅動 =====
+    -- 0. 基礎狀態更新 (Walking)
     
     -- 偵測體力耗盡（只在行走中、未暫停時觸發）
     if s.walking and not s.path_paused and string.find(clean_line, "你精疲力竭了") then
@@ -761,53 +777,40 @@ function _G.ItemFarm.on_server_message(line)
         mud.timer(0.5, "_G.ItemFarm.recover_stamina()")
         return
     end
-    
-    -- 偵測體力恢復成功（refresh 生效）
-    if s.path_paused and string.find(clean_line, "你的體力逐漸地恢復") then
-        mud.echo("✅ 體力已恢復，繼續前進...")
-        -- 保持 path_paused = true，防止後續 prompt 觸發 walk_advance
-        -- 由 walk_resume 統一解鎖
-        mud.timer(0.5, "_G.ItemFarm.walk_resume()")
-        return
-    end
-    
-    -- 行走中偵測到房間出口 → 前進到下一個指令
+
+    -- 偵測 prompt (移動指令)
     if s.walking and not s.path_paused and string.find(clean_line, "%[出口:") then
         _G.ItemFarm.walk_advance()
         return
     end
-    
-    -- 偵測查詢結果
-    if s.stage == "searching" then
-        local found = false
-        
-        if j.search_type == "quest" then
-            -- quest 模式：偵測「他正在這個世界中」
-            if string.find(clean_line, "他正在這個世界中") then
-                found = true
-            end
-        elseif j.search_type == "locate" then
-            -- locate 模式：偵測目標怪物名 + 「攜帶著」
-            if string.find(clean_line, j.target_mob) and string.find(clean_line, "攜帶著") then
-                found = true
-            end
+
+    -- 1. 狀態機分流處理
+    if s.stage == "fighting" then
+        -- [戰鬥階段] 僅檢查擊殺、逃跑、目標消失
+        if string.find(clean_line, "魂歸西天了") and string.find(clean_line, j.target_mob) then
+            mud.echo("💀 目標已擊殺！")
+            mud.timer(0.5, "_G.ItemFarm.loot()")
+            return
         end
         
-        if found then
-            mud.echo("🎯 [" .. j.name .. "] 目標存在！前往戰鬥...")
-            s.found_target = true
-            s.stage = "traveling"
-            mud.timer(1.0, "_G.ItemFarm.go_and_fight()")
+        if string.find(clean_line, j.target_mob) and 
+           (string.find(clean_line, "逃了") or string.find(clean_line, "離開了")) then
+            _G.ItemFarm.handle_mob_fled(j)
+            return
         end
-    end
-    
-    -- 偵測召喚結果
-    if s.stage == "summoning" then
+        
+        if string.find(clean_line, "目標不在") or string.find(clean_line, "施法的目標不在") then
+            _G.ItemFarm.handle_mob_missing(j)
+            return
+        end
+
+    elseif s.stage == "summoning" then
+        -- [召喚階段] 僅檢查成功與失敗
         if string.find(clean_line, "突然出現在你的眼前") then
-            mud.echo("✅ 召喚成功！開始攻擊...")
+            mud.echo("✅ 召喚成功！")
             s.summon_retries = 0
-            s.stage = "fighting"
-            send_cmds(j.attack_cmd)
+            mud.timer(0.5, "_G.ItemFarm.do_attack()")
+            return
         end
         
         if string.find(clean_line, "你失敗了") then
@@ -818,147 +821,105 @@ function _G.ItemFarm.on_server_message(line)
                 mud.echo("❌ 召喚失敗，重試...")
                 mud.timer(1.0, "_G.ItemFarm.summon_and_attack()")
             end
+            return
         end
-    end
-    
-    -- 到場驗證 mob 是否在場
-    if s.stage == "verifying_mob" then
+
+    elseif s.stage == "searching" then
+        -- [搜尋階段] 僅檢查 Quest/Locate 關鍵字
+        local found = false
+        if j.search_type == "quest" then
+            if string.find(clean_line, "他正在這個世界中") then found = true end
+        elseif j.search_type == "locate" then
+            if string.find(clean_line, j.target_mob) and string.find(clean_line, "攜帶著") then found = true end
+        end
+        
+        if found then
+            mud.echo("🎯 [" .. j.name .. "] 目標存在！前往戰鬥...")
+            s.found_target = true
+            s.stage = "traveling"
+            mud.timer(1.0, "_G.ItemFarm.go_and_fight()")
+            return
+        end
+
+    elseif s.stage == "verifying_mob" then
+        -- [驗證 Mob 存在]
         if string.find(clean_line, j.target_mob) and
            not string.find(clean_line, "屍體") and
            not string.find(clean_line, "corpse") then
             mud.echo("✅ 目標在場！")
-            s.stage = "verified"  -- 防止重複觸發
+            s.stage = "verified"
             _G.ItemFarm.start_dispel_or_attack()
+            return
         end
-    end
-    
-    -- 驗證 mob 位置（不在場時用 c loc 確認）
-    if s.stage == "verifying_loc" then
+
+    elseif s.stage == "verifying_loc" then
+        -- [驗證 Mob 位置]
         if string.find(clean_line, "攜帶著") then
-            -- mob 活著但在別處 → 永久停用此 job
             mud.echo("🚫 [" .. j.name .. "] 目標在別處！永久停用此任務（需手動找回）")
             j.disabled = true
             s.stage = "returning"
             _G.ItemFarm.walk_path(j.path_to_storage, "_G.ItemFarm.after_return()")
+            return
         end
-    end
-    
-    -- Dispel look 檢查（有 dispel_indicator 的 job）
-    if s.stage == "checking_dispel" then
-        -- 排除屍體行（屍體也有 target_mob 但不是活怪）
+
+    elseif s.stage == "checking_dispel" then
+        -- [檢查 Dispel 結果 (Indicator)]
         if string.find(clean_line, j.target_mob) and
            not string.find(clean_line, "屍體") and
            not string.find(clean_line, "corpse") then
-            
-            local still_has_buff = false
-            local indicators = j.dispel_indicator
-            
-            if type(indicators) == "string" then
-                if string.find(clean_line, indicators) then
-                    still_has_buff = true
-                end
-            elseif type(indicators) == "table" then
-                for _, ind in ipairs(indicators) do
-                    if string.find(clean_line, ind) then
-                        still_has_buff = true
-                        break
-                    end
-                end
-            end
-
-            if still_has_buff then
-                -- 指標還在 → dispel 未生效
+            if j.dispel_indicator and string.find(clean_line, j.dispel_indicator) then
                 s.stage = "dispelling"
                 _G.ItemFarm.retry_dispel_with_look()
             else
-                -- 所有指標皆消失 → dispel 成功！
-                mud.echo("✅ Dispel 成功！（指定指標已全數消失）")
+                mud.echo("✅ Dispel 成功！（" .. (j.dispel_indicator or "") .. " 已消失）")
                 s.dispel_retries = 0
                 s.stage = "dispelled"
                 mud.timer(0.5, "_G.ItemFarm.buff_and_attack()")
             end
+            return
         end
-    end
-    
-    -- 舊版 Dispel 結果偵測（無 dispel_indicator 的 job）
-    if s.stage == "dispelling" and not j.dispel_indicator then
-        if string.find(clean_line, "OK") then
-            mud.echo("✅ Dispel 成功！")
-            s.dispel_retries = 0
-            mud.timer(0.5, "_G.ItemFarm.buff_and_attack()")
-        end
-        
-        if string.find(clean_line, "你失敗了") then
-            s.dispel_retries = s.dispel_retries + 1
-            if s.dispel_retries >= 10 then
-                mud.echo("⚠️ Dispel 失敗 10 次，返回儲存點...")
+
+    elseif s.stage == "dispelling" then
+        -- [檢查 Dispel 結果 (Legacy)]
+        if not j.dispel_indicator then
+            if string.find(clean_line, "OK") then
+                mud.echo("✅ Dispel 成功！")
                 s.dispel_retries = 0
-                s.stage = "returning"
-                _G.ItemFarm.walk_path(j.path_to_storage, "_G.ItemFarm.after_return()")
-            else
-                mud.echo("❌ Dispel 失敗 (" .. s.dispel_retries .. "/10)，重試...")
-                mud.timer(1.0, "_G.ItemFarm.retry_dispel_legacy()")
+                mud.timer(0.5, "_G.ItemFarm.buff_and_attack()")
+                return
+            end
+            if string.find(clean_line, "你失敗了") then
+                _G.ItemFarm.handle_dispel_fail_legacy(s, j)
+                return
             end
         end
-    end
-    
-    -- 偵測戰鬥結束
-    if s.stage == "fighting" then
-        if string.find(clean_line, "魂歸西天了") and string.find(clean_line, j.target_mob) then
-            mud.echo("💀 目標已擊殺！")
-            mud.timer(0.5, "_G.ItemFarm.loot()")
+
+    elseif s.stage == "emergency" then
+        -- [緊急逃脫階段]
+        if string.find(clean_line, "你為了保命而不顧面子從戰鬥中逃了") or
+           string.find(clean_line, " recall") then
+            mud.echo("✅ 成功逃離戰鬥！")
+            s.stage = "idle"
+            _G.ItemFarm.next_job()
+            return
         end
-        
-        -- 目標逃跑
-        if string.find(clean_line, j.target_mob) and 
-           (string.find(clean_line, "逃了") or string.find(clean_line, "離開了")) then
-            local mode = j.mode or "summon"
-            if mode == "summon" then
-                mud.echo("🏃 目標逃跑了！重新召喚...")
-                s.stage = "summoning"
-                s.summon_retries = 0
-                mud.timer(0.5, "_G.ItemFarm.summon_and_attack()")
-            else
-                mud.echo("🏃 目標逃跑了！返回儲存點...")
-                s.stage = "returning"
-                local path = j.path_to_storage
-                _G.ItemFarm.walk_path(path, "_G.ItemFarm.after_return()")
-            end
+        if string.find(clean_line, "你逃跑失敗了") then
+            mud.send("fl")
+            return
         end
-        
-        -- 目標不在
-        if string.find(clean_line, "目標不在") or string.find(clean_line, "施法的目標不在") then
-            local mode = j.mode or "summon"
-            if mode == "summon" then
-                mud.echo("❌ 目標不在這裡！重新召喚...")
-                s.stage = "summoning"
-                s.summon_retries = 0
-                mud.timer(0.5, "_G.ItemFarm.summon_and_attack()")
-            else
-                mud.echo("❌ 目標不在這裡！返回儲存點...")
-                s.stage = "returning"
-                local path = j.path_to_storage
-                _G.ItemFarm.walk_path(path, "_G.ItemFarm.after_return()")
-            end
-        end
-    end
-    
-    -- 偵測 Score 數據
-    -- 生命力:  1105/ 2123
-    local h_cur, h_max = string.match(clean_line, "生命力:%s+(%d+)/%s+(%d+)")
-    if h_cur and h_max then
-        s.current_hp = tonumber(h_cur)
-        s.max_hp = tonumber(h_max)
-    end
-    -- 精神力:  4334/ 6034
-    local m_cur, m_max = string.match(clean_line, "精神力:%s+(%d+)/%s+(%d+)")
-    if m_cur and m_max then
-        s.current_mp = tonumber(m_cur)
-        s.max_mp = tonumber(m_max)
     end
 
-    -- 非預期戰鬥偵測
-    if s.running and s.stage ~= "fighting" and s.stage ~= "emergency" then
+    -- 2. 全域/通用檢查 (必要時執行)
+
+    -- 偵測體力恢復成功（refresh 生效）
+    if s.path_paused and string.find(clean_line, "你的體力逐漸地恢復") then
+        mud.echo("✅ 體力已恢復，繼續前進...")
+        mud.timer(0.5, "_G.ItemFarm.walk_resume()")
+        return
+    end
+
+    -- 非預期戰鬥偵測 (排除已在戰鬥或逃脫中)
+    if s.stage ~= "fighting" and s.stage ~= "emergency" then
         if string.find(clean_line, "伺機而動") or 
            string.find(clean_line, "蓄勢待發") or
            string.find(clean_line, "身陷戰鬥中") then
@@ -967,47 +928,88 @@ function _G.ItemFarm.on_server_message(line)
         end
     end
 
-    -- 逃脫成功偵測
-    if s.stage == "emergency" then
-        if string.find(clean_line, "你為了保命而不顧面子從戰鬥中逃了") or
-           string.find(clean_line, " recall") then -- 偵測 recall 成功後的出口行或特殊訊息
-            mud.echo("✅ 成功逃離戰鬥！")
-            s.stage = "idle"
-            _G.ItemFarm.next_job()
-            return
+    -- Score 解析 (HP/MP/Spells)
+    -- 僅在相關狀態檢查，減少不必要的匹配
+    if s.stage == "checking_status_pre_fight" or 
+       s.stage == "checking_status_pre_summon" or 
+       s.stage == "resting" then
+        
+        -- 生命力/精神力
+        local h_cur, h_max = string.match(clean_line, "生命力:%s+(%d+)/%s+(%d+)")
+        if h_cur and h_max then
+            s.current_hp = tonumber(h_cur)
+            s.max_hp = tonumber(h_max)
         end
         
-        if string.find(clean_line, "你逃跑失敗了") then
-            mud.send("fl")
-            return
+        local m_cur, m_max = string.match(clean_line, "精神力:%s+(%d+)/%s+(%d+)")
+        if m_cur and m_max then
+            s.current_mp = tonumber(m_cur)
+            s.max_mp = tonumber(m_max)
+        end
+
+        -- 聖光偵測
+        if string.find(clean_line, "法術: '聖光'") then
+            s.has_sanctuary = true
+        end
+
+        -- Score 結束行 (表頭觸發後延遲判定)
+        if string.find(clean_line, "目前對你產生影響的法術或技巧有") then
+            s.has_sanctuary = false -- 解析開始前重設
+            
+            if s.stage == "checking_status_pre_fight" then
+                mud.timer(0.8, "_G.ItemFarm.evaluate_status_and_fight()")
+            elseif s.stage == "checking_status_pre_summon" then
+                mud.timer(0.8, "_G.ItemFarm.evaluate_status_before_summon()")
+            elseif s.stage == "resting" then
+                mud.timer(0.8, "_G.ItemFarm.evaluate_resting_status()")
+            end
         end
     end
+end
 
-    -- 偵測法術清單中的聖光
-    if string.find(clean_line, "法術: '聖光'") then
-        s.has_sanctuary = true
+-- 輔助函數：處理目標逃跑
+function _G.ItemFarm.handle_mob_fled(j)
+    local s = _G.ItemFarm.state
+    local mode = j.mode or "summon"
+    if mode == "summon" then
+        mud.echo("🏃 目標逃跑了！重新召喚...")
+        s.stage = "summoning"
+        s.summon_retries = 0
+        mud.timer(0.5, "_G.ItemFarm.summon_and_attack()")
+    else
+        mud.echo("🏃 目標逃跑了！返回儲存點...")
+        s.stage = "returning"
+        _G.ItemFarm.walk_path(j.path_to_storage, "_G.ItemFarm.after_return()")
     end
+end
 
-    -- Score 結束行偵測 (表頭觸發後延遲判定，以解析完整清單)
-    if string.find(clean_line, "目前對你產生影響的法術或技巧有") then
-        s.has_sanctuary = false -- 解析開始前重設
-        
-        _G.ItemFarm.clear_score_timer()
-        if s.stage == "checking_status_pre_fight" then
-            -- 延時 0.8s 確保 spells 全部解析完畢
-            s.score_timer_id = mud.timer(0.8, "_G.ItemFarm.evaluate_status_and_fight()")
-        elseif s.stage == "resting" then
-            s.score_timer_id = mud.timer(0.8, "_G.ItemFarm.evaluate_resting_status()")
-        end
+-- 輔助函數：處理目標消失
+function _G.ItemFarm.handle_mob_missing(j)
+    local s = _G.ItemFarm.state
+    local mode = j.mode or "summon"
+    if mode == "summon" then
+        mud.echo("❌ 目標不在這裡！重新召喚...")
+        s.stage = "summoning"
+        s.summon_retries = 0
+        mud.timer(0.5, "_G.ItemFarm.summon_and_attack()")
+    else
+        mud.echo("❌ 目標不在這裡！返回儲存點...")
+        s.stage = "returning"
+        _G.ItemFarm.walk_path(j.path_to_storage, "_G.ItemFarm.after_return()")
     end
+end
 
-    -- 額外備援：偵測 Ok. (來自 save 命令) 代表 score 結束
-    if clean_line == "Ok." then
-        if s.stage == "checking_status_pre_fight" then
-            _G.ItemFarm.evaluate_status_and_fight()
-        elseif s.stage == "resting" then
-            _G.ItemFarm.evaluate_resting_status()
-        end
+-- 輔助函數：處理 Dispel 失敗 (Legacy)
+function _G.ItemFarm.handle_dispel_fail_legacy(s, j)
+    s.dispel_retries = s.dispel_retries + 1
+    if s.dispel_retries >= 10 then
+        mud.echo("⚠️ Dispel 失敗 10 次，返回儲存點...")
+        s.dispel_retries = 0
+        s.stage = "returning"
+        _G.ItemFarm.walk_path(j.path_to_storage, "_G.ItemFarm.after_return()")
+    else
+        mud.echo("❌ Dispel 失敗 (" .. s.dispel_retries .. "/10)，重試...")
+        mud.timer(1.0, "_G.ItemFarm.retry_dispel_legacy()")
     end
 end
 
@@ -1021,10 +1023,17 @@ function _G.ItemFarm.evaluate_resting_status()
     if s.stage ~= "resting" then return end
 
     -- 在休息階段檢查是否可以起床
+    local hp_pct = (s.max_hp > 0) and math.floor((s.current_hp / s.max_hp) * 100) or 100
+    local mp_pct = (s.max_mp > 0) and math.floor((s.current_mp / s.max_mp) * 100) or 100
+    
     local hp_threshold = j.hp_threshold or cfg.hp_threshold
-    local hp_ok = (s.max_hp == 0) or (hp_threshold == 0) or ((s.current_hp / s.max_hp) * 100 >= hp_threshold)
-    local mp_ok = (s.max_mp == 0) or ((s.current_mp / s.max_mp) * 100 >= cfg.mp_threshold)
-    local sanc_ok = not cfg.require_sanctuary or s.has_sanctuary
+    local hp_ok = (hp_threshold == 0) or (hp_pct >= hp_threshold)
+    local mp_ok = (mp_pct >= cfg.mp_threshold)
+    local req_sanctuary = cfg.require_sanctuary
+    if j.require_sanctuary ~= nil then req_sanctuary = j.require_sanctuary end
+    local sanc_ok = not req_sanctuary or s.has_sanctuary
+
+
 
     -- 如果 HP 不足且有恢復指令
     if not hp_ok and j.hp_recover_cmd then
@@ -1035,15 +1044,15 @@ function _G.ItemFarm.evaluate_resting_status()
         return
     end
 
-    -- 如果聖光消失
-    if not sanc_ok then
-        mud.echo("🛡️ 聖光已消失，站立補法: " .. cfg.sanc_cmd)
+    -- 如果聖光不足且 MP/HP 足夠，嘗試補上
+    if hp_ok and mp_ok and not sanc_ok then
+        mud.echo("🛡️ 聖光不足 (休息中)，起身施放 'c san'...")
         mud.send("wa")
-        mud.send(cfg.sanc_cmd)
+        mud.send("c san")
         mud.send(cfg.rest_cmd)
         return
     end
-    
+
     if hp_ok and mp_ok and sanc_ok then
         mud.echo("✅ 狀態已回滿（含聖光） (HP:" .. s.current_hp .. " MP:" .. s.current_mp .. ")，繼續下一輪...")
         s.stage = "idle"
