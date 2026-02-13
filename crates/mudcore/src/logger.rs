@@ -39,6 +39,8 @@ pub struct Logger {
     format: LogFormat,
     /// 是否正在記錄
     recording: bool,
+    /// 寫入計數（用於定期 flush）
+    log_count: u32,
 }
 
 impl Logger {
@@ -49,6 +51,7 @@ impl Logger {
             writer: None,
             format: LogFormat::default(),
             recording: false,
+            log_count: 0,
         }
     }
 
@@ -140,6 +143,13 @@ impl Logger {
                 let html = Self::ansi_to_html(message);
                 writeln!(writer, "{}<br>", html)?;
             }
+        }
+
+        // 每 50 條訊息自動 flush，避免異常退出時丟失日誌
+        self.log_count += 1;
+        if self.log_count >= 50 {
+            self.log_count = 0;
+            self.flush()?;
         }
 
         Ok(())
