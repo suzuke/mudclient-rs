@@ -499,6 +499,10 @@ impl MudApp {
         // 只有非空訊息才儲存到歷史
         if !text.is_empty() {
             session.input_history.push(text.clone());
+            // 限制歷史記錄數量，避免記憶體無上限增長
+            if session.input_history.len() > 500 {
+                session.input_history.drain(..session.input_history.len() - 500);
+            }
         }
         session.history_index = None;
 
@@ -637,9 +641,15 @@ impl MudApp {
                 let mut section_fg_colors: Vec<Color32> = Vec::new(); // 記錄每個 section 的前景色
                 let mut has_dual_color = false;
                 let mut pending_trailing_space: f32 = 0.0; // 用於置中對齊：記錄上一個字元的後半部間距
+                // 字型寬度快取 — 避免每個字元都查字型系統
+                let mut glyph_cache: std::collections::HashMap<(char, bool), f32> = std::collections::HashMap::new();
 
                 if let Some(window) = session.window_manager.get(active_window_id) {
-                    for msg in window.messages() {
+                    // 只渲染最近 N 條訊息以避免效能問題
+                    let visible_lines = ((available_height / (font_size + 4.0)) as usize * 3).max(200);
+                    let total = window.message_count();
+                    let skip = total.saturating_sub(visible_lines);
+                    for msg in window.messages().skip(skip) {
                         use crate::ansi::parse_ansi_with_widths;
                         let spans = parse_ansi_with_widths(&msg.content, Some(&msg.byte_widths));
 
@@ -692,7 +702,9 @@ impl MudApp {
                                     // CJK 終端環境：框線繪圖字元始終佔 2 列寬
                                     let u_w = if ch >= '\u{2500}' && ch <= '\u{259f}' { u_w.max(2) } else { u_w };
                                     let target_w = (u_w as f32) * cell_w;
-                                    let actual_w = ui.fonts(|f| f.glyph_width(&current_font_id, ch));
+                                    let actual_w = *glyph_cache.entry((ch, span.bold)).or_insert_with(|| {
+                                        ui.fonts(|f| f.glyph_width(&current_font_id, ch))
+                                    });
                                     
                                     // 置中對齊策略：
                                     // 1. 框線字元 (\u2500-\u259f) 或原本就佔滿 2 單元的 CJK：不置中，維持靠左以確保接縫對齊
@@ -758,7 +770,9 @@ impl MudApp {
                                 // CJK 終端環境：框線繪圖字元始終佔 2 列寬
                                 let u_w = if ch >= '\u{2500}' && ch <= '\u{259f}' { u_w.max(2) } else { u_w };
                                 let target_w = (u_w as f32) * cell_w;
-                                let actual_w = ui.fonts(|f| f.glyph_width(&current_font_id, ch));
+                                let actual_w = *glyph_cache.entry((ch, span.bold)).or_insert_with(|| {
+                                    ui.fonts(|f| f.glyph_width(&current_font_id, ch))
+                                });
                                 
                                 let extra = (if actual_w <= 0.0 { target_w } else { target_w - actual_w }).max(0.0);
                                 let is_box_or_full_cjk = (ch >= '\u{2500}' && ch <= '\u{259f}') || (u_w >= 2 && actual_w >= target_w * 0.9);
@@ -3189,8 +3203,13 @@ impl eframe::App for MudApp {
             self.render_settings_window(ctx);
         }
 
-        // 持續刷新
-        ctx.request_repaint();
+        // 僅在有活躍連線時持續刷新（處理持續收到的伺服器訊息）
+        let has_active_connection = self.session_manager.sessions().iter().any(|s| {
+            matches!(s.status, crate::session::ConnectionStatus::Connected(_) | crate::session::ConnectionStatus::Connecting)
+        });
+        if has_active_connection {
+            ctx.request_repaint();
+        }
     }
 }
 

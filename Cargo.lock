@@ -1738,6 +1738,7 @@ dependencies = [
  "egui_extras",
  "font-kit",
  "image",
+ "lazy_static",
  "mudcore",
  "regex",
  "serde",

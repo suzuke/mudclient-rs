@@ -19,6 +19,12 @@ use std::hash::{Hash, Hasher};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use crate::config::{AliasConfig, Profile, TriggerConfig};
+use lazy_static::lazy_static;
+
+lazy_static! {
+    static ref ANSI_STRIP_RE: regex::Regex = regex::Regex::new(r"\x1b\[[0-9;]*[mK]").unwrap();
+    static ref MOB_BRACKET_RE: regex::Regex = regex::Regex::new(r"\(([^)]+)\)").unwrap();
+}
 
 // ============================================================================
 // SessionId
@@ -598,8 +604,7 @@ impl Session {
             // 提取單字用於自動補齊與狀態判斷
             // 提前計算 clean_text 以供 hook 使用
             let clean_text = if text.contains('\x1b') {
-                let re = regex::Regex::new(r"\x1b\[[0-9;]*[mK]").unwrap();
-                re.replace_all(text, "").to_string()
+                ANSI_STRIP_RE.replace_all(text, "").to_string()
             } else {
                 text.to_string()
             };
@@ -691,16 +696,14 @@ impl Session {
              // 沒有，上面是 &clean_text。
              
              if text.contains('\x1b') {
-                let re = regex::Regex::new(r"\x1b\[[0-9;]*[mK]").unwrap();
-                re.replace_all(text, "").to_string()
+                ANSI_STRIP_RE.replace_all(text, "").to_string()
             } else {
                 text.to_string()
             }
         } else {
              // Echo 也要去色
              if text.contains('\x1b') {
-                let re = regex::Regex::new(r"\x1b\[[0-9;]*[mK]").unwrap();
-                re.replace_all(text, "").to_string()
+                ANSI_STRIP_RE.replace_all(text, "").to_string()
             } else {
                 text.to_string()
             }
@@ -807,8 +810,7 @@ impl Session {
             let now = Instant::now();
             
             // 1. 提取括號內的內容 (優先級高)
-            let mob_re = regex::Regex::new(r"\(([^)]+)\)").unwrap();
-            for cap in mob_re.captures_iter(&clean_text) {
+            for cap in MOB_BRACKET_RE.captures_iter(&clean_text) {
                 let content = &cap[1];
                 for word in content.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-') {
                     if word.len() >= 2 && word.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
@@ -847,12 +849,8 @@ impl Session {
 
         // 限制字典大小
         if self.screen_words.len() > 1000 {
-            let mut items: Vec<_> = self.screen_words.iter().map(|(k, m)| (k.clone(), m.last_seen)).collect();
-            items.sort_by_key(|(_, t)| *t);
-            // 移除最舊的 200 個
-            for (k, _) in items.iter().take(200) {
-                self.screen_words.remove(k);
-            }
+            let cutoff = Instant::now() - Duration::from_secs(300); // 5 分鐘前
+            self.screen_words.retain(|_, m| m.last_seen > cutoff);
         }
 
         // 日誌記錄

@@ -2,7 +2,7 @@
 //!
 //! 支援將訊息路由到不同的子視窗
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 /// 子視窗 ID
 pub type WindowId = String;
@@ -43,7 +43,7 @@ pub struct SubWindow {
     /// 訊息緩衝區容量
     pub capacity: usize,
     /// 訊息緩衝區
-    messages: Vec<WindowMessage>,
+    messages: VecDeque<WindowMessage>,
     /// 是否可見
     pub visible: bool,
 }
@@ -55,7 +55,7 @@ impl SubWindow {
             id: id.into(),
             title: title.into(),
             capacity: 1000,
-            messages: Vec::new(),
+            messages: VecDeque::new(),
             visible: true,
         }
     }
@@ -69,14 +69,14 @@ impl SubWindow {
     /// 添加訊息
     pub fn push(&mut self, message: WindowMessage) {
         if self.messages.len() >= self.capacity {
-            self.messages.remove(0);
+            self.messages.pop_front();
         }
-        self.messages.push(message);
+        self.messages.push_back(message);
     }
 
     /// 獲取所有訊息
-    pub fn messages(&self) -> &[WindowMessage] {
-        &self.messages
+    pub fn messages(&self) -> impl Iterator<Item = &WindowMessage> + ExactSizeIterator {
+        self.messages.iter()
     }
 
     /// 清空訊息
@@ -84,14 +84,16 @@ impl SubWindow {
         self.messages.clear();
     }
 
+    /// 獲取訊息數量
+    pub fn message_count(&self) -> usize {
+        self.messages.len()
+    }
+
     /// 獲取最後 N 條訊息
-    pub fn last_n(&self, n: usize) -> &[WindowMessage] {
+    pub fn last_n(&self, n: usize) -> impl Iterator<Item = &WindowMessage> {
         let len = self.messages.len();
-        if n >= len {
-            &self.messages
-        } else {
-            &self.messages[len - n..]
-        }
+        let skip = len.saturating_sub(n);
+        self.messages.iter().skip(skip)
     }
 }
 
@@ -226,7 +228,7 @@ mod tests {
             byte_widths: Vec::new(),
         });
         
-        assert_eq!(manager.get("chat").unwrap().messages().len(), 1);
+        assert_eq!(manager.get("chat").unwrap().message_count(), 1);
     }
 
     #[test]
@@ -247,7 +249,7 @@ mod tests {
             });
         }
         
-        assert_eq!(window.messages().len(), 3);
-        assert_eq!(window.messages()[0].content, "Message 2");
+        assert_eq!(window.message_count(), 3);
+        assert_eq!(window.messages().next().unwrap().content, "Message 2");
     }
 }
