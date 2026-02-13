@@ -81,7 +81,7 @@ local QUEST_STEPS = {
     {name="go_keeper",       target="keeper",   cmds={"talk keeper akemi"}, expect="好...你跟我來一下...", next="chachamaru"},
     {name="chachamaru",      target="keeper",   cmds={"talk keeper akemi"}, expect="茶茶丸的老闆 把 白酒 給了你", next="find_akemi_2"},
     {name="find_akemi_2",    target="akemi",    cmds={"gi wine akemi"}, expect="你把 白酒 給了 朱美.", next="find_otonashi_2"},
-    {name="find_otonashi_2", target="otonashi", cmds={"talk otonashi kyokoo"}, expect="", next="done"},
+    {name="find_otonashi_2", target="otonashi", cmds={"talk otonashi kyokoo"}, expect="為了感謝你的幫助，這個戒指就送給你吧!!", next="done"},
 }
 
 local STEP_BY_NAME = {}
@@ -335,6 +335,19 @@ function _G.IkkokuQuest.wait_mob_retry(rid)
             mud.send("recall")
             _G.IkkokuQuest.walk_path(_G.IkkokuQuest.config.path_to_room5, "_G.IkkokuQuest.wait_mob_start")
             return
+        end
+    end
+
+    -- go_keeper 特殊處理: 門口沒人 -> 進酒吧
+    if step and step.name == "go_keeper" then
+        _G.IkkokuQuest.echo("🤔 門口沒人，嘗試進入酒吧...")
+        mud.send("enter chachamaru")
+        -- 切換步驟到 chachamaru
+        local next_idx = STEP_BY_NAME["chachamaru"]
+        if next_idx then
+             s.step_index = next_idx
+             _G.IkkokuQuest.wait_mob_start(s.run_id)
+             return
         end
     end
     
@@ -597,56 +610,88 @@ function _G.IkkokuQuest.run_step(rid)
 
     -- === 特殊步驟處理 ===
 
-    -- wait_kyokoo: 直接走到管理人室等待 Kyokoo
+    -- === 一刻館內部路徑 (反向) ===
+    -- Hub = enter ikkoku 後的位置
+    -- R3/R4/R5 路徑特徵: n;open n;n;...
+    -- Manager 路徑特徵: 2e;3n;w;op s;s
+    local back_manager = "open n;n;e;3s;2w"         -- Manager -> Hub
+    local back_room3   = "open s;s;e;n;d;s;2w;s;open s;s"  -- R3 -> Hub
+    local back_room4   = "open s;s;2e;n;d;s;2w;s;open s;s" -- R4 -> Hub
+    local back_room5   = "open s;s;3e;n;d;s;2w;s;open s;s" -- R5 -> Hub
+    
+    -- wait_kyokoo: 開場必須從 recall 走
     if step.name == "wait_kyokoo" then
         _G.IkkokuQuest.echo("🏠 前往管理人室...")
         _G.IkkokuQuest.walk_path(_G.IkkokuQuest.config.path_to_manager, "_G.IkkokuQuest.wait_mob_start")
         return
     end
 
-    -- find_yukari / find_kyokoo_2: recall → 管理人室 (固定位置)
+    -- find_yukari: 從 Godai(R4) 回 Manager
     if step.name == "find_yukari" then
-        _G.IkkokuQuest.echo("🏠 前往管理人室找 " .. step.target .. "...")
-        _G.IkkokuQuest.recall_and_go(_G.IkkokuQuest.config.path_to_manager, "_G.IkkokuQuest.wait_mob_start")
+        _G.IkkokuQuest.echo("🏠 從四號房前往管理人室找由加莉...")
+        -- 路徑: R4 -> Hub -> Manager
+        local path = back_room4 .. ";" .. _G.IkkokuQuest.config.path_to_manager
+        _G.IkkokuQuest.walk_path(path, "_G.IkkokuQuest.wait_mob_start")
         return
     end
 
+    -- find_kyokoo_2: 從玄關回 Manager (原有優化)
     if step.name == "find_kyokoo_2" then
         _G.IkkokuQuest.echo("🏠 從玄關走回管理人室找 Kyokoo...")
         _G.IkkokuQuest.walk_path("w;n", "_G.IkkokuQuest.wait_mob_start")
         return
     end
 
-    -- find_akemi_1 / find_akemi_2: recall → 三號房等待朱美
-    if step.name == "find_akemi_1" or step.name == "find_akemi_2" then
-        _G.IkkokuQuest.echo("🏠 前往三號房找朱美 Akemi...")
-        _G.IkkokuQuest.recall_and_go(_G.IkkokuQuest.config.path_to_room3, "_G.IkkokuQuest.wait_mob_start")
+    -- find_akemi_1: 從 Yotsuya(Gap) 到 R3
+    -- 依據使用者確認，必然在牆縫中完成，直接 squeeze east 到 R4 再去 R3
+    if step.name == "find_akemi_1" then
+        _G.IkkokuQuest.echo("🏠 從牆縫前往三號房找朱美 Akemi...")
+        -- 牆縫 -> R4 -> R3
+        -- Gap -> R4: squeeze east
+        -- R4 -> R3: s;e;open n;n
+        local path = "squeeze east;s;e;open n;n"
+        _G.IkkokuQuest.walk_path(path, "_G.IkkokuQuest.wait_mob_start")
         return
     end
+    
+    -- find_akemi_2: 從 Bar(Inside) 回 R3
+    if step.name == "find_akemi_2" then
+         _G.IkkokuQuest.echo("🏠 從酒吧回三號房找朱美...")
+         local path = "push door;e;s;enter ikkoku;" .. _G.IkkokuQuest.config.path_to_room3
+         _G.IkkokuQuest.walk_path(path, "_G.IkkokuQuest.wait_mob_start")
+         return
+    end
 
-    -- find_godai: recall → 四號房等待
+    -- find_godai_1 / find_godai_2: 從 Manager 到 R4
     if step.name == "find_godai_1" or step.name == "find_godai_2" then
-        _G.IkkokuQuest.echo("🏠 前往四號房找 " .. step.target .. "...")
-        _G.IkkokuQuest.recall_and_go(_G.IkkokuQuest.config.path_to_room4, "_G.IkkokuQuest.wait_mob_start")
+        _G.IkkokuQuest.echo("🏠 從管理人室前往四號房找 Godai...")
+        -- Manager -> Hub -> R4
+        local path = back_manager .. ";" .. _G.IkkokuQuest.config.path_to_room4
+        _G.IkkokuQuest.walk_path(path, "_G.IkkokuQuest.wait_mob_start")
         return
     end
 
-    -- find_yotsuya: recall → 五號房等待
+    -- find_yotsuya: 從 Godai(R4) 到 R5
     if step.name == "find_yotsuya" then
-        _G.IkkokuQuest.echo("🏠 前往五號房找四谷 Yotsuya...")
-        _G.IkkokuQuest.recall_and_go(_G.IkkokuQuest.config.path_to_room5, "_G.IkkokuQuest.wait_mob_start")
+        _G.IkkokuQuest.echo("🏠 從四號房前往五號房找 Yotsuya...")
+        -- R4 -> Corridor -> R5
+        -- R4 out: s. Corridor: w. R5 in: open n;n.
+        local path = "s;w;open n;n"
+        _G.IkkokuQuest.walk_path(path, "_G.IkkokuQuest.wait_mob_start")
         return
     end
 
-    -- go_keeper: 去酒吧外面等老闆
+    -- go_keeper: 從 Akermi(R3) 到 Bar(Out)
     if step.name == "go_keeper" then
-        _G.IkkokuQuest.echo("🏠 前往酒吧外找老闆 keeper...")
-        mud.send("recall")
-        _G.IkkokuQuest.walk_path(_G.IkkokuQuest.config.path_to_keeper_area, "_G.IkkokuQuest.wait_mob_start")
+        _G.IkkokuQuest.echo("🏠 從三號房前往酒吧外找 Keeper...")
+        -- R3 -> Hub -> BarOut
+        -- Hub -> BarOut: out;n;w
+        local path = back_room3 .. ";push door;n;w"
+        _G.IkkokuQuest.walk_path(path, "_G.IkkokuQuest.wait_mob_start")
         return
     end
 
-    -- chachamaru: 進入酒吧等老闆
+    -- chachamaru: 進入酒吧等老闆 (原有)
     if step.name == "chachamaru" then
         _G.IkkokuQuest.echo("🏠 進入酒吧 chachamaru 找 keeper...")
         mud.send("enter chachamaru")
@@ -654,18 +699,18 @@ function _G.IkkokuQuest.run_step(rid)
         return
     end
 
-    -- find_otonashi: 優先召喚 (必須在玄關)
+    -- find_otonashi_1: 從 Manager 到 Entrance (原有優化)
     if step.name == "find_otonashi_1" then
-        -- 從管理人室出發 -> s;e -> 玄關
-        _G.IkkokuQuest.echo("✨ 前往玄關召喚音無爸爸...")
+        _G.IkkokuQuest.echo("✨ 前往玄關召喚Otonashi...")
         _G.IkkokuQuest.walk_path("open s;s;e", "_G.IkkokuQuest.do_summon_otonashi")
         return
     end
 
+    -- find_otonashi_2: 從 Akemi(R3) 到 Entrance
     if step.name == "find_otonashi_2" then
-        -- 從任意點 recalls -> 玄關
-        _G.IkkokuQuest.echo("✨ 前往玄關召喚音無爸爸...")
-        _G.IkkokuQuest.recall_and_go(_G.IkkokuQuest.config.path_to_entrance, "_G.IkkokuQuest.do_summon_otonashi")
+        _G.IkkokuQuest.echo("✨ 從三號房前往玄關召喚Otonashi...")
+        local path = "open s;s;e;n;d;s;w;w"
+        _G.IkkokuQuest.walk_path(path, "_G.IkkokuQuest.do_summon_otonashi")
         return
     end
 
@@ -690,10 +735,12 @@ function _G.IkkokuQuest.quest_complete(rid)
     s.phase = "done"
     _G.IkkokuQuest.echo("═══════════════════════════════════════")
     _G.IkkokuQuest.echo("🎉 相聚一刻任務完成！")
+    _G.IkkokuQuest.echo("✨ 執行 Recall 回到安全點...")
+    mud.send("recall")
     _G.IkkokuQuest.echo("═══════════════════════════════════════")
 end
 
--- 召喚音無爸爸
+-- 召喚Otonashi
 function _G.IkkokuQuest.do_summon_otonashi(rid)
     if not check_run(rid) then return end
     local s = _G.IkkokuQuest.state
@@ -735,7 +782,7 @@ function _G.IkkokuQuest.on_server_message(line, clean_line)
     -- ===== 啟動前檢查 (Otonashi) =====
     if s.phase == "checking_otonashi" then
         if string.find(clean_line, "他正在這個世界中", 1, true) then
-            _G.IkkokuQuest.echo("✅ 音無爸爸確認存活！任務正式開始...")
+            _G.IkkokuQuest.echo("✅ Ikkoku已重置！任務正式開始...")
             s.check_timer_active = false -- 標記檢查通過
             _G.IkkokuQuest.enter_sequence(s.run_id)
             return
@@ -789,6 +836,27 @@ function _G.IkkokuQuest.on_server_message(line, clean_line)
         end
     end
 
+    -- ===== Otonashi 召喚後逃跑追擊 =====
+    -- "響子的爸爸 往南邊離開了."
+    local step = QUEST_STEPS[s.step_index]
+    if step and (step.name == "find_otonashi_1" or step.name == "find_otonashi_2") then
+        local dir_name = string.match(clean_line, "響子的爸爸 往(.-)離開了")
+        if dir_name then
+             _G.IkkokuQuest.echo("🏃 Otonashi 往 " .. dir_name .. " 逃跑了，追！")
+             local d = DIR_BY_NAME[dir_name]
+             if d then
+                 mud.send(d.cmd)
+                 -- 追上去後再嘗試對話
+                 _G.IkkokuQuest.safe_timer(0.5, function(rid)
+                     if not check_run(rid) then return end
+                     _G.IkkokuQuest.echo("✨ 追到了！再次嘗試對話...")
+                     mud.send("talk otonashi kyokoo")
+                 end)
+                 return
+             end
+        end
+    end
+
     -- ===== 召喚失敗自動重試 =====
     if string.find(clean_line, "你失敗了", 1, true) then
         local step = QUEST_STEPS[s.step_index]
@@ -801,6 +869,22 @@ function _G.IkkokuQuest.on_server_message(line, clean_line)
 
     -- ===== 等待 mob (通用 + Kyokoo + Yotsuya 狀態檢測) =====
     if s.phase == "waiting" then
+        -- Keeper 跑出酒吧 (在室內 chachamaru 步驟時收到)
+        local step = QUEST_STEPS[s.step_index]
+        if step and step.name == "chachamaru" then
+             if string.find(clean_line, "茶茶丸的老闆離開了茶茶丸酒吧", 1, true) then
+                 _G.IkkokuQuest.echo("🏃 Keeper 跑出去了，追回到大馬路！")
+                 mud.send("push door")
+                 -- 切回 go_keeper
+                 local next_idx = STEP_BY_NAME["go_keeper"]
+                 if next_idx then
+                      s.step_index = next_idx
+                      _G.IkkokuQuest.wait_mob_start(s.run_id)
+                      return
+                 end
+             end
+        end
+
         -- 偵測四谷所在位置
         if string.find(clean_line, "牆縫中", 1, true) then
             s.yotsuya_pos = "gap"
@@ -964,7 +1048,7 @@ function _G.IkkokuQuest.start()
     }
 
     _G.IkkokuQuest.echo("═══════════════════════════════════════")
-    _G.IkkokuQuest.echo("🔍 檢查音無爸爸是否已經重置...")
+    _G.IkkokuQuest.echo("🔍 檢查IKKOKU是否已經重置...")
     s.phase = "checking_otonashi"
     s.check_timer_active = true
     mud.send("q otonashi")
@@ -972,7 +1056,7 @@ function _G.IkkokuQuest.start()
     -- 3秒後若未通過檢查則中止
     _G.IkkokuQuest.safe_timer(3.0, function()
         if s.running and s.phase == "checking_otonashi" and s.check_timer_active then
-             _G.IkkokuQuest.echo("❌ 音無爸爸還沒重置，任務取消。")
+             _G.IkkokuQuest.echo("❌ IKKOKU還沒重置，任務取消。")
              _G.IkkokuQuest.stop()
         end
     end)
