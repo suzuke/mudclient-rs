@@ -2876,10 +2876,19 @@ impl MudApp {
                         ui.add_space(10.0);
                         
                         if session.logger.is_recording() {
-                            ui.label(format!("狀態: 正在記錄中 ({})", session.logger.path().map(|p| p.display().to_string()).unwrap_or_default()));
-                            if ui.button("停止記錄").clicked() {
-                                let _ = session.logger.stop();
-                            }
+                            let log_path_str = session.logger.path().map(|p| p.display().to_string()).unwrap_or_default();
+                            ui.label(format!("狀態: 正在記錄中 ({})", &log_path_str));
+                            ui.horizontal(|ui| {
+                                if ui.button("停止記錄").clicked() {
+                                    let _ = session.logger.stop();
+                                }
+                                if ui.button("📂 開啟日誌檔").clicked() {
+                                    if let Some(p) = session.logger.path().map(|p| p.to_path_buf()) {
+                                        let _ = session.logger.flush();
+                                        let _ = std::process::Command::new("open").arg(&p).spawn();
+                                    }
+                                }
+                            });
                         } else {
                             ui.label("狀態: 未啟動");
                             if ui.button("開始記錄").clicked() {
