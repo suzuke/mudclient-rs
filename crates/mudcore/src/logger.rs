@@ -41,6 +41,10 @@ pub struct Logger {
     recording: bool,
     /// 寫入計數（用於定期 flush）
     log_count: u32,
+    /// 上一條訊息（用於摺疊）
+    last_message: Option<String>,
+    /// 重複計數
+    repeat_count: usize,
 }
 
 impl Logger {
@@ -52,6 +56,8 @@ impl Logger {
             format: LogFormat::default(),
             recording: false,
             log_count: 0,
+            last_message: None,
+            repeat_count: 0,
         }
     }
 
@@ -107,6 +113,9 @@ impl Logger {
             return Ok(());
         }
 
+        // 寫入剩餘的 pending 訊息
+        self.write_pending_message()?;
+
         // 寫入 HTML 尾部（如果需要）
         if self.format == LogFormat::Html {
             self.write_html_footer()?;
@@ -123,27 +132,55 @@ impl Logger {
         Ok(())
     }
 
+    /// 寫入當前緩衝的 pending 訊息
+    fn write_pending_message(&mut self) -> Result<(), LogError> {
+        if let Some(msg) = self.last_message.take() {
+            let writer = self.writer.as_mut().ok_or(LogError::NotOpen)?;
+            
+            let final_msg = if self.repeat_count > 1 {
+                format!("{} [x{}]", msg, self.repeat_count)
+            } else {
+                msg
+            };
+
+            match self.format {
+                LogFormat::PlainText => {
+                    let clean = Self::strip_ansi(&final_msg);
+                    writeln!(writer, "{}", clean)?;
+                }
+                LogFormat::Raw => {
+                    writeln!(writer, "{}", final_msg)?;
+                }
+                LogFormat::Html => {
+                    let html = Self::ansi_to_html(&final_msg);
+                    writeln!(writer, "{}<br>", html)?;
+                }
+            }
+            self.repeat_count = 0;
+        }
+        Ok(())
+    }
+
     /// 記錄訊息
     pub fn log(&mut self, message: &str) -> Result<(), LogError> {
         if !self.recording {
             return Ok(()); // 靜默忽略
         }
 
-        let writer = self.writer.as_mut().ok_or(LogError::NotOpen)?;
-
-        match self.format {
-            LogFormat::PlainText => {
-                let clean = Self::strip_ansi(message);
-                writeln!(writer, "{}", clean)?;
-            }
-            LogFormat::Raw => {
-                writeln!(writer, "{}", message)?;
-            }
-            LogFormat::Html => {
-                let html = Self::ansi_to_html(message);
-                writeln!(writer, "{}<br>", html)?;
+        // 檢查是否與上一條訊息相同
+        if let Some(last) = &self.last_message {
+            if last == message {
+                self.repeat_count += 1;
+                return Ok(());
             }
         }
+
+        // 訊息不同，先寫入上一條
+        self.write_pending_message()?;
+
+        // 更新為新訊息
+        self.last_message = Some(message.to_string());
+        self.repeat_count = 1;
 
         // 每 50 條訊息自動 flush，避免異常退出時丟失日誌
         self.log_count += 1;
@@ -157,6 +194,7 @@ impl Logger {
 
     /// 刷新緩衝區
     pub fn flush(&mut self) -> Result<(), LogError> {
+        self.write_pending_message()?;
         if let Some(ref mut writer) = self.writer {
             writer.flush()?;
         }
@@ -360,6 +398,34 @@ mod tests {
         assert!(!content.contains("\x1b")); // ANSI 已被移除
 
         // 清理
+        let _ = fs::remove_file(&log_path);
+    }
+
+    #[test]
+    fn test_log_folding() {
+        let temp_dir = std::env::temp_dir();
+        let log_path = temp_dir.join("test_mud_log_folding.txt");
+
+        let mut logger = Logger::new();
+        logger.set_format(LogFormat::PlainText);
+        logger.start(&log_path).unwrap();
+
+        logger.log("Line A").unwrap();
+        logger.log("Line B").unwrap();
+        logger.log("Line B").unwrap();
+        logger.log("Line B").unwrap();
+        logger.log("Line C").unwrap();
+        
+        logger.stop().unwrap();
+
+        let content = fs::read_to_string(&log_path).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], "Line A");
+        assert_eq!(lines[1], "Line B [x3]");
+        assert_eq!(lines[2], "Line C");
+
         let _ = fs::remove_file(&log_path);
     }
 }

@@ -212,6 +212,7 @@ function _G.PokerQuest.fetch_status(rid)
     s.phase_after_repo = s.phase  -- 記住回來要回到哪個階段
     s.phase = "fetching_status"
     mud.send("repo")
+    mud.send("i")
 end
 
 function _G.PokerQuest.walk_resume()
@@ -601,23 +602,32 @@ function _G.PokerQuest.quest_complete(rid)
     _G.PokerQuest.echo("   探索房間: " .. exp.room_count .. " 間")
     _G.PokerQuest.echo("   獎勵: 幸福之杖 + 好運之杖")
     _G.PokerQuest.echo("═══════════════════════════════════════")
+    MudUtils.stop_log()
 end
 
 -- ============================================================
 -- Server Message Hook
 -- ============================================================
 local base_hook = nil
-if _G.on_server_message and not _G.PokerQuest.hook_installed then
-    base_hook = _G.on_server_message
-elseif _G.PokerQuest._base_hook then
-    base_hook = _G.PokerQuest._base_hook
+-- ===== Hook =====
+-- 為了避免重複包裝 (Nesting)，我們需要更謹慎地處理 Hook
+if _G.PokerQuest.hook_installed and _G.PokerQuest._original_hook then
+    _G.on_server_message = _G.PokerQuest._original_hook
 end
-_G.PokerQuest._base_hook = base_hook
+if not _G.PokerQuest._original_hook then
+    _G.PokerQuest._original_hook = _G.on_server_message
+end
+local base_hook = _G.PokerQuest._original_hook
 
 _G.on_server_message = function(line, clean_line)
-    if base_hook then base_hook(line, clean_line) end
-    if _G.PokerQuest and _G.PokerQuest.on_server_message then
-        _G.PokerQuest.on_server_message(line, clean_line)
+    local status, err = pcall(function()
+        if base_hook then base_hook(line, clean_line) end
+        if _G.PokerQuest and _G.PokerQuest.on_server_message then
+            _G.PokerQuest.on_server_message(line, clean_line)
+        end
+    end)
+    if not status then
+        mud.echo("CRITICAL HOOK ERROR (PokerQuest): " .. tostring(err))
     end
 end
 _G.PokerQuest.hook_installed = true
@@ -872,6 +882,12 @@ function _G.PokerQuest.start()
     local s = _G.PokerQuest.state
     s.running = true
     s.run_id = (s.run_id or 0) + 1
+    MudUtils.start_log("poker")
+    
+    -- 註冊並檢查物品
+    MudUtils.register_quest("PokerQuest", _G.PokerQuest.stop)
+    mud.send("i")
+    
     s.phase = "idle"
     s.kills = 0
     s.got_stone = false
@@ -961,6 +977,13 @@ function _G.PokerQuest.stop()
     _G.PokerQuest.state.phase = "idle"
     _G.PokerQuest.state.walking = false
     _G.PokerQuest.echo("🛑 任務已停止")
+    MudUtils.stop_log()
+end
+
+function _G.PokerQuest.reload()
+    package.loaded["scripts.poker_quest"] = nil
+    require("scripts.poker_quest")
+    _G.PokerQuest.echo("♻️ 腳本已重新載入")
 end
 
 function _G.PokerQuest.status()
@@ -988,6 +1011,7 @@ local usage = [[
   1. 啟動: /lua PokerQuest.start()
   2. 停止: /lua PokerQuest.stop()
   3. 狀態: /lua PokerQuest.status()
+  4. 重載: /lua PokerQuest.reload()
 流程:
   recall → 進入撲克王國
   → DFS 探索全圖殺 spade (直到取得黃色石頭)

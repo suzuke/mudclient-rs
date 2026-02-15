@@ -1,7 +1,7 @@
 -- ============================================================
 -- Benumb - 自動施迷香（從箱子中選擇物品）
 -- ============================================================
--- 用法：ben <direction>
+-- 用法：ben <direction> (建議設定 Alias: ^ben%s+(.+))
 -- 自動偵測 box 中的物品，按優先順序選擇使用
 -- ============================================================
 
@@ -20,23 +20,35 @@ function _G.Benumb.use(dir)
         mud.echo("用法: ben <direction>")
         return
     end
+    mud.echo("🔍 Benumb: 準備在方向 [" .. dir .. "] 使用迷香...")
     _G.Benumb.pending_dir = dir
     _G.Benumb.found_items = {}
     _G.Benumb.scanning = true
     mud.send("l in box")
 end
 
--- Hook
-if not _G.Benumb.hook_installed then
-    local old_hook = _G.on_server_message
-    _G.on_server_message = function(line, clean_line)
-        if old_hook then old_hook(line, clean_line) end
+-- ===== Hook =====
+-- 為了避免重複包裝 (Nesting)，我們需要更謹慎地處理 Hook
+if _G.Benumb.hook_installed and _G.Benumb._original_hook then
+    _G.on_server_message = _G.Benumb._original_hook
+end
+if not _G.Benumb._original_hook then
+    _G.Benumb._original_hook = _G.on_server_message
+end
+local base_hook = _G.Benumb._original_hook
+
+_G.on_server_message = function(line, clean_line)
+    local status, err = pcall(function()
+        if base_hook then base_hook(line, clean_line) end
         if _G.Benumb and _G.Benumb.on_msg then
             _G.Benumb.on_msg(line, clean_line)
         end
+    end)
+    if not status then
+        mud.echo("CRITICAL HOOK ERROR (Benumb): " .. tostring(err))
     end
-    _G.Benumb.hook_installed = true
 end
+_G.Benumb.hook_installed = true
 
 function _G.Benumb.on_msg(line, clean_line)
     if not _G.Benumb.scanning then return end
@@ -52,7 +64,15 @@ function _G.Benumb.on_msg(line, clean_line)
     end
 
     -- 偵測 prompt → 箱子內容列表結束
-    if (string.find(clean, "hp%d+/%d+") or string.find(clean, "%d+/%d+hp")) and _G.Benumb.pending_dir then
+    -- 放寬判定：支援 > 開頭, [ 開頭, 或包含 hp/HP 的行
+    local is_prompt = string.find(clean, "^>") or 
+                      string.find(clean, "^%[") or 
+                      string.find(clean, "^%*") or -- 某些 MUD 的忙碌/戰鬥提示
+                      string.find(clean, "hp%d+") or 
+                      string.find(clean, "%d+/%d+") or
+                      string.lower(clean):find("hp:")
+
+    if is_prompt and _G.Benumb.pending_dir then
         _G.Benumb.scanning = false
 
         -- 按優先順序選擇第一個可用物品
@@ -76,6 +96,12 @@ function _G.Benumb.on_msg(line, clean_line)
         _G.Benumb.pending_dir = nil
         _G.Benumb.found_items = {}
     end
+end
+
+function _G.Benumb.reload()
+    package.loaded["scripts.benumb"] = nil
+    require("scripts.benumb")
+    mud.echo("[Benumb] ♻️ 腳本已重新載入")
 end
 
 mud.echo("[Benumb] 已載入。用法: ben <direction>")

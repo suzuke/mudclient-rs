@@ -21,20 +21,25 @@ _G.AutoCast.state = {
     check_count = 0,
 }
 
--- 訊息 Hook (每次載入都重新安裝)
--- 先保存非 AutoCast 的舊 hook
-local base_hook = nil
-if _G.on_server_message and not _G.AutoCast.hook_installed then
-    base_hook = _G.on_server_message
-elseif _G.AutoCast._base_hook then
-    base_hook = _G.AutoCast._base_hook
+-- ===== Hook =====
+-- 為了避免重複包裝 (Nesting)，我們需要更謹慎地處理 Hook
+if _G.AutoCast.hook_installed and _G.AutoCast._original_hook then
+    _G.on_server_message = _G.AutoCast._original_hook
 end
-_G.AutoCast._base_hook = base_hook
+if not _G.AutoCast._original_hook then
+    _G.AutoCast._original_hook = _G.on_server_message
+end
+local base_hook = _G.AutoCast._original_hook
 
 _G.on_server_message = function(line, clean_line)
-    if base_hook then base_hook(line, clean_line) end
-    if _G.AutoCast and _G.AutoCast.on_server_message then
-        _G.AutoCast.on_server_message(line, clean_line)
+    local status, err = pcall(function()
+        if base_hook then base_hook(line, clean_line) end
+        if _G.AutoCast and _G.AutoCast.on_server_message then
+            _G.AutoCast.on_server_message(line, clean_line)
+        end
+    end)
+    if not status then
+        mud.echo("CRITICAL HOOK ERROR (AutoCast): " .. tostring(err))
     end
 end
 _G.AutoCast.hook_installed = true
@@ -172,6 +177,7 @@ function _G.AutoCast.start(cmd)
     _G.AutoCast.state.check_count = 0
     
     mud.echo("🚀 AutoCast 啟動: " .. _G.AutoCast.config.command)
+    MudUtils.start_log("autocast")
     mud.echo("   正在檢查狀態...")
     
     _G.AutoCast.loop(_G.AutoCast.state.run_id)
@@ -181,6 +187,7 @@ function _G.AutoCast.stop()
     _G.AutoCast.state.mode = "stopped"
     _G.AutoCast.state.run_id = _G.AutoCast.state.run_id + 1
     mud.echo("🛑 AutoCast 已停止")
+    MudUtils.stop_log()
 end
 
 function _G.AutoCast.status()
@@ -190,12 +197,19 @@ function _G.AutoCast.status()
     mud.echo("   指令: " .. _G.AutoCast.config.command)
 end
 
+function _G.AutoCast.reload()
+    package.loaded["scripts.autocast"] = nil
+    require("scripts.autocast")
+    mud.echo("[AutoCast] ♻️ 腳本已重新載入")
+end
+
 -- 註冊 Help
 local usage = [[
 指令:
   1. 啟動: /lua AutoCast.start("cast 'sum' boy")
   2. 停止: /lua AutoCast.stop()
   3. 狀態: /lua AutoCast.status()
+  4. 重載: /lua AutoCast.reload()
 說明:
   自動施法直到收到「耗盡精神力」訊息，
   然後自動睡覺 (sleep)，待 MP 回滿後

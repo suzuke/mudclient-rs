@@ -391,6 +391,12 @@ function _G.SkillPlanner.list()
     mud.echo("--------------------------------------------------")
 end
 
+function _G.SkillPlanner.reload()
+    package.loaded["scripts.skillplanner"] = nil
+    require("scripts.skillplanner")
+    mud.echo("[SkillPlanner] ♻️ 腳本已重新載入")
+end
+
 -- 顯示技能的相依樹
 function _G.SkillPlanner.deps(name)
     local db = _G.SkillPlanner.state.db
@@ -436,7 +442,8 @@ function _G.SkillPlanner.init()
   6. 相依查詢: /lua SkillPlanner.deps('holy arrow')
   7. 移除技能: /lua SkillPlanner.remove('fireball')
   8. 清空選擇: /lua SkillPlanner.clear()
-  9. 列出全部: /lua SkillPlanner.list()]]
+  9. 列出全部: /lua SkillPlanner.list()
+  10. 重載腳本: /lua SkillPlanner.reload()]]
 
     mud.echo("========================================")
     mud.echo("✅ SkillPlanner 技能配置規劃工具 (v2.0 相依版)")

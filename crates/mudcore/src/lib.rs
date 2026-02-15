@@ -15,6 +15,7 @@ pub mod buffer;
 pub mod debug_log;
 pub mod encoding;
 pub mod logger;
+pub mod map;
 pub mod paths;
 pub mod script;
 pub mod speedwalk;

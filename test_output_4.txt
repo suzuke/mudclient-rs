@@ -1,0 +1,57 @@
+Running Tests...
+📦 MudUtils
+  ✅ should have correct initial state
+  ✅ should increment run_id
+  ✅ should parse multiple commands
+  ✅ safe_timer should restrict execution by run_id
+📦 MudNav
+  ✅ should walk a simple path
+  ✅ should pause on stamina low
+📦 MudExplorer
+  ✅ should explore a simple Layout
+📦 MudCombat
+DEBUG: MudCombat.do_summon rid=0 current=0 mud=table: 0x14761bb80 cmd=c sum papa
+  ✅ should summon successfully
+DEBUG: MudCombat.do_summon rid=0 current=0 mud=table: 0x14761c5c0 cmd=c sum papa
+DEBUG: MudCombat.do_summon rid=0 current=0 mud=table: 0x14761c5c0 cmd=c sum papa
+  ✅ should retry on failure
+DEBUG: MudCombat.do_summon rid=0 current=0 mud=table: 0x14760b0e0 cmd=c sum papa
+DEBUG: MudCombat.do_summon rid=0 current=0 mud=table: 0x14760b0e0 cmd=c sum papa
+  ✅ should retry on fled
+📦 MobFinder
+DEBUG: mock.sent count: 4
+  [1] repo
+  [2] wa
+  [3] recall
+  [4] n
+DEBUG: MudNav.state.paused = false
+DEBUG: mock.logs count: 17
+  Log[1] ════════════════════════════════════════════════════
+  Log[2]   📜 MobFinder v0.2 (Refactored)
+  Log[3] ════════════════════════════════════════════════════
+  Log[4]   指定 Mob 搜尋腳本 (整合 MudExplorer)
+  Log[5] ────────────────────────────────────────────────
+  Log[6]   📌 可用指令:
+  Log[7]     MobFinder.start(target)   - 🚀 開始搜尋 (可選 target)
+  Log[8]     MobFinder.stop()          - 🛑 停止搜尋
+  Log[9]     MobFinder.status()        - 📊 查看狀態
+  Log[10] ════════════════════════════════════════════════════
+  Log[11] [MobFinder] ═══════════════════════════════════════
+  Log[12] [MobFinder] 🔍 MobFinder 啟動！ v0.2
+  Log[13] [MobFinder]    目標: Otonashi
+  Log[14] [MobFinder]    路徑: n;e
+  Log[15] [MobFinder] ═══════════════════════════════════════
+  Log[16] [MobFinder] 🚀 前往目標區域...
+  Log[17] [MudNav] Detected Exits. Paused=false
+DEBUG: Pre-tick 2 timers count: 1
+  Timer[1] trigger=2.1 code=_G.MudUtils.exec_timer(2, 1)
+  ✅ should travel to area and search
+📦 IkkokuQuest
+  ✅ should integration test start flow
+  ✅ should handle go_keeper fallback
+📦 ItemFarm
+DEBUG: ItemFarm.on_server_message line='他正在這個世界中' running=true
+DEBUG: ItemFarm.on_server_message line='他正在這個世界中' running=true
+DEBUG: ItemFarm.on_server_message line='Ok.' running=true
+  ❌ should run a full summon job cycle
+     Error: scripts/tests/test_runner.lua:7:  Expected 'c sum test', got 'save'

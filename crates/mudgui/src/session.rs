@@ -13,6 +13,7 @@ use mudcore::{
     Alias, AliasManager, Logger, ScriptEngine, Trigger, TriggerAction,
     TriggerManager, TriggerPattern, WindowManager, WindowMessage,
     MudContext, Path, PathManager, PathRecorder, LoopStatus,
+    map::Room,
 };
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -143,6 +144,9 @@ pub struct Session {
     
     /// 連線開始時間
     pub connected_at: Option<Instant>,
+
+    /// 當前房間 ID
+    pub current_room_id: Option<String>,
 
     // === 獨立的管理器（Profile 專屬） ===
     /// 別名管理器
@@ -298,6 +302,7 @@ impl Session {
             command_tx: None,
             message_rx: None,
             connected_at: None,
+            current_room_id: None,
             alias_manager,
             trigger_manager,
             path_manager,
@@ -323,7 +328,7 @@ impl Session {
             detached_window_id: None,
             last_sent_command: None,
             repeat_command_count: 0,
-            line_buffer: std::collections::VecDeque::with_capacity(5),
+            line_buffer: std::collections::VecDeque::with_capacity(20),
         };
 
         // 自動載入 scripts/ 目錄下的腳本
@@ -398,6 +403,166 @@ impl Session {
     }
 
 
+
+    /// 嘗試從行緩衝區偵測房間資訊
+    fn detect_room_info(&mut self, current_line: &str) {
+        // 先移除 ANSI 顏色碼以便比對
+        let clean_current = if current_line.contains('\x1b') {
+            ANSI_STRIP_RE.replace_all(current_line, "").to_string()
+        } else {
+            current_line.to_string()
+        };
+
+        // 1. 檢查是否為出口行
+        // 格式範例: [出口: 北 南] 或 [Exits: north south]
+        if !clean_current.starts_with("[出口:") && !clean_current.starts_with("[Exits:") {
+            return;
+        }
+
+        // 2. 解析出口
+        let exits_str = if let Some(s) = clean_current.strip_prefix("[出口:") {
+            s.trim_end_matches(']')
+        } else if let Some(s) = clean_current.strip_prefix("[Exits:") {
+            s.trim_end_matches(']')
+        } else {
+            return;
+        };
+
+        let exits: Vec<String> = exits_str
+            .split_whitespace()
+            .map(|s| s.to_string())
+            .collect();
+
+        // 3. 回溯尋找房間名稱與描述
+        // 策略: 往回找上一個出口行，中間就是名稱與描述
+        let n = self.line_buffer.len();
+        if n < 2 { return; }
+        
+        // line_buffer 的最後一行 (n-1) 應該就是 current_line (因為剛 push 進去)
+        // 我們從 n-2 開始往回找
+        let mut name_index = 0;
+        let mut found_prev_exit = false;
+        
+        // 限制回溯行數，避免讀到太久以前的雜訊
+        let scan_limit = 12; // 假設房間描述不會超過 12 行
+        let start_index = if n > scan_limit + 1 { n - 1 - scan_limit } else { 0 };
+
+        for i in (start_index..n-1).rev() {
+            let line = &self.line_buffer[i];
+            // 同樣需要移除 ANSI
+            let clean_line = if line.contains('\x1b') {
+                ANSI_STRIP_RE.replace_all(line, "").to_string()
+            } else {
+                line.to_string()
+            };
+            
+            // 檢查是否為上一個出口行
+            if clean_line.starts_with("[出口:") || clean_line.starts_with("[Exits:") {
+                name_index = i + 1;
+                found_prev_exit = true;
+                break;
+            }
+
+            // 檢查是否為 "停止訊號" (Stop Signals)
+            // 這些特徵通常出現在房間名稱之前，表示我們已經回溯到了上一區塊的結尾
+            let trim_line = clean_line.trim();
+            
+            // 1. 指令回顯 (例如 "> w")
+            if trim_line.starts_with('>') {
+                name_index = i + 1;
+                found_prev_exit = true; // 視同找到分隔線
+                break;
+            }
+            
+            // 2. Prompt (如果沒被 filter 掉)
+            if trim_line.starts_with('(') && trim_line.contains('/') && trim_line.contains(')') {
+                name_index = i + 1;
+                found_prev_exit = true;
+                break;
+            }
+            
+            // 3. Mob/物件 (通常包含 "/" 或是特定結尾)
+            // 簡單啟發式：如果包含 "/" 且不是出口行，極有可能是 Mob id
+            if trim_line.contains('/') {
+                 name_index = i + 1;
+                 found_prev_exit = true;
+                 break;
+            }
+            
+            // 4. 系統訊息
+            if trim_line.starts_with("[System]") {
+                name_index = i + 1;
+                found_prev_exit = true;
+                break;
+            }
+        }
+        
+        // 如果沒找到明確的分隔線，且我們回溯到了 start_index
+        if !found_prev_exit {
+            // 如果 buffer 夠大，我們假設 start_index 就是開始？
+            // 這有風險，但比完全不更新好。不過為了避免 "Bad Boy" 變房間名，
+            // 這裡我們選擇保守：如果沒找到分隔，就不更新，除非 buffer 很小 (剛連線)
+            if self.line_buffer.len() >= 20 && start_index > 0 {
+                return;
+            }
+            name_index = 0;
+        }
+        
+        if name_index >= n - 1 {
+            // 沒有中間內容 (例如連續兩個出口行? 不太可能，除非快速移動且 gag 了描述)
+            return;
+        }
+        
+        // 取得名稱 (移除 ANSI)
+        let raw_name = &self.line_buffer[name_index];
+        let name = if raw_name.contains('\x1b') {
+            ANSI_STRIP_RE.replace_all(raw_name, "").to_string()
+        } else {
+            raw_name.to_string()
+        };
+        
+        // 描述是中間的部分 (移除 ANSI)
+        let mut description = String::new();
+        for i in (name_index + 1)..n-1 {
+            if i > name_index + 1 { description.push('\n'); }
+            let raw_desc = &self.line_buffer[i];
+             let clean_desc = if raw_desc.contains('\x1b') {
+                ANSI_STRIP_RE.replace_all(raw_desc, "").to_string()
+            } else {
+                raw_desc.to_string()
+            };
+            description.push_str(&clean_desc);
+        }
+        
+        // 建立 Room 物件
+        let room = Room::new(&name, &description, exits);
+        let id = room.hash();
+        
+        // 總是更新 ID，確保 Look 能觸發
+        // 只有 ID 改變時才寫入 Log，避免刷屏
+        if self.current_room_id.as_deref() != Some(&id) {
+            tracing::info!("Room Detected: {} (ID: {})", name, id);
+        }
+        
+        self.current_room_id = Some(id.clone());
+        self.script_engine.set_current_room_id(Some(id.clone()));
+        
+        // 觸發 Lua Hook: on_room_detected(id, name)
+        // 使用 run_code 或是我們需要新增一個 invoke_hook_with_args?
+        // 為了簡單，我們借用 invoke_hook (name, arg, clean_arg)
+        // 把 id 當作 arg, name 當作 clean_arg
+        // 觸發 Lua Hook: on_room_detected(id, name)
+        match self.script_engine.invoke_hook("on_room_detected", &id, &name) {
+            Ok(Some(context)) => {
+                self.apply_script_context(context);
+            }
+            Ok(None) => {}, // Hook not defined
+            Err(e) => {
+                 tracing::error!("on_room_detected hook error: {}", e);
+            }
+        }
+    }
+
     /// 檢查並執行到期的計時器
     pub fn check_timers(&mut self) {
         if self.active_timers.is_empty() {
@@ -455,10 +620,11 @@ impl Session {
                                 self.apply_script_context(context);
                                 let _ = self.logger.log(&format!("已自動載入腳本: {}", filename));
                                 
-                                self.window_manager.route_message("main", mudcore::WindowMessage {
+                                    self.window_manager.route_message("main", mudcore::WindowMessage {
                                     content: format!("\n[System] 自動載入腳本: {}\n", filename),
                                     preserve_ansi: true,
                                     byte_widths: Vec::new(),
+                                    repeat_count: 1,
                                 });
                             }
                             Err(e) => {
@@ -530,6 +696,7 @@ impl Session {
                     content: text,
                     preserve_ansi: true,
                     byte_widths: Vec::new(),
+                    repeat_count: 1,
                 },
             );
         }
@@ -553,6 +720,27 @@ impl Session {
             if let Some(trigger) = self.trigger_manager.get_mut(&name) {
                 trigger.enabled = enabled;
                 tracing::info!("Script updated trigger '{}' enabled: {}", name, enabled);
+            }
+        }
+        
+        // 7. 日誌控制
+        if let Some(control) = context.log_control {
+            match control {
+                mudcore::script::LogControl::Start(path) => {
+                    if let Err(e) = self.logger.start(&path) {
+                        let _ = self.logger.log(&format!("無法啟動日誌: {}", e));
+                        self.system_message(&format!("⚠️ 無法啟動日誌 '{}': {}", path, e));
+                    } else {
+                        self.system_message(&format!("📝 開始記錄日誌至 '{}'", path));
+                    }
+                }
+                mudcore::script::LogControl::Stop => {
+                    if let Err(e) = self.logger.stop() {
+                        let _ = self.logger.log(&format!("無法停止日誌: {}", e));
+                    } else {
+                        self.system_message("🛑 停止記錄日誌");
+                    }
+                }
             }
         }
     }
@@ -611,11 +799,18 @@ impl Session {
 
             // 0. 呼叫全域鉤子 (Global Hook)
             // 這允許 Lua 腳本直接處理每一行伺服器訊息，無需透過正則表達式觸發器
-            if let Ok(Some(context)) = self.script_engine.invoke_hook("on_server_message", text, &clean_text) {
-                if context.gag {
-                    gagged = true;
+            match self.script_engine.invoke_hook("on_server_message", text, &clean_text) {
+                Ok(Some(context)) => {
+                    if context.gag {
+                        gagged = true;
+                    }
+                    self.apply_script_context(context);
+                },
+                Ok(None) => {}, // Hook not defined
+                Err(e) => {
+                    tracing::error!("on_server_message hook error: {}", e);
+                    self.window_manager.send_to_main(format!("{{r[System] Hook Error: {}{{x}}", e));
                 }
-                self.apply_script_context(context);
             }
 
             // 處理觸發器
@@ -711,8 +906,9 @@ impl Session {
 
         let clean_lower = clean_text.to_lowercase();
         // 優化提示字元偵測：不分大小寫
-        let is_prompt = clean_lower.contains('(') && clean_lower.contains('/') && 
-                        (clean_lower.contains('h') || clean_lower.contains('m') || clean_lower.contains('v'));
+        // 1. 標準 Prompt: (hp.../...)
+        // 2. 純數值 Prompt: (123/123 456/456 ...)
+        let is_prompt = clean_lower.starts_with('(') && clean_lower.contains('/') && clean_lower.contains(')');
 
         // 如果是房間敘述，且非出口行、非 Prompt、非 Echo，則進行標點轉換
         let is_exit_line = clean_text.contains("[出口:");
@@ -750,6 +946,7 @@ impl Session {
                 content: final_text.clone(),
                 preserve_ansi: !is_echo,
                 byte_widths: final_widths.clone(),
+                repeat_count: 1,
             };
             
             self.window_manager.route_message_with_widths(
@@ -760,10 +957,13 @@ impl Session {
 
         // 更新 Line Buffer (只存非空、非 Prompt、非系統訊息)
         if !text.trim().is_empty() && !is_prompt && !text.starts_with(">>>") {
-            if self.line_buffer.len() >= 5 {
+            if self.line_buffer.len() >= 20 {
                 self.line_buffer.pop_front();
             }
             self.line_buffer.push_back(text.trim().to_string());
+            
+            // 嘗試偵測房間
+            self.detect_room_info(text.trim());
         }
 
         // --- 迴圈偵測 ---
@@ -1196,6 +1396,7 @@ impl Session {
             content: format!("\n[System] {}\n", msg),
             preserve_ansi: true,
             byte_widths: Vec::new(),
+            repeat_count: 1,
         });
     }
 

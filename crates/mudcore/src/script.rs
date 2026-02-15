@@ -1,10 +1,7 @@
-//! Lua 腳本支援模組
-//!
-//! 使用 mlua 整合 Lua 腳本引擎
-
 use mlua::Lua;
 use std::collections::HashMap;
 use thiserror::Error;
+use std::cell::RefCell;
 
 /// 腳本執行錯誤
 #[derive(Debug, Error)]
@@ -20,6 +17,13 @@ impl From<mlua::Error> for ScriptError {
     fn from(err: mlua::Error) -> Self {
         ScriptError::Lua(err.to_string())
     }
+}
+
+/// 日誌控制指令
+#[derive(Debug, Clone, PartialEq)]
+pub enum LogControl {
+    Start(String),
+    Stop,
 }
 
 /// MUD 腳本上下文（腳本執行後的結果）
@@ -43,6 +47,9 @@ pub struct MudContext {
     /// 寫入日誌的訊息
     pub log_messages: Vec<String>,
     
+    /// 日誌控制指令
+    pub log_control: Option<LogControl>,
+    
     /// 延遲執行的 Timer (delay_ms, lua_code)
     pub timers: Vec<(u64, String)>,
     
@@ -63,9 +70,11 @@ pub struct ScriptEngine {
     /// 已載入的腳本
     scripts: HashMap<String, String>,
     /// 持久化變數（跨觸發器共享）
-    persistent_vars: std::cell::RefCell<HashMap<String, String>>,
+    persistent_vars: RefCell<HashMap<String, String>>,
     /// 腳本目錄的絕對路徑，用於 dofile 查找
     scripts_dir: Option<String>,
+    /// 當前房間 ID (Thread-local storage concept within engine)
+    current_room_id: RefCell<Option<String>>,
 }
 
 impl ScriptEngine {
@@ -75,14 +84,20 @@ impl ScriptEngine {
         Self {
             lua,
             scripts: HashMap::new(),
-            persistent_vars: std::cell::RefCell::new(HashMap::new()),
+            persistent_vars: RefCell::new(HashMap::new()),
             scripts_dir: None,
+            current_room_id: RefCell::new(None),
         }
     }
 
     /// 設定腳本目錄路徑（供 dofile 查找）
     pub fn set_scripts_dir(&mut self, dir: impl Into<String>) {
         self.scripts_dir = Some(dir.into());
+    }
+
+    /// 設定當前房間 ID
+    pub fn set_current_room_id(&self, id: Option<String>) {
+        *self.current_room_id.borrow_mut() = id;
     }
 
     /// 載入腳本
@@ -188,6 +203,10 @@ impl ScriptEngine {
             
             // gag 標記
             mud.set("gag", false)?;
+
+            // Log Control
+            let log_control = self.lua.create_table()?;
+            mud.set("_log_control", log_control)?; // Internal use
             
             // 是否為回顯
             mud.set("is_echo", is_echo)?;
@@ -218,7 +237,10 @@ impl ScriptEngine {
                 echos.set(len, text)?;
                 Ok(())
             })?;
-            mud.set("echo", echo_fn)?;
+            mud.set("echo", echo_fn.clone())?;
+            
+            // 覆寫 print 為 mud.echo
+            self.lua.globals().set("print", echo_fn)?;
             
             // mud.window(name, text) 函數 - 輸出到子視窗
             let window_fn = scope.create_function(|lua, (name, text): (String, String)| {
@@ -243,6 +265,25 @@ impl ScriptEngine {
                 Ok(())
             })?;
             mud.set("log", log_fn)?;
+
+            // mud.start_log(path)
+            let start_log_fn = scope.create_function(|lua, path: String| {
+                let mud: mlua::Table = lua.globals().get("mud")?;
+                let ctrl: mlua::Table = mud.get("_log_control")?;
+                ctrl.set("action", "start")?;
+                ctrl.set("path", path)?;
+                Ok(())
+            })?;
+            mud.set("start_log", start_log_fn)?;
+
+            // mud.stop_log()
+            let stop_log_fn = scope.create_function(|lua, ()| {
+                let mud: mlua::Table = lua.globals().get("mud")?;
+                let ctrl: mlua::Table = mud.get("_log_control")?;
+                ctrl.set("action", "stop")?;
+                Ok(())
+            })?;
+            mud.set("stop_log", stop_log_fn)?;
             
             // mud.timer(seconds, code) 函數 - 延遲執行
             let timer_fn = scope.create_function(|lua, (seconds, lua_code): (f64, String)| {
@@ -269,6 +310,20 @@ impl ScriptEngine {
                 Ok(())
             })?;
             mud.set("enable_trigger", enable_trigger_fn)?;
+
+            // mud.get_room_id(name, desc, exits) -> string
+            let get_room_id_fn = scope.create_function(|_lua, (name, desc, exits): (String, String, Vec<String>)| {
+                let room = crate::map::Room::new(&name, &desc, exits);
+                Ok(room.hash())
+            })?;
+            mud.set("get_room_id", get_room_id_fn)?;
+
+            // mud.get_current_room_id() -> string | nil
+            let current_room_id = self.current_room_id.borrow().clone();
+            let get_current_room_id_fn = scope.create_function(move |_lua, ()| {
+                Ok(current_room_id.clone())
+            })?;
+            mud.set("get_current_room_id", get_current_room_id_fn)?;
             
             // 設置全局變數
             self.lua.globals().set("mud", mud)?;
@@ -374,6 +429,19 @@ impl ScriptEngine {
                 for pair in logs.pairs::<i64, String>() {
                     if let Ok((_, msg)) = pair {
                         context.log_messages.push(msg);
+                    }
+                }
+            }
+
+            // 收集 log_control
+            if let Ok(ctrl) = mud.get::<mlua::Table>("_log_control") {
+                if let Ok(action) = ctrl.get::<String>("action") {
+                    if action == "start" {
+                        if let Ok(path) = ctrl.get::<String>("path") {
+                            context.log_control = Some(LogControl::Start(path));
+                        }
+                    } else if action == "stop" {
+                         context.log_control = Some(LogControl::Stop);
                     }
                 }
             }

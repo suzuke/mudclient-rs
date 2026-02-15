@@ -100,6 +100,12 @@ function _G.Ticker.list()
     mud.echo("==========================")
 end
 
+function _G.Ticker.reload()
+    package.loaded["scripts.ticker"] = nil
+    require("scripts.ticker")
+    mud.echo("[Ticker] ♻️ 腳本已重新載入")
+end
+
 local usage = [[
 使用說明:
   1. 新增: /lua Ticker.add('name', seconds, 'cmd')

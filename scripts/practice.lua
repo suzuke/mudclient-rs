@@ -43,19 +43,27 @@ _G.Practice.known_spell_types = {
 }
 
 -- ===== Hook 系統 =====
--- 確保與 MemCalc 等其他腳本共存
-if not _G.Practice.hook_installed then
-    local old_hook = _G.on_server_message
-    _G.on_server_message = function(line, clean_line)
-        -- 先執行舊的 (例如 MemCalc)
-        if old_hook then old_hook(line, clean_line) end
-        -- 再執行我們的
+-- 為了避免重複包裝 (Nesting)，我們需要更謹慎地處理 Hook
+if _G.Practice.hook_installed and _G.Practice._original_hook then
+    _G.on_server_message = _G.Practice._original_hook
+end
+if not _G.Practice._original_hook then
+    _G.Practice._original_hook = _G.on_server_message
+end
+local base_hook = _G.Practice._original_hook
+
+_G.on_server_message = function(line, clean_line)
+    local status, err = pcall(function()
+        if base_hook then base_hook(line, clean_line) end
         if _G.Practice and _G.Practice.on_server_message then
             _G.Practice.on_server_message(line, clean_line)
         end
+    end)
+    if not status then
+        mud.echo("CRITICAL HOOK ERROR (Practice): " .. tostring(err))
     end
-    _G.Practice.hook_installed = true
 end
+_G.Practice.hook_installed = true
 
 -- 伺服器訊息處理 (掃描核心)
 function _G.Practice.on_server_message(line, clean_line)
@@ -340,6 +348,12 @@ function _G.Practice.status()
     end
 end
 
+function _G.Practice.reload()
+    package.loaded["scripts.practice"] = nil
+    require("scripts.practice")
+    mud.echo("[Practice] ♻️ 腳本已重新載入")
+end
+
 -- 初始化顯示
 -- 初始化顯示
 local usage = [[
@@ -347,7 +361,8 @@ local usage = [[
   1. 自動掃描: /lua Practice.scan()
   2. 開始練習: /lua Practice.start('target')
   3. 停止練習: /lua Practice.stop()
-  4. 查看狀態: /lua Practice.status()]]
+  4. 查看狀態: /lua Practice.status()
+  5. 重載腳本: /lua Practice.reload()]]
 
 mud.echo("========================================")
 mud.echo("✅ Practice 自動練習腳本 (v2.0 掃描版)")

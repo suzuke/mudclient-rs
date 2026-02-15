@@ -30,7 +30,8 @@ function _G.MemCalc.init()
   4. 完整掃描: /lua MemCalc.scan_full()
      (含相依性，耗時較長)
   5. 停止掃描: /lua MemCalc.stop_scan()
-  6. 儲存資料: /lua MemCalc.save()]]
+  6. 儲存資料: /lua MemCalc.save()
+  7. 重載腳本: /lua MemCalc.reload()]]
 
     mud.echo("========================================")
     mud.echo("✅ MemCalc 記憶計算機 (v5.0 完整掃描版)")
@@ -274,20 +275,28 @@ function _G.MemCalc.array_contains(arr, val)
     return false
 end
 
--- 全域 Server Message Hook (使用鏈接模式)
--- 確保與 Practice 等其他腳本共存
-if not _G.MemCalc.hook_installed then
-    local old_hook = _G.on_server_message
-    _G.on_server_message = function(line, clean_line)
-        -- 先執行舊的 hook (例如 Practice)
-        if old_hook then old_hook(line, clean_line) end
-        -- 再執行 MemCalc 的處理
+-- ===== Hook =====
+-- 為了避免重複包裝 (Nesting)，我們需要更謹慎地處理 Hook
+if _G.MemCalc.hook_installed and _G.MemCalc._original_hook then
+    _G.on_server_message = _G.MemCalc._original_hook
+end
+if not _G.MemCalc._original_hook then
+    _G.MemCalc._original_hook = _G.on_server_message
+end
+local base_hook = _G.MemCalc._original_hook
+
+_G.on_server_message = function(line, clean_line)
+    local status, err = pcall(function()
+        if base_hook then base_hook(line, clean_line) end
         if _G.MemCalc and _G.MemCalc.on_server_message then
             _G.MemCalc.on_server_message(line, clean_line)
         end
+    end)
+    if not status then
+        mud.echo("CRITICAL HOOK ERROR (MemCalc): " .. tostring(err))
     end
-    _G.MemCalc.hook_installed = true
 end
+_G.MemCalc.hook_installed = true
 
 function _G.MemCalc.on_server_message(line, clean_line)
     -- local clean_line = string.match(line, "^%s*(.-)%s*$") -- 這裡先不 match，保留原始空白結構，或使用 Rust 傳來的版本
@@ -774,6 +783,12 @@ function _G.MemCalc.db_status()
     mud.echo("📊 技能資料庫狀態:")
     mud.echo(string.format("   總計: %d 項 (法術: %d, 技能: %d)", count, spell_count, skill_count))
     mud.echo("   路徑: " .. _G.MemCalc.DB_PATH)
+end
+
+function _G.MemCalc.reload()
+    package.loaded["scripts.memcalc"] = nil
+    require("scripts.memcalc")
+    mud.echo("[MemCalc] ♻️ 腳本已重新載入")
 end
 
 _G.MemCalc.init()

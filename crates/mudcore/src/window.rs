@@ -16,6 +16,8 @@ pub struct WindowMessage {
     pub preserve_ansi: bool,
     /// 原始位元組寬度映射 (選填)
     pub byte_widths: Vec<u8>,
+    /// 重複計數 (Log Folding)
+    pub repeat_count: usize,
 }
 
 impl WindowMessage {
@@ -24,6 +26,7 @@ impl WindowMessage {
             content: content.into(),
             preserve_ansi: true,
             byte_widths: Vec::new(),
+            repeat_count: 1,
         }
     }
     
@@ -193,6 +196,7 @@ impl WindowManager {
             content: content.into(),
             preserve_ansi: true,
             byte_widths: Vec::new(),
+            repeat_count: 1,
         });
     }
 }
@@ -226,6 +230,7 @@ mod tests {
             content: "Hello".to_string(),
             preserve_ansi: true,
             byte_widths: Vec::new(),
+            repeat_count: 1,
         });
         
         assert_eq!(manager.get("chat").unwrap().message_count(), 1);
@@ -246,6 +251,7 @@ mod tests {
                 content: format!("Message {}", i),
                 preserve_ansi: false,
                 byte_widths: Vec::new(),
+                repeat_count: 1,
             });
         }
         
