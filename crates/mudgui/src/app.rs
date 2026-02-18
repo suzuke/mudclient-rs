@@ -430,6 +430,11 @@ impl MudApp {
                                                      let _ = msg_tx.send((format!(">>> 自動登入(密碼)失敗: {}\n", e), Vec::new())).await;
                                                 } else {
                                                     let _ = msg_tx.send((">>> 已嘗試自動登入\n".to_string(), Vec::new())).await;
+                                                    
+                                                    // 延遲並發送空指令，確保能排除可能殘留在伺服器輸入緩衝區的任何干擾
+                                                    // 增加延遲到 1000ms 確保伺服器已完全進入遊戲狀態
+                                                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                                                    let _ = client.send("").await;
                                                 }
                                             }
                                         }
@@ -1838,8 +1843,10 @@ impl MudApp {
     /// 繪製 Profile 管理視窗 (含連線與新增/編輯/刪除)
     fn render_profile_window(&mut self, ctx: &egui::Context) {
         egui::Window::new("👤 連線管理")
+            .default_width(400.0)
+            .default_height(500.0)
             .collapsible(false)
-            .resizable(false)
+            .resizable(true)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.heading("Profile 列表");
@@ -1866,7 +1873,7 @@ impl MudApp {
                     ui.label("尚無任何 Profile。");
                     ui.add_space(10.0);
                 } else {
-                    egui::ScrollArea::vertical().max_height(250.0).show(ui, |ui| {
+                    egui::ScrollArea::vertical().max_height(ui.available_height()).show(ui, |ui| {
                         for (name, display_name, host, port, username) in &profiles {
                             ui.group(|ui| {
                                 ui.horizontal(|ui| {

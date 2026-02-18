@@ -136,7 +136,10 @@ impl TelnetOption {
             Self::Mccp2 => 86,
             Self::Mccp3 => 87,
             Self::Gmcp => 201,
-            Self::Unknown(b) => *b,
+            Self::Unknown(b) => {
+                // Log unknown options for debugging
+                *b
+            },
         }
     }
 }
@@ -249,9 +252,9 @@ pub fn generate_refusal(cmd: TelnetCommand, option: TelnetOption) -> Vec<u8> {
         _ => return vec![],
     };
 
-    // 對於 ECHO 和 SGA，我們接受
+    // 對於 SGA，我們接受；對於 ECHO，我們選擇忽略（避免在切換遊戲模式時產生干擾位元組）
     let response_cmd = match option {
-        TelnetOption::Echo | TelnetOption::SuppressGoAhead => {
+        TelnetOption::SuppressGoAhead => {
             if cmd == TelnetCommand::Will {
                 TelnetCommand::Do
             } else if cmd == TelnetCommand::Do {
@@ -260,6 +263,7 @@ pub fn generate_refusal(cmd: TelnetCommand, option: TelnetOption) -> Vec<u8> {
                 response_cmd
             }
         }
+        TelnetOption::Echo => return vec![], // 強制忽略 ECHO，不發送任何回應以保持輸入緩衝區乾淨
         _ => {
             if cmd == TelnetCommand::Do {
                 TelnetCommand::Wont
@@ -322,9 +326,9 @@ mod tests {
     }
 
     #[test]
-    fn test_accept_echo() {
+    fn test_ignore_echo() {
         let response = generate_refusal(TelnetCommand::Will, TelnetOption::Echo);
-        assert_eq!(response, vec![IAC, TelnetCommand::Do as u8, TelnetOption::Echo.as_byte()]);
+        assert!(response.is_empty());
     }
 
     #[test]

@@ -17,6 +17,7 @@ fn main() -> eframe::Result<()> {
             .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")))
         .init();
 
+
     // 載入圖示
     let icon = load_icon();
 

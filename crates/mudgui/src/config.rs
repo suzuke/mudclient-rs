@@ -192,7 +192,7 @@ impl Default for UiConfig {
 }
 
 /// 全域設定（跨 Profile 共用）
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalConfig {
     /// 全域別名（所有連線生效）
     #[serde(default)]
@@ -213,6 +213,18 @@ pub struct GlobalConfig {
 
 fn default_config_version() -> u32 {
     2 // 版本 2 = 多 Profile 架構
+}
+
+impl Default for GlobalConfig {
+    fn default() -> Self {
+        Self {
+            global_aliases: Vec::new(),
+            global_triggers: Vec::new(),
+            auto_connect_profiles: Vec::new(),
+            ui: UiConfig::default(),
+            config_version: default_config_version(),
+        }
+    }
 }
 
 impl GlobalConfig {

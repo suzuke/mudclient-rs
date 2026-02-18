@@ -71,6 +71,8 @@ pub struct TelnetClient {
     pending_ansi: Vec<(String, usize)>,
     /// 暫存尚未完整的 ANSI 序列 (以 ESC \x1b 開頭)
     ansi_buffer: Vec<u8>,
+    /// 待發送的原始位元組緩衝區
+    outgoing_buffer: Vec<u8>,
     /// Big5 解碼器（保留用於相容，但已切換為手動狀態機處理）
     _decoder: encoding_rs::Decoder,
 }
@@ -84,6 +86,7 @@ impl TelnetClient {
             state: ConnectionState::Disconnected,
             raw_buffer: Vec::new(),
             text_buffer: Vec::new(),
+            outgoing_buffer: Vec::new(),
             pending_ansi: Vec::new(),
             ansi_buffer: Vec::new(),
             _decoder: encoding_rs::BIG5.new_decoder(),
@@ -148,25 +151,45 @@ impl TelnetClient {
         info!("已斷開連線");
     }
 
+    /// 將待發送緩衝區的資料寫入網路
+    pub async fn flush_outgoing(&mut self) -> Result<(), TelnetError> {
+        let stream = self.stream.as_mut().ok_or(TelnetError::NotConnected)?;
+        
+        while !self.outgoing_buffer.is_empty() {
+            // write() 是 cancellation-safe 的，如果在此被取消，剩下的資料仍留在 outgoing_buffer
+            match stream.write(&self.outgoing_buffer).await {
+                Ok(0) => {
+                    self.state = ConnectionState::Disconnected;
+                    return Err(TelnetError::NotConnected);
+                }
+                Ok(n) => {
+                    self.outgoing_buffer.drain(..n);
+                }
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    break;
+                }
+                Err(e) => return Err(TelnetError::ConnectionFailed(e)),
+            }
+        }
+        
+        Ok(())
+    }
+
     /// 發送文字到伺服器（會自動編碼為 Big5 並加上 CRLF）
     pub async fn send(&mut self, text: &str) -> Result<(), TelnetError> {
-        let stream = self.stream.as_mut().ok_or(TelnetError::NotConnected)?;
-
         let mut data = encode_big5(text);
         data.extend_from_slice(b"\r\n");
-
-        stream.write_all(&data).await?;
-        stream.flush().await?;
-
+        self.outgoing_buffer.extend_from_slice(&data);
+        
+        self.flush_outgoing().await?;
         debug!("已發送: {}", text);
         Ok(())
     }
 
     /// 發送原始位元組到伺服器
     pub async fn send_raw(&mut self, data: &[u8]) -> Result<(), TelnetError> {
-        let stream = self.stream.as_mut().ok_or(TelnetError::NotConnected)?;
-        stream.write_all(data).await?;
-        stream.flush().await?;
+        self.outgoing_buffer.extend_from_slice(data);
+        self.flush_outgoing().await?;
         Ok(())
     }
 
@@ -185,7 +208,6 @@ impl TelnetClient {
         }
 
         self.raw_buffer.extend_from_slice(&buffer[..n]);
-        crate::debug_log::DebugLogger::log_bytes("READ_RAW", &buffer[..n]);
 
         let (text_bytes, events, consumed) = parse_telnet_data(&self.raw_buffer);
         self.raw_buffer.drain(..consumed);
@@ -193,14 +215,21 @@ impl TelnetClient {
         // 處理 Telnet 事件
         for event in events {
             if let TelnetEvent::Command(cmd, option) = event {
+                
                 let response = generate_refusal(cmd, option);
                 if !response.is_empty() {
-                    let _ = self.send_raw(&response).await;
+                    // 將回應放入緩衝區，等讀取完成後統一發送或由 flush 調用
+                    self.outgoing_buffer.extend_from_slice(&response);
                 }
+            } else if let TelnetEvent::Subnegotiation(option, data) = event {
             }
         }
 
         let (final_output, final_widths) = self.process_byte_stream(&text_bytes);
+        
+        // 確保任何 Telnet 回應都被發送
+        let _ = self.flush_outgoing().await;
+        
         Ok((final_output, final_widths))
     }
 
