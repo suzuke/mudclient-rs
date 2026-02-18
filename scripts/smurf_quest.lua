@@ -195,7 +195,7 @@ local step_handlers = {}
 
 function step_handlers.summon_papa_1(rid)
     _G.SmurfQuest.echo("✨ 召喚小精靈老爸 (第一次)...")
-    MudCombat.safe_summon("小精靈老爸", "c sum papa", {max_retries=10, retry_delay=3.0, verify_delay=1.0}, 
+    MudCombat.safe_summon("小精靈老爸", "c sum papa", {max_retries=10, retry_delay=3.0, verify_delay=3.0}, 
         function() 
             _G.SmurfQuest.echo("✅ 老爸召喚成功！")
             -- Give a small delay before advancing to ensure state is stable
@@ -228,7 +228,7 @@ function step_handlers.summon_papa_2(rid)
     -- Delayed summon to allow move?
     MudUtils.safe_timer(0.5, function(new_rid)
         if not MudUtils.check_run(new_rid) then return end
-        MudCombat.safe_summon("小精靈老爸", "c sum papa", {max_retries=10, retry_delay=3.0, verify_delay=1.0}, 
+        MudCombat.safe_summon("小精靈老爸", "c sum papa", {max_retries=10, retry_delay=3.0, verify_delay=3.0}, 
             function() 
                 _G.SmurfQuest.echo("✅ 老爸召喚成功！")
                 _G.SmurfQuest.advance_step(new_rid) 

@@ -59,7 +59,7 @@ function MudCombat.safe_summon(target_name, summon_cmd, options, on_success, on_
     options = options or {}
     s.max_retries = options.max_retries or 3
     s.retry_delay = options.retry_delay or 2.0
-    s.verify_delay = options.verify_delay or 1.0
+    s.verify_delay = options.verify_delay or 2.0
     s.retries = 0
     s.pending_verification = false
     s.attempt_id = s.attempt_id + 1  -- 遞增，使舊 timer 失效
@@ -151,10 +151,11 @@ function MudCombat.on_server_message(line)
             return true
         end
         
-        -- Flee: "Papa 往北邊離開了"
-        if string.find(line, s.target_name .. ".*往.*離開了") then
+        -- Flee: "Papa 往北邊離開了" 或 "Papa 離開了"
+        -- 使用更寬鬆的匹配，只要包含名字且含「離開」關鍵字
+        if string.find(line, s.target_name, 1, true) and (string.find(line, "離開") or string.find(line, "消失")) then
             if s.pending_verification then
-                if MudCombat.config.debug then mud.echo("[MudCombat] Target fled during verification!") end
+                if MudCombat.config.debug then mud.echo("[MudCombat] Target fled/vanished during verification!") end
                 s.pending_verification = false 
                 MudCombat.retry_summon()
                 return true
