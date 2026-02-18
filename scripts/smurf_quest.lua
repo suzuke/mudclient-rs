@@ -197,10 +197,17 @@ function step_handlers.summon_papa_1(rid)
     MudCombat.safe_summon("小精靈老爸", "c sum papa", {max_retries=10, retry_delay=3.0, verify_delay=1.0}, 
         function() 
             _G.SmurfQuest.echo("✅ 老爸召喚成功！")
-            _G.SmurfQuest.advance_step(rid) 
+            -- Give a small delay before advancing to ensure state is stable
+            MudUtils.safe_timer(1.0, function(new_rid)
+                 if MudUtils.check_run(new_rid) then
+                     _G.SmurfQuest.advance_step(new_rid) 
+                 end
+            end)
         end,
         function() 
             _G.SmurfQuest.echo("❌ 召喚失敗次數過多！")
+            -- Instead of stopping, maybe we should restart the quest if loop mode?
+            -- For now, just stop.
             _G.SmurfQuest.stop()
         end
     )
@@ -404,15 +411,37 @@ function _G.SmurfQuest.on_server_message(clean_line)
     if not s.running then return end
     
     -- Pre-check Logic
-    if s.check_waiting and match_pattern(clean_line, "MOB_ALIVE") then
-        s.check_waiting = false
-        s.check_index = s.check_index + 1
-        MudUtils.safe_timer(0.5, _G.SmurfQuest.perform_check)
-        return
+    if s.check_waiting then
+        if match_pattern(clean_line, "MOB_ALIVE") then
+            if _G.SmurfQuest.config.debug then _G.SmurfQuest.echo("DEBUG: Pattern matched MOB_ALIVE on line: " .. clean_line) end
+            s.check_waiting = false
+            s.check_index = s.check_index + 1
+            MudUtils.safe_timer(0.5, _G.SmurfQuest.perform_check)
+            return
+        elseif match_pattern(clean_line, "MOB_NOT_FOUND") then
+            if _G.SmurfQuest.config.debug then _G.SmurfQuest.echo("DEBUG: Pattern matched MOB_NOT_FOUND on line: " .. clean_line) end
+            _G.SmurfQuest.echo("❌ 目標不存在: " .. (s.check_targets[s.check_index] or "unknown"))
+            s.check_waiting = false
+            -- 如果目標不存在，可能需要重試或停止，這裡先選擇暫停並提示
+            _G.SmurfQuest.echo("⚠️ 任務依賴目標缺失，請確認後重新執行。")
+            _G.SmurfQuest.stop()
+            return
+        end
+        
+        if _G.SmurfQuest.config.debug then
+             -- Only log potential matches or interesting lines to avoid spam
+             if clean_line:find("他正在") or clean_line:find("不存在") then
+                 _G.SmurfQuest.echo("DEBUG: Ignored line during check: " .. clean_line .. " (Hex: " .. MudUtils.string_to_hex(clean_line) .. ")")
+             end
+        end
     end
-    -- ... (Handling MOB_NOT_FOUND)
     
     -- Combat Logic
+    -- Route messages to MudCombat for summon verification/combat detection
+    if MudCombat and MudCombat.on_server_message then
+        MudCombat.on_server_message(clean_line)
+    end
+
     if s.combat_target and (clean_line:find(s.combat_target) or clean_line:lower():find(s.combat_target)) then
          s.target_found = true
     end
@@ -470,7 +499,12 @@ function _G.SmurfQuest.init()
     MudUtils.register_quest("SmurfQuest", _G.SmurfQuest.stop)
     mud.send("i")
     
-    _G.SmurfQuest.perform_check(MudUtils.run_id)
+    -- Delay check to avoid output interleaving with inventory
+    MudUtils.safe_timer(1.0, function(rid)
+        if MudUtils.check_run(rid) then
+            _G.SmurfQuest.perform_check(rid)
+        end
+    end)
     MudUtils.safe_timer(CONSTANTS.TIMER_WATCHDOG_CHECK, _G.SmurfQuest.watchdog)
 end
 

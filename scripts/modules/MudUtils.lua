@@ -36,6 +36,12 @@ function MudUtils.parse_cmds(str)
     return result
 end
 
+function MudUtils.string_to_hex(str)
+    return (str:gsub('.', function (c)
+        return string.format('%02X ', string.byte(c))
+    end))
+end
+
 function MudUtils.safe_timer(seconds, callback)
     local rid = MudUtils.run_id
     MudUtils.callback_id = MudUtils.callback_id + 1
@@ -113,7 +119,8 @@ end
 function MudUtils.start_log(prefix)
     if mud and mud.start_log then
         local ts = os.time()
-        local filename = string.format("%s_%s.txt", prefix, ts)
+        -- Ensure logs directory exists or use it
+        local filename = string.format("logs/%s_%s.txt", prefix, ts)
         mud.start_log(filename)
         mud.echo("📝 [Log] 開始紀錄至 " .. filename)
     end
