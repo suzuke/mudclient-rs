@@ -187,21 +187,40 @@ function MudUtils.on_server_message(line, clean_line)
     end
 end
 
--- 為了方便整合，MudUtils 也可以被註冊到全域 Hook
--- 修正：避免巢狀包裹 (Nesting)
-if not MudUtils.hook_installed then
-    if _G.on_server_message ~= MudUtils.on_server_message then
-        MudUtils._base_hook = _G.on_server_message
-        _G.on_server_message = function(line, clean_line)
-            if MudUtils._base_hook then 
-                local status, err = pcall(MudUtils._base_hook, line, clean_line)
-                if not status then mud.echo("MudUtils Base Hook Error: " .. tostring(err)) end
+-- ===== Hook Registry =====
+-- 統一的 on_server_message hook 管理，避免 reload 後巢狀疊加
+
+MudUtils.hook_registry = MudUtils.hook_registry or {}
+
+--- 註冊一個 on_server_message hook
+--- @param name string 唯一名稱（重複註冊會覆蓋舊的）
+--- @param fn function(line, clean_line) 回呼函數
+function MudUtils.register_hook(name, fn)
+    MudUtils.hook_registry[name] = fn
+end
+
+--- 移除指定的 hook
+--- @param name string
+function MudUtils.unregister_hook(name)
+    MudUtils.hook_registry[name] = nil
+end
+
+-- 自動註冊 MudUtils 自己的 hook
+MudUtils.register_hook("MudUtils", MudUtils.on_server_message)
+
+-- 設定全域 on_server_message 為 registry dispatcher
+-- 只設定一次，reload 時 registry 內容會被覆蓋但 dispatcher 不變
+if not MudUtils._dispatcher_installed then
+    _G.on_server_message = function(line, clean_line)
+        for name, fn in pairs(MudUtils.hook_registry) do
+            local ok, err = pcall(fn, line, clean_line)
+            if not ok and mud then
+                mud.echo("[Hook Error: " .. name .. "] " .. tostring(err))
             end
-            local status, err = pcall(MudUtils.on_server_message, line, clean_line)
-            if not status then mud.echo("MudUtils Message Hook Error: " .. tostring(err)) end
         end
-        MudUtils.hook_installed = true
     end
+    MudUtils._dispatcher_installed = true
 end
 
 return MudUtils
+

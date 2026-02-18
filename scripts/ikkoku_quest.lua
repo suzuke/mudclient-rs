@@ -69,57 +69,7 @@ local QUEST_STEPS = {
 local STEP_BY_NAME = {}
 for i, step in ipairs(QUEST_STEPS) do STEP_BY_NAME[step.name] = i end
 
--- ===== 狀態 =====
-_G.IkkokuQuest.state = {
-    running = false,
-    run_id = 0,
-    step_index = 0,
-    phase = "idle",
-    watchdog_last = 0,
-    finding = false, -- 是否由 MudExplorer 接管
-}
 
-local function check_run(rid)
-    return rid == _G.IkkokuQuest.state.run_id
-end
-
-function _G.IkkokuQuest.echo(msg)
-    mud.echo("[IkkokuQuest] " .. msg)
-end
-
--- 輔助函數: 發送可能包含分號的複合指令
-function _G.IkkokuQuest.send_cmds(str)
-    local cmds = MudUtils.parse_cmds(str)
-    for _, cmd in ipairs(cmds) do
-        mud.send(cmd)
-    end
-end
-
--- ===== 公開 API =====
-
-function _G.IkkokuQuest.start()
-    if _G.IkkokuQuest.state.running then
-        _G.IkkokuQuest.echo("⚠️ 任務已在執行中")
-        return
-    end
-
-    _G.IkkokuQuest.state.running = true
-    _G.IkkokuQuest.state.run_id = MudUtils.get_new_run_id()
-    _G.IkkokuQuest.state.step_index = 1
-    _G.IkkokuQuest.state.phase = "starting"
-    _G.IkkokuQuest.state.finding = false
-    
-    -- 開始 Log
-    MudUtils.start_log("ikkoku")
-
-    -- 註冊並檢查物品
-    MudUtils.register_quest("IkkokuQuest", _G.IkkokuQuest.stop)
-    mud.send("i")
-
-    _G.IkkokuQuest.echo("🚀 啟動相聚一刻任務！")
-    
-    _G.IkkokuQuest.check_npc_existence(_G.IkkokuQuest.state.run_id)
-end
 
 -- 必須存在的 NPC 列表 (ID)
 local REQUIRED_NPCS = {
@@ -146,7 +96,23 @@ _G.IkkokuQuest.state = {
     checking_npc_name = nil, -- 當前正在檢查的 NPC
 }
 
--- ... (check_run, echo, send_cmds remain)
+local function check_run(rid)
+    return rid == _G.IkkokuQuest.state.run_id
+end
+
+function _G.IkkokuQuest.echo(msg)
+    mud.echo("[IkkokuQuest] " .. msg)
+end
+
+-- 輔助函數: 發送可能包含分號的複合指令
+function _G.IkkokuQuest.send_cmds(str)
+    local cmds = MudUtils.parse_cmds(str)
+    for _, cmd in ipairs(cmds) do
+        mud.send(cmd)
+    end
+end
+
+
 
 -- ===== 公開 API =====
 
@@ -584,32 +550,10 @@ function _G.IkkokuQuest.advance_step(rid)
     end
 end
 
--- ===== Server Hook =====
--- 為了避免重複包裝 (Nesting)，我們需要更謹慎地處理 Hook
--- 如果已經安裝過，先恢復原始 Hook 再重新安裝新版本
-if _G.IkkokuQuest.hook_installed and _G.IkkokuQuest._original_hook then
-    _G.on_server_message = _G.IkkokuQuest._original_hook
-end
-
--- 紀錄原始 Hook (如果是第一次載入)
-if not _G.IkkokuQuest._original_hook then
-    _G.IkkokuQuest._original_hook = _G.on_server_message
-end
-
-local base_hook = _G.IkkokuQuest._original_hook
-
-_G.on_server_message = function(line, clean_line)
-    local status, err = pcall(function()
-        if base_hook then base_hook(line, clean_line) end
-        if _G.IkkokuQuest and _G.IkkokuQuest.on_server_message then
-            _G.IkkokuQuest.on_server_message(line, clean_line)
-        end
-    end)
-    if not status then
-        mud.echo("CRITICAL HOOK ERROR: " .. tostring(err))
-    end
-end
-_G.IkkokuQuest.hook_installed = true
+-- ===== Hook Registry =====
+MudUtils.register_hook("IkkokuQuest", function(line, clean_line)
+    _G.IkkokuQuest.on_server_message(line, clean_line)
+end)
 
 function _G.IkkokuQuest.on_server_message(line, clean_line)
     if not _G.IkkokuQuest.state.running then return end
@@ -618,16 +562,7 @@ function _G.IkkokuQuest.on_server_message(line, clean_line)
         mud.echo("[IkkokuQuest] Hook called. Phase: " .. tostring(_G.IkkokuQuest.state.phase))
     end
     
-    -- 委派給 MudExplorer
-    if _G.IkkokuQuest.state.finding then
-        MudExplorer.on_server_message(clean_line)
-    end
-    
-    -- 委派給 MudCombat (處理 safe_summon)
-    MudCombat.on_server_message(clean_line)
-
-    -- 委派給 MudNav
-    MudNav.on_server_message(line, clean_line)
+    -- MudExplorer/MudCombat/MudNav 已透過 Hook Registry 自行接收訊息
     
     local s = _G.IkkokuQuest.state
     local step = QUEST_STEPS[s.step_index]
@@ -647,16 +582,25 @@ function _G.IkkokuQuest.on_server_message(line, clean_line)
     end
     
     -- 檢查等待目標 (Fixed Path Mode)
+    -- 匹配策略：優先用 target_alias（完整 NPC 名如「朱美小姐(Akemi)」）
+    -- fallback 用括號包裹的 target ID 如「(Akemi)」，避免房間描述文字誤觸發
     if s.phase == "waiting_for_mob" and step and step.target then
-        local line_lower = string.lower(clean_line)
-        local matched = string.find(line_lower, string.lower(step.target), 1, true)
+        local matched = false
         
-        if not matched and step.target_alias then
+        -- 優先匹配 target_alias (完整 NPC 描述)
+        if step.target_alias then
             matched = string.find(clean_line, step.target_alias, 1, true)
         end
         
-        -- Aggressive Debug
-        if _G.IkkokuQuest.config.debug then
+        -- fallback: 匹配括號包裹的 target ID，如 "(Akemi)" "(keeper)"
+        if not matched then
+            local bracketed = "(" .. step.target .. ")"
+            local line_lower = string.lower(clean_line)
+            matched = string.find(line_lower, string.lower(bracketed), 1, true)
+        end
+        
+        -- Debug
+        if _G.IkkokuQuest.config.debug and matched then
             mud.echo("[IkkokuQuest_DEBUG] Phase=" .. s.phase .. " Line='" .. clean_line .. "' Target='" .. step.target .. "' Alias='" .. (step.target_alias or "nil") .. "' Matched=" .. tostring(matched))
         end
         

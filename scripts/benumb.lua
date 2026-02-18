@@ -27,28 +27,10 @@ function _G.Benumb.use(dir)
     mud.send("l in box")
 end
 
--- ===== Hook =====
--- 為了避免重複包裝 (Nesting)，我們需要更謹慎地處理 Hook
-if _G.Benumb.hook_installed and _G.Benumb._original_hook then
-    _G.on_server_message = _G.Benumb._original_hook
-end
-if not _G.Benumb._original_hook then
-    _G.Benumb._original_hook = _G.on_server_message
-end
-local base_hook = _G.Benumb._original_hook
-
-_G.on_server_message = function(line, clean_line)
-    local status, err = pcall(function()
-        if base_hook then base_hook(line, clean_line) end
-        if _G.Benumb and _G.Benumb.on_msg then
-            _G.Benumb.on_msg(line, clean_line)
-        end
-    end)
-    if not status then
-        mud.echo("CRITICAL HOOK ERROR (Benumb): " .. tostring(err))
-    end
-end
-_G.Benumb.hook_installed = true
+-- ===== Hook Registry =====
+MudUtils.register_hook("Benumb", function(line, clean_line)
+    _G.Benumb.on_msg(line, clean_line)
+end)
 
 function _G.Benumb.on_msg(line, clean_line)
     if not _G.Benumb.scanning then return end

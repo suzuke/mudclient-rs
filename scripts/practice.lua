@@ -42,30 +42,10 @@ _G.Practice.known_spell_types = {
     ["soulsteal"] = "target",
 }
 
--- ===== Hook 系統 =====
--- 為了避免重複包裝 (Nesting)，我們需要更謹慎地處理 Hook
-if _G.Practice.hook_installed and _G.Practice._original_hook then
-    _G.on_server_message = _G.Practice._original_hook
-end
-if not _G.Practice._original_hook then
-    _G.Practice._original_hook = _G.on_server_message
-end
-local base_hook = _G.Practice._original_hook
-
-_G.on_server_message = function(line, clean_line)
-    local status, err = pcall(function()
-        if base_hook then base_hook(line, clean_line) end
-        if _G.Practice and _G.Practice.on_server_message then
-            _G.Practice.on_server_message(line, clean_line)
-        end
-    end)
-    if not status then
-        mud.echo("CRITICAL HOOK ERROR (Practice): " .. tostring(err))
-    end
-end
-_G.Practice.hook_installed = true
-
--- 伺服器訊息處理 (掃描核心)
+-- ===== Hook Registry =====
+MudUtils.register_hook("Practice", function(line, clean_line)
+    _G.Practice.on_server_message(line, clean_line)
+end)
 function _G.Practice.on_server_message(line, clean_line)
     if not _G.Practice.scan_state.active then return end
     

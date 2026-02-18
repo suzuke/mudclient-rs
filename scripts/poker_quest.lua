@@ -238,6 +238,49 @@ end
 
 -- ===== Handler 實作 =====
 
+-- Persistent Combat Heartbeat (定期自動攻擊)
+function _G.PokerQuest.combat_heartbeat(rid)
+    if not check_run(rid) then return end
+    local s = _G.PokerQuest.state
+    if s.phase ~= "fighting" then return end
+    
+    if _G.PokerQuest.config.attack_cmd then
+        mud.send(_G.PokerQuest.config.attack_cmd)
+    end
+    
+    MudUtils.safe_timer(2.0, function()
+        _G.PokerQuest.combat_heartbeat(rid)
+    end)
+end
+
+-- 共用的 explore callback 工廠函數
+local function make_explore_cb(rid)
+    return function(found, target_line)
+        if not check_run(rid) then return end
+        local s = _G.PokerQuest.state
+        s.finding = false
+        
+        if found then
+            _G.PokerQuest.echo("⚔️ 發現 Spade！準備戰鬥...")
+            s.phase = "fighting"
+            s.last_combat_time = os.time()
+            s.corpse_offset = 0
+            mud.send("wa")
+            
+            MudUtils.safe_timer(0.5, function()
+                if not check_run(rid) then return end
+                mud.send(_G.PokerQuest.config.attack_cmd)
+                _G.PokerQuest.combat_heartbeat(rid)
+            end)
+        else
+            _G.PokerQuest.echo("❌ 搜索結束，未找到更多 Spade。")
+            if not s.got_stone then
+                _G.PokerQuest.echo("⚠️ 搜索完畢仍未獲得石頭，任務失敗。")
+                _G.PokerQuest.stop()
+            end
+        end
+    end
+end
 
 -- 階段一：探索並獵殺 Spade
 function _G.PokerQuest.do_explore_spade(rid)
@@ -246,49 +289,20 @@ function _G.PokerQuest.do_explore_spade(rid)
     
     MudExplorer.config.target = "小黑桃(spade)"
     MudExplorer.config.max_laps = _G.PokerQuest.config.max_laps
-    MudExplorer.config.disable_open_doors = true -- Disable door checking for this quest
-    MudExplorer.config.debug = true -- Enable debug to investigate termination
+    MudExplorer.config.disable_open_doors = true
+    MudExplorer.config.debug = true
     s.finding = true
     
     _G.PokerQuest.echo("🔍 開始搜索 Spade...")
-    mud.send("wa") -- Ensure we are awake before exploring
-    -- mud.send("l")
+    mud.send("wa")
     
-    -- 定義 MudExplorer 回調
-    local function explore_cb(found, target_line)
-        if not check_run(rid) then return end
-        s.finding = false -- Immediately stop finding to prevent further hooks
-        
-        if found then
-            _G.PokerQuest.echo("⚔️ 發現 Spade！準備戰鬥...")
-            s.phase = "fighting"
-            s.last_combat_time = os.time() -- Init combat timer
-            s.corpse_offset = 0
-            mud.send("wa") -- Wake up before fighting just in case
-            
-            -- Small delay to ensure commands clear (especially after door opening)
-            MudUtils.safe_timer(0.5, function()
-                if not check_run(rid) then return end
-                mud.send(_G.PokerQuest.config.attack_cmd)
-            end)
-        else
-            _G.PokerQuest.echo("❌ 搜索結束，未找到更多 Spade。")
-            -- 如果沒找到石頭，可能需要在這裡重置? 或者直接結束?
-            -- 這裡假設如果走完 max_laps 還沒找到，就任務失敗
-            if not s.got_stone then
-                 _G.PokerQuest.echo("⚠️ 搜索完畢仍未獲得石頭，任務失敗。")
-                 _G.PokerQuest.stop()
-            end
-        end
-    end
+    local explore_cb = make_explore_cb(rid)
     _G.PokerQuest.explore_cb_ref = explore_cb
 
-    -- 啟動探索 (或繼續)
     if s.got_stone then
-         -- 理論上不該執行到這，因為有石頭就會跳下一步
-         _G.PokerQuest.advance_step(rid)
+        _G.PokerQuest.advance_step(rid)
     else
-         MudExplorer.explore(explore_cb)
+        MudExplorer.explore(explore_cb)
     end
 end
 
@@ -378,61 +392,26 @@ function _G.PokerQuest.check_loot_result(rid)
         _G.PokerQuest.echo("❌ 未獲得石頭，恢復探索...")
         s.finding = true
         
-        -- 定義 Resume Callback (與 start 一樣)
-        local function explore_cb(found, target_line)
-            if not check_run(rid) then return end
-            s.finding = false -- Stop immediately to prevent accidental moves
-            if found then
-                _G.PokerQuest.echo("⚔️ 再次發現 Spade！戰鬥...")
-                s.phase = "fighting"
-                s.last_combat_time = os.time() -- Init combat timer
-                s.corpse_offset = 0
-                mud.send("wa")
-                
-                -- Start Combat Heatbeat
-                MudUtils.safe_timer(0.5, function()
-                    _G.PokerQuest.combat_heartbeat(rid)
-                end)
-            else
-                if not s.got_stone then
-                    _G.PokerQuest.echo("⚠️ 搜索完畢仍未獲得石頭，任務失敗。")
-                    _G.PokerQuest.stop()
-                end
-            end
-        end
+        local explore_cb = make_explore_cb(rid)
         _G.PokerQuest.explore_cb_ref = explore_cb
-        
         MudExplorer.resume(explore_cb)
     end
 end
 
 
 -- ===== Server Hook =====
-if _G.PokerQuest.hook_installed and _G.PokerQuest._original_hook then
-    _G.on_server_message = _G.PokerQuest._original_hook
-end
-if not _G.PokerQuest._original_hook then
-    _G.PokerQuest._original_hook = _G.on_server_message
-end
-local base_hook = _G.PokerQuest._original_hook
-
-_G.on_server_message = function(line, clean_line)
-    pcall(function()
-        if base_hook then base_hook(line, clean_line) end
-        if _G.PokerQuest and _G.PokerQuest.on_server_message then
-            _G.PokerQuest.on_server_message(line, clean_line)
-        end
-    end)
-end
-_G.PokerQuest.hook_installed = true
+-- 使用 Hook Registry（不再手動包裹 _G.on_server_message）
+MudUtils.register_hook("PokerQuest", function(line, clean_line)
+    if _G.PokerQuest and _G.PokerQuest.on_server_message then
+        _G.PokerQuest.on_server_message(line, clean_line)
+    end
+end)
 
 function _G.PokerQuest.on_server_message(line, clean_line)
     if not _G.PokerQuest.state.running then return end
     local s = _G.PokerQuest.state
     
-    -- 委派給 Modules
-    if s.finding then MudExplorer.on_server_message(clean_line) end
-    MudNav.on_server_message(line, clean_line)
+    -- MudNav/MudExplorer 已透過 Hook Registry 自行接收訊息
     
     -- 監測戰鬥訊息 (Delegated to MudCombat)
     if MudCombat.on_server_message(clean_line) then
@@ -478,10 +457,7 @@ function _G.PokerQuest.on_server_message(line, clean_line)
         end
     end
     
-    -- Route messages to MudLoot
-    if MudLoot and MudLoot.on_server_message then
-        MudLoot.on_server_message(line, clean_line)
-    end
+    -- MudLoot 亦透過 Hook Registry 自行接收訊息
 
     -- 戰鬥處理
     if s.phase == "fighting" then
@@ -571,25 +547,6 @@ MudUtils.show_script_usage("PokerQuest", {
     "PokerQuest.status()  - 📊 查看狀態"
 })
 
--- Persistent Combat Heartbeat
-function _G.PokerQuest.combat_heartbeat(rid)
-    if not check_run(rid) then return end
-    local s = _G.PokerQuest.state
-    
-    -- Only run if valid fighting phase
-    if s.phase ~= "fighting" then return end
-    
-    -- Use config attack command
-    if _G.PokerQuest.config.attack_cmd then
-        -- Debug message to confirm heartbeat is alive
-        -- _G.PokerQuest.echo("⚔️ [Heartbeat] Attack!") 
-        mud.send(_G.PokerQuest.config.attack_cmd)
-    end
-    
-    -- Schedule next beat (e.g. every 2 seconds)
-    MudUtils.safe_timer(2.0, function() 
-        _G.PokerQuest.combat_heartbeat(rid) 
-    end)
-end
+-- combat_heartbeat 已移至 Handler 區塊（L241）
 
 return _G.PokerQuest

@@ -21,28 +21,10 @@ _G.AutoCast.state = {
     check_count = 0,
 }
 
--- ===== Hook =====
--- 為了避免重複包裝 (Nesting)，我們需要更謹慎地處理 Hook
-if _G.AutoCast.hook_installed and _G.AutoCast._original_hook then
-    _G.on_server_message = _G.AutoCast._original_hook
-end
-if not _G.AutoCast._original_hook then
-    _G.AutoCast._original_hook = _G.on_server_message
-end
-local base_hook = _G.AutoCast._original_hook
-
-_G.on_server_message = function(line, clean_line)
-    local status, err = pcall(function()
-        if base_hook then base_hook(line, clean_line) end
-        if _G.AutoCast and _G.AutoCast.on_server_message then
-            _G.AutoCast.on_server_message(line, clean_line)
-        end
-    end)
-    if not status then
-        mud.echo("CRITICAL HOOK ERROR (AutoCast): " .. tostring(err))
-    end
-end
-_G.AutoCast.hook_installed = true
+-- ===== Hook Registry =====
+MudUtils.register_hook("AutoCast", function(line, clean_line)
+    _G.AutoCast.on_server_message(line, clean_line)
+end)
 
 function _G.AutoCast.on_server_message(line, clean_line)
     if _G.AutoCast.state.mode == "stopped" then return end

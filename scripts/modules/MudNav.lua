@@ -384,4 +384,9 @@ function MudNav.record_step(cmd)
     end)
 end
 
+-- ===== 註冊到 Hook Registry =====
+MudUtils.register_hook("MudNav", function(line, clean_line)
+    MudNav.on_server_message(line, clean_line)
+end)
+
 return MudNav

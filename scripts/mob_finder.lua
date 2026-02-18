@@ -164,28 +164,8 @@ function _G.MobFinder.reload()
     _G.MobFinder.echo("♻️ 腳本已重新載入")
 end
 
--- ===== Hook =====
--- 為了避免重複包裝 (Nesting)，我們需要更謹慎地處理 Hook
-if _G.MobFinder.hook_installed and _G.MobFinder._original_hook then
-    _G.on_server_message = _G.MobFinder._original_hook
-end
-if not _G.MobFinder._original_hook then
-    _G.MobFinder._original_hook = _G.on_server_message
-end
-local base_hook = _G.MobFinder._original_hook
-
-_G.on_server_message = function(line, clean_line)
-    local status, err = pcall(function()
-        if base_hook then base_hook(line, clean_line) end
-        -- Global Hook Delegation
-        MudNav.on_server_message(line, clean_line)
-        MudExplorer.on_server_message(clean_line)
-    end)
-    if not status then
-        mud.echo("CRITICAL HOOK ERROR (MobFinder): " .. tostring(err))
-    end
-end
-_G.MobFinder.hook_installed = true
+-- ===== Hook Registry =====
+-- MudNav/MudExplorer 已透過 Hook Registry 自行接收訊息，無需手動委派
 
 -- ===== 自動執行 =====
 MudUtils.print_script_help(

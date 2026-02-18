@@ -33,10 +33,16 @@ function MudLoot.process_loot(options, callback)
     s.found_corpses = 0
     s.found_items = {}
     
-    if MudLoot.config.debug then mud.echo("[MudLoot] 🔍 開始掃描環境...") end
+    if MudLoot.config.debug and mud then mud.echo("[MudLoot] 🔍 開始掃描環境...") end
     mud.send("l")
     
     -- 設定保底計時器，避免解析失敗卡住
+    if not _G.MudUtils then
+        -- 無 MudUtils 時直接執行，不等待
+        MudLoot.execute_actions()
+        return
+    end
+    
     MudUtils.safe_timer(1.5, function(rid)
         if rid == s.rid and s.scanning then
             if MudLoot.config.debug then mud.echo("[MudLoot] ⚠️ 掃描超時，執行保底行動") end
@@ -51,6 +57,7 @@ end
 function MudLoot.on_server_message(line, clean_line)
     local s = MudLoot.state
     if not s.scanning then return end
+    clean_line = clean_line or line or ""
     
     -- 1. 偵測容器/提示符以切換狀態
     if string.find(clean_line, "裡面有:", 1, true) or string.find(clean_line, "contains:", 1, true) then
@@ -153,7 +160,9 @@ MudLoot.config = {
     debug = true
 }
 
--- 註冊 Hook (如果有的話，或是讓腳本自行委派)
--- 建議腳本在 on_server_message 中委派：MudLoot.on_server_message(line, clean_line)
+-- ===== 註冊到 Hook Registry =====
+MudUtils.register_hook("MudLoot", function(line, clean_line)
+    MudLoot.on_server_message(line, clean_line)
+end)
 
 return MudLoot

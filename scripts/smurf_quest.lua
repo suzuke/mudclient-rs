@@ -373,28 +373,10 @@ function _G.SmurfQuest.reload()
     _G.SmurfQuest.echo("♻️ 腳本已重新載入")
 end
 
--- ===== Hook =====
--- 為了避免重複包裝 (Nesting)，我們需要更謹慎地處理 Hook
-if _G.SmurfQuest.hook_installed and _G.SmurfQuest._original_hook then
-    _G.on_server_message = _G.SmurfQuest._original_hook
-end
-if not _G.SmurfQuest._original_hook then
-    _G.SmurfQuest._original_hook = _G.on_server_message
-end
-local base_hook = _G.SmurfQuest._original_hook
-
-_G.on_server_message = function(line, clean_line)
-    local status, err = pcall(function()
-        if base_hook then base_hook(line, clean_line) end
-        if _G.SmurfQuest and _G.SmurfQuest.on_server_message then
-            _G.SmurfQuest.on_server_message(clean_line)
-        end
-    end)
-    if not status then
-        mud.echo("CRITICAL HOOK ERROR (SmurfQuest): " .. tostring(err))
-    end
-end
-_G.SmurfQuest.hook_installed = true
+-- ===== Hook Registry =====
+MudUtils.register_hook("SmurfQuest", function(line, clean_line)
+    _G.SmurfQuest.on_server_message(clean_line)
+end)
 
 function _G.SmurfQuest.on_server_message(clean_line)
     local s = _G.SmurfQuest.state
@@ -426,19 +408,10 @@ function _G.SmurfQuest.on_server_message(clean_line)
         end
     end
     
-    -- Combat Logic
-    -- Route messages to MudCombat for summon verification/combat detection
-    if MudCombat and MudCombat.on_server_message then
-        MudCombat.on_server_message(clean_line)
-    end
+    -- MudCombat/MudLoot 已透過 Hook Registry 自行接收訊息
 
     if s.combat_target and (clean_line:find(s.combat_target) or clean_line:lower():find(s.combat_target)) then
          s.target_found = true
-    end
-
-    -- Route messages to MudLoot
-    if MudLoot and MudLoot.on_server_message then
-        MudLoot.on_server_message(line, clean_line)
     end
 
     -- Step Expectation

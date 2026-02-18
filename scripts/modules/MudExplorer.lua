@@ -406,4 +406,9 @@ function MudExplorer.get_path_to_start()
     return table.concat(path, ";")
 end
 
+-- ===== 註冊到 Hook Registry =====
+MudUtils.register_hook("MudExplorer", function(line, clean_line)
+    MudExplorer.on_server_message(clean_line or line)
+end)
+
 return MudExplorer

@@ -951,37 +951,16 @@ function _G.ItemFarm.check_mp(rid)
     _G.ItemFarm.safe_timer(5.0, "_G.ItemFarm.check_mp")
 end
 
--- ===== Server Message Hook =====
--- 為了避免重複包裝 (Nesting)，我們需要更謹慎地處理 Hook
-if _G.ItemFarm.hook_installed and _G.ItemFarm._original_hook then
-    _G.on_server_message = _G.ItemFarm._original_hook
-end
-if not _G.ItemFarm._original_hook then
-    _G.ItemFarm._original_hook = _G.on_server_message
-end
-local base_hook = _G.ItemFarm._original_hook
-
-_G.on_server_message = function(line, clean_line)
-    local status, err = pcall(function()
-        if base_hook then base_hook(line, clean_line) end
-        if _G.ItemFarm and _G.ItemFarm.on_server_message then
-            _G.ItemFarm.on_server_message(line, clean_line)
-        end
-    end)
-    if not status then
-        mud.echo("CRITICAL HOOK ERROR (ItemFarm): " .. tostring(err))
-    end
-end
-_G.ItemFarm.hook_installed = true
+-- ===== Hook Registry =====
+MudUtils.register_hook("ItemFarm", function(line, clean_line)
+    _G.ItemFarm.on_server_message(line, clean_line)
+end)
 
 -- ===== 伺服器訊息 Hook 處理器 =====
 function _G.ItemFarm.on_server_message(line, clean_line)
     if not _G.ItemFarm.state.running then return end
     
-    -- 委派給 MudNav, MudCombat 與 MudLoot
-    MudNav.on_server_message(line, clean_line)
-    MudCombat.on_server_message(clean_line)
-    MudLoot.on_server_message(line, clean_line)
+    -- MudNav/MudCombat/MudLoot 已透過 Hook Registry 自行接收訊息，無需手動委派
     
     local s = _G.ItemFarm.state
     local j = _G.ItemFarm.job()
