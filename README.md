@@ -50,6 +50,7 @@
 *   **[系統架構 (Architecture)](docs/Architecture.md)**: 了解內部運作原理。
 *   **[開發路線圖 (Roadmap)](docs/RoadMap.md)**: 專案未來規劃。
 *   **[環境變數 (Env)](docs/Env.md)**: 進階設定選項。
+*   **[MCP Server 使用指南](docs/MCP_Usage.md)**: 外部控制 API 說明。
 
 ## 🤝 貢獻
 歡迎提交 Pull Request 或 Issue。請參考 [CONTRIBUTING.md](CONTRIBUTING.md) (如有) 了解詳情。

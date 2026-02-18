@@ -11,6 +11,7 @@
 3. [MemCalc - 記憶點數計算機](#memcalc---記憶點數計算機)
 4. [SkillPlanner - 技能配置規劃](#skillplanner---技能配置規劃)
 5. [MudNav & MudExplorer - 導航與地圖系統](Navigation.md)
+6. [MCP Server - 外部控制介面](MCP_Usage.md)
 
 ---
 
@@ -274,6 +275,16 @@ graph LR
 關於路徑導航、自動開圖與最新的 **Room ID 防迷路機制**，請參閱專屬文件：
 
 👉 [**導航與地圖系統使用手冊**](Navigation.md)
+
+👉 [**導航與地圖系統使用手冊**](Navigation.md)
+
+---
+
+## MCP Server - 外部控制介面
+
+如果您需要從外部程式（如 Python, Stream Deck, AI Agent）控制 MUD 客戶端，請參考：
+
+👉 [**MCP Server 使用指南**](MCP_Usage.md)
 
 ---
 
