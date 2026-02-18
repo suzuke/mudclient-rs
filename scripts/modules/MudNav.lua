@@ -20,14 +20,16 @@ _G.MudNav = MudNav
 MudNav.config = {
     refresh_cmd = "c ref",
     walk_delay = 0.5,
-    debug = false -- Disable debug
+    debug = true -- Disable debug
 }
 MudNav.state = {
     walking = false,
     paused = false,
     queue = {},
     index = 1,
-    callback = nil
+    callback = nil,
+    recording = false,
+    recorded_path = {}
 }
 
 function MudNav.reset()
@@ -37,6 +39,8 @@ function MudNav.reset()
     s.queue = {}
     s.index = 1
     s.callback = nil
+    s.last_send_time = nil
+    s.waiting_confirm = false
 end
 
 function MudNav.walk(path, callback)
@@ -44,10 +48,21 @@ function MudNav.walk(path, callback)
     local s = MudNav.state
     s.walking = true
     s.paused = false
-    s.queue = MudUtils.parse_cmds(path)
+    
+    -- Handle both string paths and table paths
+    if type(path) == "string" then
+        s.queue = MudUtils.parse_cmds(path)
+    elseif type(path) == "table" then
+        s.queue = path
+    else
+        mud.echo("[MudNav] Error: Invalid path type")
+        s.walking = false
+        return
+    end
+    
     s.index = 1
     s.callback = callback
-    if MudNav.config.debug then mud.echo("[MudNav] Start Walk: " .. path .. " (" .. #s.queue .. " steps)") end
+    if MudNav.config.debug then mud.echo("[MudNav] Start Walk (" .. #s.queue .. " steps)") end
     MudNav.send_next()
 end
 
@@ -58,28 +73,168 @@ function MudNav.send_next()
     if s.index > #s.queue then
         if MudNav.config.debug then mud.echo("[MudNav] Walk Complete.") end
         s.walking = false
-        if s.callback then s.callback() end
+        if s.callback then s.callback(true) end -- true = success
         return
     end
     
     -- 防洪鎖：如果上一步指令還在處理中或剛發送不久
     local now = os.clock()
     if s.last_send_time and (now - s.last_send_time < 0.1) then 
+        if MudNav.config.debug then mud.echo("[MudNav] Throttled (" .. (now - s.last_send_time) .. "s). Rescheduling.") end
+        MudUtils.safe_timer(0.1, function() MudNav.send_next() end)
         return 
     end
     
-    local cmd = s.queue[s.index]
+    local step = s.queue[s.index]
+    local cmd = ""
+    local expected_id = nil
+    
+    if type(step) == "table" then
+        cmd = step.cmd
+        expected_id = step.id
+    else
+         cmd = step
+    end
+    
     if MudNav.config.debug then mud.echo("[MudNav] Sending[" .. s.index .. "]: " .. cmd) end
     
     s.last_send_time = now
     s.waiting_confirm = true -- 等待伺服器回應（出口或特定訊息）
+    s.current_step_obj = step -- Store for verification
+    
+    -- [NEW] Auto-Look Timeout (Recover if no room update, e.g. recall at start)
+    if s.confirm_timer_id then 
+        -- Cancel previous (though should be cleared by confirm)
+        -- MudUtils.cancel_timer(s.confirm_timer_id) -- Not exposed yet?
+        -- Just overwrite ID. If previous runs, it checks waiting_confirm anyway.
+    end
+    
+    s.confirm_timer_id = MudUtils.safe_timer(3.0, function()
+        if s.walking and not s.paused and s.waiting_confirm then
+             if MudNav.config.debug then mud.echo("[MudNav] Step Stuck (No Exits). Forcing Look...") end
+             mud.send("l")
+        end
+    end)
     
     if mud then mud.send(cmd) end
 end
 
+-- ===== Path Recording =====
+function MudNav.record_start()
+    MudNav.state.recording = true
+    MudNav.state.recorded_path = {}
+    mud.echo("[MudNav] 🔴 開始錄製路徑 (請開始移動)")
+end
+
+function MudNav.record_stop()
+    if not MudNav.state.recording then
+        mud.echo("[MudNav] ⚠️ 目前沒有在錄製")
+        return
+    end
+    MudNav.state.recording = false
+    mud.echo("[MudNav] ⏹️ 錄製結束。路徑代碼如下：")
+    mud.echo("---------------------------------------------------")
+    
+    -- Generate Lua Code
+    local lines = {}
+    table.insert(lines, "local path = {")
+    for _, step in ipairs(MudNav.state.recorded_path) do
+        table.insert(lines, string.format('    {cmd="%s", id="%s"},', step.cmd, step.id))
+    end
+    table.insert(lines, "}")
+    
+    for _, l in ipairs(lines) do
+         mud.echo(l)
+    end
+    mud.echo("---------------------------------------------------")
+    -- Copy to clipboard hint? 
+end
+
+-- Helper to capture user movement for recording
+-- We need to hook user input or rely on successful moves
+-- Better reliability: Hook `send`? Or just listen to "Exits" and assume previous command?
+-- Complex. 
+-- Best approach: When "Exits" seen (move successful), record the command that caused it??
+-- But we don't know the command easily if typed by user.
+-- Alternative: User types `/lua MudNav.rec("n")`? No, too tedious.
+-- Function to be called BY ALIASES. e.g. alias n = lua MudNav.record_step("n"); n
+-- Or, we use the Room ID change.
+-- Store `last_room_id`.
+-- When Room ID changes, we try to deduce direction? Hard.
+-- Let's provide a helper `MudNav.move(dir)` for recording.
+function MudNav.move(dir)
+    if MudNav.state.recording then
+        mud.send(dir)
+        -- We tentatively record it, but we should confirm ID...
+        -- Let's just push it to a pending state.
+        MudNav.state.pending_record_cmd = dir
+    else
+        mud.send(dir)
+    end
+end
+
+-- But user wants to just walk.
+-- If we can't hook input, maybe we just use `on_server_message` to detect "Exits" and then
+-- look at `mud.last_sent_command`? Not available.
+-- Let's defer strict recording for now, and implement standard verification first.
+-- Wait, I promised "Automatic Path Recording".
+-- "You just walk as usual".
+-- This implies I need to know what they typed.
+-- `mud` object might expose `on_input` hook? 
+-- If not, I'll assume they use mapping or aliases I provide?
+-- Or I just assume I can't track *what* they typed unless they use an alias.
+-- Let's implement a simple "Check ID on Arrival" first.
+-- And for recording, I will check `mud.get_current_room_id()` periodically?
+-- NO. I'll stick to the "Verification" implementation first.
+-- For recording, I'll add a simple `MudNav.add_step(dir)`
+-- user can make aliases: `alias n = lua MudNav.add_step("n")`
+
 function MudNav.on_server_message(line)
-    if not MudNav.state.walking then return end
     local s = MudNav.state
+    
+    -- System Hooks for Recording
+    if s.recording then
+        -- Debug: Print everything we see to identify why patterns fail
+        -- mud.echo("[DEBUG-REC] " .. MudUtils.string_to_hex(line) .. " | " .. line)
+        
+        -- 1. Capture User Input (Echoed as "> cmd")
+        -- Relaxed pattern: Allow whitespace, handle potential color codes if passed (though session.rs likely sends clean)
+        -- Try matching ">" anywhere near start?
+        local cmd_input = line:match("^> (.*)")
+        if not cmd_input then
+             -- Try without space?
+             cmd_input = line:match("^>(.*)")
+        end
+        
+        if cmd_input then
+            local clean_cmd = cmd_input:match("^%s*(.-)%s*$") -- Trim
+            if clean_cmd ~= "" then
+                s.last_rec_cmd = clean_cmd
+                mud.echo("[MudNav] 捕捉指令: " .. clean_cmd)
+            end
+            return
+        end
+        
+        -- 2. Capture Room ID (Confirming the move)
+        -- Format: (ID: {hash{x})
+        -- Using non-greedy match for hash
+        local id = line:match("%(ID: {(.-){x}%)") 
+        if id then
+             -- mud.echo("[MudNav] ID Detected: " .. id)
+             if s.last_rec_cmd then
+                 table.insert(s.recorded_path, { cmd = s.last_rec_cmd, id = id })
+                 mud.echo("[MudNav] ⏺️ 記錄成功: " .. s.last_rec_cmd .. " -> " .. string.sub(id, 1, 8))
+                 s.last_rec_cmd = nil -- Reset
+             else
+                 -- mud.echo("[MudNav] ID ignored (no pending cmd)")
+             end
+        end
+        
+        -- Recording mode does NOT execute walking logic
+        return 
+    end
+
+    if not s.walking then return end
     
     -- 偵測碰撞/失敗 (重置等待狀態)
     if string.find(line, "這個方向沒有路") or string.find(line, "不能往") then
@@ -92,28 +247,56 @@ function MudNav.on_server_message(line)
         return
     end
 
-    -- Detect Stamina
-    if string.find(line, "exhausted") or string.find(line, "精疲力竭") or string.find(line, "移動力不足") then
-        s.paused = true
-        s.waiting_confirm = false
-        if mud then mud.send(MudNav.config.refresh_cmd) end
+    -- Detect 移動力
+    if string.find(line, "精疲力竭") or string.find(line, "移動力不足") then
+        if not s.paused then
+            s.paused = true
+            s.waiting_confirm = false
+            if mud then mud.send(MudNav.config.refresh_cmd) end
+        end
         return
     end
     
     if string.find(line, "recovering") or string.find(line, "恢復") then
-        s.paused = false
-        MudUtils.safe_timer(0.5, function() MudNav.send_next() end)
+        if s.paused then
+            s.paused = false
+            MudUtils.safe_timer(0.5, function() MudNav.send_next() end)
+        end
         return
     end
 
     -- Detect Exits (to advance)
-    if string.find(line, "%[Exits:") or string.find(line, "%[出口:") then
+    if string.find(line, "%[出口:") then
         if MudNav.config.debug then mud.echo("[MudNav] Detected Exits. Waiting=" .. tostring(s.waiting_confirm)) end
+        
+        -- Double-hook protection: If we just processed this, ignore
+        local now = os.clock()
+        if s.last_exit_process_time and (now - s.last_exit_process_time < 0.1) then
+            if MudNav.config.debug then mud.echo("[MudNav] Ignoring duplicate exit signal") end
+            return
+        end
+        s.last_exit_process_time = now
         
         -- 核心防洪邏輯：只有在我們確實在等待確認時才前進
         if s.waiting_confirm and not s.paused then
              s.waiting_confirm = false -- 已收到回應，清除標記
+             
+             -- [NEW] Verification Logic
+             local step = s.current_step_obj
+             if type(step) == "table" and step.id then
+                 local current_id = mud.get_current_room_id()
+                 if current_id and current_id ~= step.id then
+                     mud.echo("🛑 [MudNav] 導航錯誤：路徑偏移！")
+                     mud.echo("   預期 ID: " .. tostring(step.id))
+                     mud.echo("   實際 ID: " .. tostring(current_id))
+                     s.walking = false
+                     if s.callback then s.callback(false, "id_mismatch") end
+                     return
+                 end
+             end
+             
              MudUtils.safe_timer(MudNav.config.walk_delay, function()
+                 if MudNav.config.debug then mud.echo("[MudNav] Timer Fired. Index=" .. s.index) end
                  if not s.walking or s.paused then return end
                  s.index = s.index + 1
                  MudNav.send_next()
@@ -123,9 +306,13 @@ function MudNav.on_server_message(line)
     end
     
     -- Detect Closed/Locked Doors
-    if string.find(line, "closed") or string.find(line, "lock") or string.find(line, "關著") or string.find(line, "鎖著") then
+    if string.find(line, "關著") or string.find(line, "鎖著") then
         s.waiting_confirm = false
-        local cmd = s.queue[s.index]
+        
+        -- Handle both string and table cmd
+        local raw_cmd = s.queue[s.index]
+        local cmd = (type(raw_cmd) == "table") and raw_cmd.cmd or raw_cmd
+        
         if cmd and mud then 
             mud.send("unlock " .. cmd)
             mud.send("open " .. cmd)
@@ -140,7 +327,9 @@ function MudNav.on_server_message(line)
     end
 
     -- [Enhanced] Detect Action Success
-    local current_cmd = s.queue[s.index]
+    local raw_cmd = s.queue[s.index]
+    local current_cmd = (type(raw_cmd) == "table") and raw_cmd.cmd or raw_cmd
+    
     if current_cmd and (current_cmd:match("^open") or current_cmd:match("^op") or 
                         current_cmd:match("^unlock") or current_cmd:match("^un") or 
                         current_cmd:match("^enter") or current_cmd:match("^ent") or
@@ -163,6 +352,36 @@ function MudNav.on_server_message(line)
              end
          end
     end
+end
+
+-- Hook Helper for Recorder
+-- This allows user to manually trigger a record step if they bind aliases
+function MudNav.record_step(cmd)
+    if not MudNav.state.recording then 
+        mud.send(cmd)
+        return 
+    end
+    
+    -- Assume we are at Start Room A. User types 'n'.
+    -- We send 'n'.
+    -- Next prompt/room event -> We act. (Async)
+    -- Simplified: Check ID *after* move? 
+    -- Let's just store the step with a placeholder, and fill ID later?
+    -- No, simpler: Trigger the move, wait for delay, then capture ID.
+    
+    local old_id = mud.get_current_room_id()
+    mud.send(cmd)
+    
+    -- Delayed check
+    MudUtils.safe_timer(1.0, function()
+        local new_id = mud.get_current_room_id()
+        if new_id and new_id ~= old_id then
+            table.insert(MudNav.state.recorded_path, {cmd=cmd, id=new_id})
+            mud.echo("[Rec] " .. cmd .. " -> " .. string.sub(new_id, 1, 8))
+        else
+            mud.echo("[Rec] " .. cmd .. " (No ID Change/Fail)")
+        end
+    end)
 end
 
 return MudNav
