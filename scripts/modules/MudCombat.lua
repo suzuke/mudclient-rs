@@ -101,6 +101,20 @@ function MudCombat.on_server_message(line)
     local now = os.time()
     local detected = false
     
+    -- 0. 排除清單 (黑單)：包含關鍵字但並非戰鬥的系統訊息
+    local blacklist = {
+        "你想攻擊的對象不在這裡",
+        "這裡禁止攻擊",
+        "不能攻擊",
+        "不准攻擊",
+        "不需要.*休息" -- 雖然是關鍵字，但若出現在非戰鬥語境需小心 (原已在清單中)
+    }
+    for _, pattern in ipairs(blacklist) do
+        if string.find(line, pattern) then
+            return false
+        end
+    end
+
     -- 1. Check combat keywords
     for _, keyword in ipairs(COMBAT_KEYWORDS) do
         if string.find(line, keyword) then

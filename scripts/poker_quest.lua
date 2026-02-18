@@ -422,10 +422,17 @@ function _G.PokerQuest.on_server_message(line, clean_line)
         -- Actually, "魂歸西天" is NOT in MudCombat keywords.
         -- But "口吐鮮血" (final blow) IS.
         -- If we just killed them, we shouldn't switch BACK to fighting immediately.
-        
-        local is_killing_blow = string.find(clean_line, "魂歸西天") or string.find(clean_line, "得向閻羅王報到")
-        
-        if not is_killing_blow and (s.phase == "finding" or s.phase == "looting" or s.phase == "clearing") then
+        local is_killing_blow = string.find(clean_line, "魂歸西天") 
+            or string.find(clean_line, "得向閻羅王報到")
+            or string.find(clean_line, "倒地")
+            or string.find(clean_line, "慘叫")
+            or string.find(clean_line, "氣絕")
+            or string.find(clean_line, "死亡")
+
+        local is_false_positive = string.find(clean_line, "你想攻擊的對象不在這裡")
+            or string.find(clean_line, "這裡禁止攻擊")
+
+        if not is_killing_blow and not is_false_positive and (s.phase == "finding" or s.phase == "looting" or s.phase == "clearing") then
              _G.PokerQuest.echo("⚠️ 偵測到戰鬥活動，切換回戰鬥狀態！")
              s.phase = "fighting"
              _G.PokerQuest.combat_heartbeat(MudUtils.run_id)
