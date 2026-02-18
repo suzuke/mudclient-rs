@@ -1,0 +1,116 @@
+# GitHub Action: Agent Guard
+# 自動掃描 .agent/ 目錄下的所有 skill/workflow 檔案
+# 確保沒有惡意指令被引入
+
+name: Agent Guard
+
+on:
+  push:
+    paths:
+      - '.agent/**'
+  pull_request:
+    paths:
+      - '.agent/**'
+  workflow_dispatch:
+
+jobs:
+  scan-skills:
+    name: 🔒 Scan Agent Skills
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run Security Scan
+        run: |
+          echo "🔍 掃描 .agent/ 目錄下的所有 Markdown 檔案..."
+          
+          ERRORS=0
+          
+          # 危險關鍵字清單
+          DANGEROUS_PATTERNS=(
+            "rm -rf"
+            "mkfs"
+            "dd if="
+            "curl.*|.*bash"
+            "wget.*|.*sh"
+            "nc -e"
+            "bash -i"
+            "> /dev/sda"
+            "chmod 777"
+            "eval("
+            "exec("
+            "__import__"
+          )
+          
+          # 掃描所有 .md 檔案 (排除核心規則與手冊避免誤報)
+          EXCLUDE_LIST=("skill-acquisition.skill.md" "skill-acquisition.md" "security.skill.md" "user_rules.md" "performance.skill.md" "UxSoul-extractor.skill.md")
+          FIND_CMD="find .agent -name \"*.md\" -type f"
+          for item in "${EXCLUDE_LIST[@]}"; do
+            FIND_CMD="$FIND_CMD | grep -v \"$item\""
+          done
+          
+          for file in $(eval $FIND_CMD); do
+            echo "📄 掃描：$file"
+            
+            for pattern in "${DANGEROUS_PATTERNS[@]}"; do
+              if grep -l "$pattern" "$file" 2>/dev/null; then
+                echo "🚨 發現危險模式 '$pattern' 在 $file"
+                ERRORS=$((ERRORS + 1))
+              fi
+            done
+          done
+          
+          if [ $ERRORS -gt 0 ]; then
+            echo ""
+            echo "❌ 發現 $ERRORS 個潛在安全問題！"
+            echo "請檢查上述檔案並移除危險指令。"
+            exit 1
+          else
+            echo ""
+            echo "✅ 安全掃描通過！"
+          fi
+
+  verify-structure:
+    name: 📁 Verify Agent Structure
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Check Required Files
+        run: |
+          echo "📋 檢查必要檔案結構..."
+          
+          REQUIRED_DIRS=(
+            ".agent/skills"
+            ".agent/workflows"
+          )
+          
+          for dir in "${REQUIRED_DIRS[@]}"; do
+            if [ -d "$dir" ]; then
+              echo "✅ $dir 存在"
+            else
+              echo "⚠️ $dir 不存在"
+            fi
+          done
+
+      - name: Validate Frontmatter
+        run: |
+          echo "📝 驗證 YAML frontmatter..."
+          
+          for file in $(find .agent -name "*.md" -type f); do
+            # 檢查是否有 version 欄位
+            if head -20 "$file" | grep -q "^version:"; then
+              echo "✅ $file 有版本號"
+            else
+              echo "⚠️ $file 缺少版本號"
+            fi
+          done

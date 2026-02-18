@@ -1,0 +1,69 @@
+# Antigravity Agent 配置檔
+# 此檔案用於自定義 Agent 行為和監控設定
+
+# 版本
+version: 1.0.0
+
+# ===== Skill Aliases =====
+# 讓 pixiu install 支援簡短名稱
+# 使用方式：pixiu install stripe
+aliases:
+  # 支付相關
+  stripe: https://raw.githubusercontent.com/skills-sh/skills/main/stripe-payment.skill.md
+  paypal: https://raw.githubusercontent.com/skills-sh/skills/main/paypal-integration.skill.md
+  
+  # 認證相關
+  oauth: https://raw.githubusercontent.com/skills-sh/skills/main/oauth2.skill.md
+  jwt: https://raw.githubusercontent.com/skills-sh/skills/main/jwt-auth.skill.md
+  supabase: https://raw.githubusercontent.com/skills-sh/skills/main/supabase-auth.skill.md
+  
+  # 基礎設施
+  docker: https://raw.githubusercontent.com/skills-sh/skills/main/docker-mastery.skill.md
+  k8s: https://raw.githubusercontent.com/skills-sh/skills/main/kubernetes.skill.md
+  terraform: https://raw.githubusercontent.com/skills-sh/skills/main/terraform.skill.md
+  
+  # 前端
+  tailwind: https://raw.githubusercontent.com/skills-sh/skills/main/tailwind-best-practices.skill.md
+  react: https://raw.githubusercontent.com/skills-sh/skills/main/react-patterns.skill.md
+  nextjs: https://raw.githubusercontent.com/skills-sh/skills/main/nextjs.skill.md
+
+# ===== Watchdog 設定 =====
+# watchdog.sh 會監控這些檔案的變動
+watchdog:
+  enabled: true
+  interval: 60  # 秒（Polling 模式）
+  files:
+    - package.json
+    - go.mod
+    - requirements.txt
+    - pyproject.toml
+    - docs/RoadMap.md
+    - docker-compose.yml
+    - .env.example
+
+# ===== 安全掃描設定 =====
+security:
+  # pre-commit hook 設定
+  pre_commit:
+    enabled: true
+    check_secrets: true
+    check_large_files: true
+    large_file_threshold_mb: 1
+    
+  # pixiu install 設定
+  import_skill:
+    deep_scan: true  # 是否執行 AST 分析
+    auto_approve: false  # 是否自動安裝（不建議）
+
+# ===== 輸出設定 =====
+output:
+  # pixiu suggest 輸出格式
+  format: text  # text | json
+  color: true
+  verbose: false
+
+# ===== 私有 Registry（企業用）=====
+# 若有私有 skill registry，在此設定
+# registry:
+#   url: https://skills.your-company.com
+#   token_env: SKILLS_REGISTRY_TOKEN

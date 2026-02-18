@@ -1,0 +1,52 @@
+{
+    "name": "pre-commit",
+    "description": "提交前檢查 - Lint、格式化、安全掃描",
+    "version": "1.0.0",
+    "triggers": [
+        {
+            "event": "preCommit",
+            "filePatterns": [
+                "*"
+            ]
+        }
+    ],
+    "action": {
+        "type": "sequence",
+        "steps": [
+            {
+                "name": "lint-check",
+                "command": "npm run lint --if-present",
+                "onError": {
+                    "severity": "warning",
+                    "message": "⚠️ Lint 檢查發現問題"
+                }
+            },
+            {
+                "name": "type-check",
+                "command": "npm run typecheck --if-present || tsc --noEmit 2>/dev/null || true",
+                "onError": {
+                    "severity": "warning",
+                    "message": "⚠️ 型別檢查發現問題"
+                }
+            },
+            {
+                "name": "security-scan",
+                "command": "npm audit --audit-level=high 2>/dev/null || true",
+                "onError": {
+                    "severity": "warning",
+                    "message": "⚠️ 發現高風險安全漏洞"
+                }
+            }
+        ],
+        "onAllPass": {
+            "message": "✅ 所有預提交檢查通過"
+        }
+    },
+    "excludePaths": [
+        "node_modules/**",
+        ".git/**",
+        "dist/**",
+        "build/**"
+    ],
+    "enabled": true
+}

@@ -1,130 +1,211 @@
 -- MudCombat Module
--- Handles combat related logic: Safe Summon, Dispel, etc.
-
-local function require_module(name)
-    local paths = {
-        "scripts.modules." .. name,
-        "modules." .. name,
-        name
-    }
-    for _, p in ipairs(paths) do
-        local status, res = pcall(require, p)
-        if status then return res end
-    end
-    error("MudCombat cannot load dependency: " .. name)
-end
-
-local MudUtils = require_module("MudUtils")
-
 local MudCombat = {}
-_G.MudCombat = MudCombat
+MudCombat.__index = MudCombat
 
 MudCombat.state = {
-    summon_retries = 0,
-    summon_cb_id = 0,
-    summon_callbacks = {},
-    summon_active = false,
-    -- Configuration for current summon
-    target = nil,
-    cmd = nil,
-    opts = nil,
+    in_combat = false,
+    last_combat_time = 0,
 }
 
--- Safe Summon
--- opts: { max_retries=3, retry_delay=2.0, verify_delay=1.0 }
-function MudCombat.safe_summon(target_name, summon_cmd, opts, success_cb, fail_cb)
-    local s = MudCombat.state
-    s.summon_active = true
-    s.target = target_name
-    s.cmd = summon_cmd
-    -- Default options
-    s.opts = opts or {}
-    s.opts.max_retries = s.opts.max_retries or 3
-    s.opts.retry_delay = s.opts.retry_delay or 2.0
-    s.opts.verify_delay = s.opts.verify_delay or 1.0
+MudCombat.config = {
+    timeout = 3, -- Seconds to wait before considering combat ended
+    debug = false,
+}
+
+-- Key phrases that indicate active combat
+local COMBAT_KEYWORDS = {
+    "口吐鮮血", "皮綻肉開", "生死的邊緣掙扎", 
+    "攻擊", "閃躲", "不需要.*休息",
+    "正在這兒攻擊著 你!", "伺機而動", "蓄勢待發", "盤算著對手",
+    "喝道", "叫道", "嚷道", "這一擊", "造成了", "遭受了",
+    "迴避", "格擋", "招架", "慘叫", "倒地", "逃跑",
+    "只剩.*氣", "搖搖欲墜", "已經面無血色了",
+    "絲毫不放在眼裡", "用力一擊", "身陷戰鬥中"
+}
+
+
+function MudCombat.reset()
+    MudCombat.state.last_combat_time = 0
+    MudCombat.state.in_combat = false
     
-    s.summon_retries = 0
-    s.summon_cb_id = s.summon_cb_id + 1
-    s.summon_callbacks[s.summon_cb_id] = {success=success_cb, fail=fail_cb}
-    
-    -- Start summoning
-    MudCombat.do_summon(MudUtils.run_id)
+    -- Reset summon state
+    MudCombat.summon_state = {
+        active = false,
+        timer_id = nil,
+    }
 end
 
-function MudCombat.do_summon(rid)
-    if not MudUtils.check_run(rid) then return end
-    local s = MudCombat.state
-    if not s.summon_active then return end
-    
-    if mud then mud.send(s.cmd) end
+-- Initialize summon state
+MudCombat.summon_state = {
+    active = false,
+    timer_id = nil,
+}
+
+local function require_mudutils()
+    -- Try to load MudUtils if available, for timers
+    if _G.MudUtils then return _G.MudUtils end
+    local status, mod = pcall(require, "scripts.modules.MudUtils")
+    if status then return mod end
+    status, mod = pcall(require, "modules.MudUtils")
+    if status then return mod end
+    return nil
 end
 
--- Hook handler for summon messages
-function MudCombat.on_server_message(clean_line)
-    local s = MudCombat.state
-    if not s.summon_active then return end
+
+function MudCombat.safe_summon(target_name, summon_cmd, options, on_success, on_fail)
+    local s = MudCombat.summon_state
     
-    -- Success
-    if string.find(clean_line, "突然出現在你的眼前") then
-        -- Wait verify_delay to check if fled
-        MudUtils.safe_timer(s.opts.verify_delay, function(rid)
-            MudCombat.check_summon_success(rid)
-        end)
+    -- Validations
+    if not target_name or not summon_cmd then
+        if on_fail then on_fail() end
         return
     end
+
+    -- Setup state
+    s.active = true
+    s.target_name = target_name
+    s.summon_cmd = summon_cmd
+    s.on_success = on_success
+    s.on_fail = on_fail
     
-    -- Fail (generic fail message? User provided "你失敗了")
-    if string.find(clean_line, "你失敗了") then
-        s.summon_retries = s.summon_retries + 1
-        if s.summon_retries >= s.opts.max_retries then
-            MudCombat.finish_summon(false)
-        else
-            MudUtils.safe_timer(s.opts.retry_delay, function(rid) 
-                MudCombat.do_summon(rid) 
-            end)
+    -- Options defaults
+    options = options or {}
+    s.max_retries = options.max_retries or 3
+    s.retry_delay = options.retry_delay or 2.0
+    s.verify_delay = options.verify_delay or 1.0
+    s.retries = 0
+    s.verify_timer_id = nil -- Reset verify timer
+
+    MudCombat.do_summon()
+end
+
+function MudCombat.do_summon()
+    local s = MudCombat.summon_state
+    if not s.active then return end
+    
+    mud.send(s.summon_cmd)
+end
+
+function MudCombat.retry_summon()
+    local s = MudCombat.summon_state
+    if not s.active then return end
+    
+    -- Cancel any pending verification if we are retrying
+    -- (e.g. noticed flee after success msg)
+    if s.verify_timer_id then
+        -- We can't easily cancel in some engines without ID, but we can invalidate the state
+        -- by setting verify_timer_id to nil, and checking it in verify callback?
+        -- Actually, the callback checks s.active. 
+        -- But s.active remains true during retry! 
+        -- So we need a specific way to tell the pending callback "you are obsolete".
+        -- Let's use a unique generation ID or simply clear verify_timer_id and check it in callback?
+        -- No, the callback doesn't know *which* timer ID it was.
+        -- Better: increment a 'summon_attempt_id' every time we retry/start.
+        s.verify_timer_id = nil
+    end
+    
+    s.retries = s.retries + 1
+    if s.retries >= s.max_retries then
+        s.active = false
+        if s.on_fail then s.on_fail() end
+        return
+    end
+
+    if mud and mud.timer then
+        mud.timer(s.retry_delay, "_G.MudCombat.do_summon()")
+    end
+end
+
+function MudCombat.on_server_message(line)
+    local now = os.time()
+    local detected = false
+    
+    -- 1. Check existing combat keywords
+    for _, keyword in ipairs(COMBAT_KEYWORDS) do
+        if string.find(line, keyword) then
+            detected = true
+            break
         end
-        return
     end
     
-    -- Immediate Flee detection (during verify delay usually, but might happen fast)
-    if s.target and string.find(clean_line, s.target) and (string.find(clean_line, "離開了") or string.find(clean_line, "逃了")) then
-        -- If we catch a flee message, we might need to cancel the pending success check
-        -- But easiest is to handle it in check_summon_success by state or re-trigger there.
-        -- If we catch it here immediately, we can just trigger retry.
-        s.last_fled = true 
+    if detected then
+        MudCombat.state.last_combat_time = now
+        MudCombat.state.in_combat = true
+        if MudCombat.config.debug then print("[MudCombat] Activity Detected") end
+        return true
     end
-end
-
-
-function MudCombat.check_summon_success(rid)
-    if not MudUtils.check_run(rid) then return end
-    local s = MudCombat.state
-    if not s.summon_active then return end
     
-    if s.last_fled then
-        s.last_fled = false
-        -- Fled, so retry
-        s.summon_retries = 0 
-        -- Immediate retry or small delay? 
-        -- If we use safe_timer here, we need to make sure test waits for it.
-        MudUtils.safe_timer(s.opts.retry_delay, function(rid)
-             MudCombat.do_summon(rid)
-        end)
-    else
-        MudCombat.finish_summon(true)
+    -- 2. Check summon outcomes if active
+    local s = MudCombat.summon_state
+    if s.active then
+        -- Success pattern: "Papa 突然出現在你的眼前"
+        if string.find(line, s.target_name .. ".*突然出現在你的眼前") then
+            -- Verify delay before success callback (to check for immediate flee)
+            if mud and mud.timer then
+                -- Store the timestamp or ID to validate in callback
+                s.last_success_time = os.time()
+                s.pending_verification = true
+                s.verify_timer_id = mud.timer(s.verify_delay, "_G.MudCombat.verify_summon_success()")
+            end
+            return true
+        end
+        
+        -- Failure pattern: "你失敗了"
+        if string.find(line, "你失敗了") then
+            s.pending_verification = false 
+            MudCombat.retry_summon()
+            return true
+        end
+        
+        -- Flee pattern (checking if target leaves immediately)
+        -- "Papa 往北邊離開了"
+        if string.find(line, s.target_name .. ".*往.*離開了") then
+            -- If verification is pending, we MUST cancel it effectively
+            if s.pending_verification then
+                if MudCombat.config.debug then print("[MudCombat] Target fled during verification!") end
+                s.pending_verification = false 
+                MudCombat.retry_summon()
+                return true
+            end
+        end
     end
+    
+    return false
 end
 
-
-function MudCombat.finish_summon(success)
-    local s = MudCombat.state
-    s.summon_active = false
-    local cbs = s.summon_callbacks[s.summon_cb_id]
-    if cbs then
-        if success and cbs.success then cbs.success() end
-        if not success and cbs.fail then cbs.fail() end
+function MudCombat.verify_summon_success()
+    local s = MudCombat.summon_state
+    -- If active is false, do nothing
+    if not s.active then return end
+    
+    -- Check if we are still pending verification
+    if not s.pending_verification then
+        -- This means a flee or failure happened in the meantime
+        return 
     end
-    s.summon_callbacks[s.summon_cb_id] = nil
+    
+    -- Success confirmed
+    s.active = false
+    s.pending_verification = false
+    if s.on_success then s.on_success() end
 end
+
+function MudCombat.is_fighting()
+    -- check if we are within timeout window
+    local now = os.time()
+    if now - MudCombat.state.last_combat_time < MudCombat.config.timeout then
+        return true
+    end
+    return false
+end
+
+-- Force update combat time (e.g. when "You are fighting!" message is received)
+function MudCombat.active()
+    MudCombat.state.last_combat_time = os.time()
+    MudCombat.state.in_combat = true
+end
+
+-- Export to global for timer callbacks
+_G.MudCombat = MudCombat
 
 return MudCombat

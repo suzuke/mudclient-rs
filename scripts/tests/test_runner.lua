@@ -49,6 +49,7 @@ local test_files = {
     "scripts/tests/test_ikkoku_quest.lua",
     "scripts/tests/test_itemfarm.lua",
     "scripts/tests/test_ikkoku_integration_real.lua",
+    "scripts/tests/test_fix_verification.lua",
    -- "scripts/smurf_quest.lua" -- Syntax check only
 }
 

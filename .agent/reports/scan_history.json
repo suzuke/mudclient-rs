@@ -1,0 +1,29 @@
+[
+  {
+    "timestamp": 1771381029204,
+    "issues": [],
+    "summary": {
+      "totalIssues": 0,
+      "todoCount": 0,
+      "durationMs": 209
+    }
+  },
+  {
+    "timestamp": 1771318593323,
+    "issues": [],
+    "summary": {
+      "totalIssues": 0,
+      "todoCount": 0,
+      "durationMs": 120
+    }
+  },
+  {
+    "timestamp": 1771318184414,
+    "issues": [],
+    "summary": {
+      "totalIssues": 0,
+      "todoCount": 0,
+      "durationMs": 154
+    }
+  }
+]

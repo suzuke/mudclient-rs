@@ -221,7 +221,7 @@ impl TelnetClient {
                     // 將回應放入緩衝區，等讀取完成後統一發送或由 flush 調用
                     self.outgoing_buffer.extend_from_slice(&response);
                 }
-            } else if let TelnetEvent::Subnegotiation(option, data) = event {
+            } else if let TelnetEvent::Subnegotiation(_option, _data) = event {
             }
         }
 

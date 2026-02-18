@@ -5,7 +5,8 @@ MudExplorer.__index = MudExplorer
 function MudExplorer.new()
     local self = setmetatable({}, MudExplorer)
     self.path_stack = {}
-    self.visited = {}
+    self.visited = {}      -- { "x,y,z" = true }
+    self.visited_ids = {}  -- { "hash" = true } [NEW]
     self.is_done = false
     -- coordinates? pos = {x=0, y=0, z=0}
     return self
@@ -74,23 +75,14 @@ end
 function MudExplorer:start()
     self.is_done = false
     self.visited = {}
+    self.visited_ids = {} -- [NEW]
     self.path_stack = {}
     self.pos = {x=0, y=0, z=0}
     self.pending_move = nil
     self.room_count = 0
 end
 
-function MudExplorer:process_room(line)
-    -- 1. Parse exits
-    local exits = parse_exits(line)
-    if not exits or #exits == 0 then
-        -- In case of parsing error or no exits, we still need to process
-        -- But really we assume line contains exits. 
-        -- If line doesn't contain exits, maybe we shouldn't return anything yet?
-        -- For the sake of the module, we assume this function is called when exits are found.
-    end
-
-    -- 2. Confirm pending move (update pos)
+function MudExplorer:confirm_move()
     if self.pending_move then
         if self.pending_move.type == "forward" then
             local d = self.pending_move.d
@@ -106,30 +98,72 @@ function MudExplorer:process_room(line)
         end
         self.pending_move = nil
     end
+end
 
-    -- 3. Mark visited
-    local key = pos_key(self.pos)
-    if not self.visited[key] then
-        self.visited[key] = true
+function MudExplorer:process_room(line)
+    -- 1. Parse exits
+    local exits = parse_exits(line)
+    if not exits or #exits == 0 then
+        -- In case of parsing error or no exits, we still need to process
+        -- But really we assume line contains exits. 
+    end
+    
+    -- 2. Confirm pending move (update pos)
+    self:confirm_move()
+    
+    -- [NEW] Room ID Check
+    local room_id = mud and mud.get_current_room_id() or nil
+    
+    -- 3. Mark visited (Multi-criteria)
+    local p_key = pos_key(self.pos)
+    local is_new_pos = not self.visited[p_key]
+    
+    -- Logic: If ID is seen before, treat as visited even if pos is new (Loop closed)
+    local already_visited = false
+    
+    if room_id then
+        if self.visited_ids[room_id] then 
+            already_visited = true 
+            -- Mark current pos as visited too
+            self.visited[p_key] = true
+        else
+            self.visited_ids[room_id] = true
+        end
+    end
+    
+    if is_new_pos then
+        self.visited[p_key] = true
         self.room_count = self.room_count + 1
+    else
+        already_visited = true
     end
 
-    -- 4. Decide next move
-    -- Try unvisited neighbors
-    for _, dir_name in ipairs(DIR_PRIORITY) do
-        local has_exit = false
-        for _, ex in ipairs(exits) do
-            if ex == dir_name then has_exit = true; break end
-        end
+    if MudExplorer.config.debug then
+        mud.echo(string.format("[MudExplorer] Pos:%s, ID:%s, NewPos:%s, VisitedBefore:%s", 
+            p_key, tostring(room_id), tostring(is_new_pos), tostring(already_visited)))
+    end
 
-        if has_exit then
-            local d = DIR_BY_NAME[dir_name]
-            local next_pos = {x=self.pos.x+d.dx, y=self.pos.y+d.dy, z=self.pos.z+d.dz}
-            local next_key = pos_key(next_pos)
-            
-            if not self.visited[next_key] then
-                self.pending_move = {type="forward", d=d}
-                return d.cmd
+    if already_visited then
+        if MudExplorer.config.debug then mud.echo("[MudExplorer] Loop detected (ID/Pos known). Backtracking.") end
+    end
+
+    -- 4. Decide next move (嘗試未訪問的鄰居 — 不論是否已訪問過當前位置)
+    for _, dir_name in ipairs(DIR_PRIORITY) do
+        local d = DIR_BY_NAME[dir_name]
+        if d then
+            local has_exit = false
+            for _, ex in ipairs(exits) do
+                if ex == dir_name or ex == d.cmd or ex == d.name then has_exit = true; break end
+            end
+    
+            if has_exit then
+                local next_pos = {x=self.pos.x+d.dx, y=self.pos.y+d.dy, z=self.pos.z+d.dz}
+                local next_key = pos_key(next_pos)
+                
+                if not self.visited[next_key] then
+                    self.pending_move = {type="forward", d=d}
+                    return d.cmd
+                end
             end
         end
     end
@@ -152,7 +186,8 @@ end
 MudExplorer.config = {
     target = nil,
     max_laps = 5,
-    debug = false
+    debug = false,
+    disable_open_doors = false,
 }
 
 MudExplorer.state = {
@@ -178,15 +213,33 @@ function MudExplorer.explore(callback)
     
     if MudExplorer.config.debug then mud.echo("[MudExplorer] Start Explore") end
     
-    -- Initial Look / Open
-    MudExplorer.open_all()
+    -- Initial Look (Don't open blindly, wait for Exits)
     mud.send("l")
 end
 
-function MudExplorer.open_all()
-    mud.send("op n"); mud.send("op s")
-    mud.send("op e"); mud.send("op w")
-    mud.send("op u"); mud.send("op d")
+-- Open doors only for directions NOT in visible exits
+function MudExplorer.try_open_doors(visible_exits)
+    if MudExplorer.config.disable_open_doors then return end
+
+    local exit_set = {}
+    if visible_exits then
+        for _, dir in ipairs(visible_exits) do
+            exit_set[dir] = true
+        end
+    end
+
+    local commands = {}
+    -- Only try to open directions that are NOT visible exits (potential hidden doors)
+    for _, dir_info in ipairs(DIR_INFO) do
+        if not exit_set[dir_info.name] then
+             table.insert(commands, "op " .. dir_info.cmd)
+        end
+    end
+    
+    -- Send commands
+    if #commands > 0 then
+        mud.send(table.concat(commands, ";"))
+    end
 end
 
 function MudExplorer.stop()
@@ -213,6 +266,10 @@ function MudExplorer.on_server_message(line)
     -- 1. Check Target
     if MudExplorer.config.target and string.find(string.lower(line), string.lower(MudExplorer.config.target), 1, true) then
         if MudExplorer.config.debug then mud.echo("[MudExplorer] Target Found: " .. line) end
+        
+        -- FIX: Confirm the pending move that brought us here, effectively updating the stack
+        if s.instance then s.instance:confirm_move() end
+        
         s.exploring = false
         if s.callback then s.callback(true, line) end
         return
@@ -220,6 +277,14 @@ function MudExplorer.on_server_message(line)
 
     -- 2. Check Exits (Trigger Move)
     if string.find(line, "%[Exits:") or string.find(line, "%[出口:") then
+        -- Double-hook protection: If we just processed this line (or same room type/exits), ignore
+        local now = os.clock()
+        if s.last_exit_process_time and (now - s.last_exit_process_time < 0.1) then
+            if MudExplorer.config.debug then mud.echo("[MudExplorer] Ignoring duplicate exit signal") end
+            return
+        end
+        s.last_exit_process_time = now
+
         -- Delay processing to ensure all room content (mobs) is seen
         s.last_exit_line = line
         MudUtils.safe_timer(0.5, MudExplorer.process_step_dispatch) 
@@ -254,15 +319,20 @@ end
 function MudExplorer.process_step_dispatch(rid)
     if not MudUtils.check_run(rid) then return end
     local s = MudExplorer.state
+    -- Strict check: if exploring is false (e.g. target found), stop immediately
     if not s.exploring then return end
-    
-    -- If we just arrived and haven't opened doors, open them and look again?
-    -- Logic from MobFinder:
+
+    -- If we just arrived and haven't opened doors (to find hidden ones), try opening
     local inst = s.instance
-    if inst.pending_move and inst.pending_move.type == "forward" and not s.doors_opened then
+    if inst.pending_move and inst.pending_move.type == "forward" and not s.doors_opened and not MudExplorer.config.disable_open_doors then
         s.doors_opened = true
-        MudExplorer.open_all()
-        mud.send("l") -- Re-look
+        
+        -- Parse current exits to avoid redundant opening
+        local exits = parse_exits(s.last_exit_line or "")
+        MudExplorer.try_open_doors(exits)
+        
+        -- After trying to open, we should look again to update exits?
+        mud.send("l")
         return
     end
     
@@ -289,15 +359,51 @@ function MudExplorer.process_next_step()
             if MudExplorer.config.debug then mud.echo("[MudExplorer] Starting Lap " .. (s.laps + 1)) end
             -- Restart
             s.instance:start()
-            s.instance.visited[pos_key(s.instance.pos)] = true -- Mark start as visited?
-            -- Or just reset visited?
-            -- MobFinder logic: reset visited, keep room_count?
+            
+            -- Keep start node visited??
+            -- Logic: If we reset visited, we might cycle immediately if stuck?
+            -- But we want to re-explore potentially.
+            s.instance.visited_ids = {}
             s.instance.visited = {}
             s.instance.visited[pos_key(s.instance.pos)] = true
+             -- Also mark start ID if available (needs query? will happen in first process_room call)
             
             MudExplorer.process_next_step() -- Recursively call to find next move from start
         end
     end
+end
+
+
+function MudExplorer.resume(callback)
+    local s = MudExplorer.state
+    if not s.instance then
+        if MudExplorer.config.debug then mud.echo("[MudExplorer] Cannot resume: No instance") end
+        return
+    end
+
+    s.exploring = true
+    s.callback = callback -- Update callback if needed
+    s.target_in_room = false
+    s.doors_opened = false
+    
+    if MudExplorer.config.debug then mud.echo("[MudExplorer] Resuming Explore") end
+    
+    -- Immediately process next step based on current state
+    -- We need to act as if we just arrived in the room
+    mud.send("l")
+end
+
+function MudExplorer.get_path_to_start()
+    local s = MudExplorer.state
+    if not s.instance then return nil end
+    
+    local path = {}
+    -- Reverse iteration of path_stack
+    for i = #s.instance.path_stack, 1, -1 do
+        table.insert(path, s.instance.path_stack[i].rev)
+    end
+    
+    return table.concat(path, ";")
 end
 
 return MudExplorer

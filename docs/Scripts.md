@@ -10,6 +10,7 @@
 2. [Practice - 法術練習](#practice---法術練習)
 3. [MemCalc - 記憶點數計算機](#memcalc---記憶點數計算機)
 4. [SkillPlanner - 技能配置規劃](#skillplanner---技能配置規劃)
+5. [MudNav & MudExplorer - 導航與地圖系統](Navigation.md)
 
 ---
 
@@ -264,6 +265,15 @@ graph LR
 2. **SkillPlanner** 讀取資料庫進行配置規劃
 3. **Practice** 自動練習未滿的法術
 4. **AutoCast** 持續施法練習特定技能
+5. **MudNav/MudExplorer** 處理移動與探索
+
+---
+
+## MudNav & MudExplorer - 導航與地圖系統
+
+關於路徑導航、自動開圖與最新的 **Room ID 防迷路機制**，請參閱專屬文件：
+
+👉 [**導航與地圖系統使用手冊**](Navigation.md)
 
 ---
 

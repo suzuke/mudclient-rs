@@ -101,6 +101,7 @@ function MudNav.send_next()
     s.last_send_time = now
     s.waiting_confirm = true -- 等待伺服器回應（出口或特定訊息）
     s.current_step_obj = step -- Store for verification
+    s.forced_look = false -- 重置 auto-look 標記
     
     -- [NEW] Auto-Look Timeout (Recover if no room update, e.g. recall at start)
     if s.confirm_timer_id then 
@@ -112,6 +113,7 @@ function MudNav.send_next()
     s.confirm_timer_id = MudUtils.safe_timer(3.0, function()
         if s.walking and not s.paused and s.waiting_confirm then
              if MudNav.config.debug then mud.echo("[MudNav] Step Stuck (No Exits). Forcing Look...") end
+             s.forced_look = true -- 標記為 auto-look 觸發
              mud.send("l")
         end
     end)
@@ -189,58 +191,48 @@ end
 -- For recording, I'll add a simple `MudNav.add_step(dir)`
 -- user can make aliases: `alias n = lua MudNav.add_step("n")`
 
-function MudNav.on_server_message(line)
+function MudNav.on_server_message(line, clean_line)
     local s = MudNav.state
+    -- Use clean_line for matching if available, fallback to line
+    local text = clean_line or line
     
     -- System Hooks for Recording
     if s.recording then
-        -- Debug: Print everything we see to identify why patterns fail
-        -- mud.echo("[DEBUG-REC] " .. MudUtils.string_to_hex(line) .. " | " .. line)
-        
         -- 1. Capture User Input (Echoed as "> cmd")
-        -- Relaxed pattern: Allow whitespace, handle potential color codes if passed (though session.rs likely sends clean)
-        -- Try matching ">" anywhere near start?
-        local cmd_input = line:match("^> (.*)")
+        local cmd_input = text:match("^> (.*)")
         if not cmd_input then
-             -- Try without space?
-             cmd_input = line:match("^>(.*)")
+             cmd_input = text:match("^>(.*)")
         end
         
         if cmd_input then
-            local clean_cmd = cmd_input:match("^%s*(.-)%s*$") -- Trim
+            local clean_cmd = cmd_input:match("^%s*(.-)%s*$")
             if clean_cmd ~= "" then
                 s.last_rec_cmd = clean_cmd
-                mud.echo("[MudNav] 捕捉指令: " .. clean_cmd)
             end
             return
         end
         
         -- 2. Capture Room ID (Confirming the move)
-        -- Format: (ID: {hash{x})
-        -- Using non-greedy match for hash
-        local id = line:match("%(ID: {(.-){x}%)") 
+        local id = text:match("%(ID: (.-)%)")
         if id then
-             -- mud.echo("[MudNav] ID Detected: " .. id)
              if s.last_rec_cmd then
                  table.insert(s.recorded_path, { cmd = s.last_rec_cmd, id = id })
                  mud.echo("[MudNav] ⏺️ 記錄成功: " .. s.last_rec_cmd .. " -> " .. string.sub(id, 1, 8))
-                 s.last_rec_cmd = nil -- Reset
-             else
-                 -- mud.echo("[MudNav] ID ignored (no pending cmd)")
+                 s.last_rec_cmd = nil
              end
         end
         
-        -- Recording mode does NOT execute walking logic
         return 
     end
 
     if not s.walking then return end
     
     -- 偵測碰撞/失敗 (重置等待狀態)
-    if string.find(line, "這個方向沒有路") or string.find(line, "不能往") then
+    if string.find(text, "這個方向沒有路") or string.find(text, "不能往") then
         s.waiting_confirm = false
         -- 撞牆時通常應該停止或跳過，這裡選擇 advance
         MudUtils.safe_timer(MudNav.config.walk_delay, function()
+            if not s.walking or s.paused then return end
             s.index = s.index + 1
             MudNav.send_next()
         end)
@@ -248,7 +240,7 @@ function MudNav.on_server_message(line)
     end
 
     -- Detect 移動力
-    if string.find(line, "精疲力竭") or string.find(line, "移動力不足") then
+    if string.find(text, "精疲力竭") or string.find(text, "移動力不足") then
         if not s.paused then
             s.paused = true
             s.waiting_confirm = false
@@ -257,7 +249,7 @@ function MudNav.on_server_message(line)
         return
     end
     
-    if string.find(line, "recovering") or string.find(line, "恢復") then
+    if string.find(text, "recovering") or string.find(text, "恢復") then
         if s.paused then
             s.paused = false
             MudUtils.safe_timer(0.5, function() MudNav.send_next() end)
@@ -265,11 +257,11 @@ function MudNav.on_server_message(line)
         return
     end
 
-    -- Detect Exits (to advance)
-    if string.find(line, "%[出口:") then
+    -- Detect Exits (核心前進與驗證邏輯)
+    if string.find(text, "%[出口:") then
         if MudNav.config.debug then mud.echo("[MudNav] Detected Exits. Waiting=" .. tostring(s.waiting_confirm)) end
         
-        -- Double-hook protection: If we just processed this, ignore
+        -- 防重複觸發
         local now = os.clock()
         if s.last_exit_process_time and (now - s.last_exit_process_time < 0.1) then
             if MudNav.config.debug then mud.echo("[MudNav] Ignoring duplicate exit signal") end
@@ -279,23 +271,30 @@ function MudNav.on_server_message(line)
         
         -- 核心防洪邏輯：只有在我們確實在等待確認時才前進
         if s.waiting_confirm and not s.paused then
-             s.waiting_confirm = false -- 已收到回應，清除標記
+             s.waiting_confirm = false
              
-             -- [NEW] Verification Logic
+             -- ID 驗證邏輯：直接用 API 查詢 Rust 端已計算好的 Room ID
              local step = s.current_step_obj
              if type(step) == "table" and step.id then
-                 local current_id = mud.get_current_room_id()
-                 if current_id and current_id ~= step.id then
+                 local actual_id = mud and mud.get_current_room_id() or nil
+                 if actual_id and actual_id == step.id then
+                     if MudNav.config.debug then mud.echo("[MudNav] ✅ ID 驗證通過: " .. string.sub(actual_id, 1, 8)) end
+                 elseif actual_id then
                      mud.echo("🛑 [MudNav] 導航錯誤：路徑偏移！")
                      mud.echo("   預期 ID: " .. tostring(step.id))
-                     mud.echo("   實際 ID: " .. tostring(current_id))
+                     mud.echo("   實際 ID: " .. tostring(actual_id))
                      s.walking = false
                      if s.callback then s.callback(false, "id_mismatch") end
                      return
+                 else
+                     if MudNav.config.debug then mud.echo("[MudNav] ⚠️ 未收到 Room ID，跳過驗證") end
                  end
              end
              
-             MudUtils.safe_timer(MudNav.config.walk_delay, function()
+             -- auto-look 後用較長延遲，避免下一步指令太快被吃掉
+             local delay = s.forced_look and 1.5 or MudNav.config.walk_delay
+             s.forced_look = false
+             MudUtils.safe_timer(delay, function()
                  if MudNav.config.debug then mud.echo("[MudNav] Timer Fired. Index=" .. s.index) end
                  if not s.walking or s.paused then return end
                  s.index = s.index + 1
@@ -304,9 +303,10 @@ function MudNav.on_server_message(line)
         end
         return
     end
+
     
     -- Detect Closed/Locked Doors
-    if string.find(line, "關著") or string.find(line, "鎖著") then
+    if string.find(text, "關著") or string.find(text, "鎖著") then
         s.waiting_confirm = false
         
         -- Handle both string and table cmd
@@ -338,7 +338,7 @@ function MudNav.on_server_message(line)
          local success_patterns = {"Ok%.", "opened", "OK%.", "打開了", "解開了", "已經打開", "門老早就是開著"}
          
          for _, pat in ipairs(success_patterns) do
-             if string.find(line, pat) then
+             if string.find(text, pat) then
                  if s.waiting_confirm and not s.paused then
                      s.waiting_confirm = false
                      MudUtils.safe_timer(MudNav.config.walk_delay, function()

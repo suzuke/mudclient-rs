@@ -178,7 +178,7 @@ _G.on_server_message = function(line, clean_line)
     local status, err = pcall(function()
         if base_hook then base_hook(line, clean_line) end
         -- Global Hook Delegation
-        MudNav.on_server_message(clean_line)
+        MudNav.on_server_message(line, clean_line)
         MudExplorer.on_server_message(clean_line)
     end)
     if not status then

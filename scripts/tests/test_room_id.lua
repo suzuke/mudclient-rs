@@ -36,7 +36,39 @@ function test_room_id()
         return
     end
     
+    -- Test Strict vs Lax
+    local id_strict = mud.get_room_id(name, desc, exits, true)
+    local id_lax = mud.get_room_id(name, desc, exits, false)
+    
+    if id_strict == id_lax then
+        -- They might be accidentally same if hash algo is broken, but generally should differ
+        -- Actually, SHA256(A+B+C) vs SHA256(A+B) are definitely different
+        mud.echo("Error: Strict and Lax IDs should be different")
+        return
+    end
+
+    local exits_changed = {"north", "south", "up"}
+    local id_lax_changed = mud.get_room_id(name, desc, exits_changed, false)
+    
+    if id_lax ~= id_lax_changed then
+        mud.echo("Error: Lax ID should ignore exits")
+        return
+    end
+
     mud.echo("mud.get_room_id() tests passed!")
+end
+
+function test_current_room_api()
+    mud.echo("Testing mud.get_current_room()...")
+    local room = mud.get_current_room()
+    if room then
+        mud.echo("Current Room Info:")
+        mud.echo("  Name: " .. room.name)
+        mud.echo("  Desc Type: " .. type(room.description))
+        mud.echo("  Exits Count: " .. #room.exits)
+    else
+        mud.echo("Current Room is nil (expected if no room detected yet)")
+    end
 end
 
 function test_current_room()
@@ -47,7 +79,17 @@ function test_current_room()
     if current == nil then
         mud.echo("Note: Current Room ID is nil (expected if no room detected yet)")
     end
+
+    local lax = mud.get_current_room_id(false)
+    if lax then
+        mud.echo("Current Room Lax ID: " .. tostring(lax))
+        if current == lax and current ~= nil then
+             -- usually diff unless no exits
+             mud.echo("Note: Strict and Lax ID match (no exits?)")
+        end
+    end
 end
 
 test_room_id()
 test_current_room()
+test_current_room_api()

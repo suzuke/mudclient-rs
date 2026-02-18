@@ -73,8 +73,8 @@ pub struct ScriptEngine {
     persistent_vars: RefCell<HashMap<String, String>>,
     /// 腳本目錄的絕對路徑，用於 dofile 查找
     scripts_dir: Option<String>,
-    /// 當前房間 ID (Thread-local storage concept within engine)
-    current_room_id: RefCell<Option<String>>,
+    /// 當前房間 (Thread-local storage concept within engine)
+    current_room: RefCell<Option<crate::map::Room>>,
 }
 
 impl ScriptEngine {
@@ -86,7 +86,7 @@ impl ScriptEngine {
             scripts: HashMap::new(),
             persistent_vars: RefCell::new(HashMap::new()),
             scripts_dir: None,
-            current_room_id: RefCell::new(None),
+            current_room: RefCell::new(None),
         }
     }
 
@@ -95,9 +95,9 @@ impl ScriptEngine {
         self.scripts_dir = Some(dir.into());
     }
 
-    /// 設定當前房間 ID
-    pub fn set_current_room_id(&self, id: Option<String>) {
-        *self.current_room_id.borrow_mut() = id;
+    /// 設定當前房間
+    pub fn set_current_room(&self, room: Option<crate::map::Room>) {
+        *self.current_room.borrow_mut() = room;
     }
 
     /// 載入腳本
@@ -311,19 +311,39 @@ impl ScriptEngine {
             })?;
             mud.set("enable_trigger", enable_trigger_fn)?;
 
-            // mud.get_room_id(name, desc, exits) -> string
-            let get_room_id_fn = scope.create_function(|_lua, (name, desc, exits): (String, String, Vec<String>)| {
+            // mud.get_room_id(name, desc, exits, [strict]) -> string
+            let get_room_id_fn = scope.create_function(|_lua, (name, desc, exits, strict): (String, String, Vec<String>, Option<bool>)| {
                 let room = crate::map::Room::new(&name, &desc, exits);
-                Ok(room.hash())
+                Ok(room.hash(strict.unwrap_or(true)))
             })?;
             mud.set("get_room_id", get_room_id_fn)?;
 
-            // mud.get_current_room_id() -> string | nil
-            let current_room_id = self.current_room_id.borrow().clone();
-            let get_current_room_id_fn = scope.create_function(move |_lua, ()| {
-                Ok(current_room_id.clone())
+            // mud.get_current_room_id([strict]) -> string | nil
+            let current_room = self.current_room.borrow().clone();
+            let current_room_for_id = current_room.clone();
+            
+            let get_current_room_id_fn = scope.create_function(move |_lua, strict: Option<bool>| {
+                if let Some(room) = &current_room_for_id {
+                    Ok(Some(room.hash(strict.unwrap_or(true))))
+                } else {
+                    Ok(None)
+                }
             })?;
             mud.set("get_current_room_id", get_current_room_id_fn)?;
+
+            // mud.get_current_room() -> {name, description, exits} | nil
+            let get_current_room_fn = scope.create_function(move |lua, ()| {
+                if let Some(room) = &current_room {
+                    let tbl = lua.create_table()?;
+                    tbl.set("name", room.name.clone())?;
+                    tbl.set("description", room.description.clone())?;
+                    tbl.set("exits", room.exits.clone())?;
+                    Ok(Some(tbl))
+                } else {
+                    Ok(None)
+                }
+            })?;
+            mud.set("get_current_room", get_current_room_fn)?;
             
             // 設置全局變數
             self.lua.globals().set("mud", mud)?;
@@ -340,6 +360,21 @@ impl ScriptEngine {
             // 覆寫 dofile：支援從 scripts_dir 查找腳本
             if let Some(dir) = &self.scripts_dir {
                 self.lua.globals().set("__scripts_dir", dir.as_str())?;
+                
+                // 更新 package.path 以支援 require
+                let update_path = self.lua.load(r#"
+                    local path_sep = package.config:sub(1,1)
+                    local scripts_path = __scripts_dir .. path_sep .. "?.lua"
+                    local scripts_init = __scripts_dir .. path_sep .. "?" .. path_sep .. "init.lua"
+                    
+                    if not string.find(package.path, scripts_path, 1, true) then
+                        package.path = package.path .. ";" .. scripts_path .. ";" .. scripts_init
+                    end
+                "#).exec();
+                if let Err(e) = update_path {
+                    tracing::warn!("Failed to update package.path: {}", e);
+                }
+
                 let custom_dofile = self.lua.load(r#"
                     local original_dofile = dofile
                     function dofile(path)

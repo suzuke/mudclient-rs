@@ -1,0 +1,55 @@
+{
+    "name": "commit-msg",
+    "description": "Commit 訊息驗證 - Conventional Commits 格式",
+    "version": "1.0.0",
+    "triggers": [
+        {
+            "event": "commitMsg",
+            "filePatterns": [
+                "COMMIT_EDITMSG"
+            ]
+        }
+    ],
+    "action": {
+        "type": "validate",
+        "rules": [
+            {
+                "name": "conventional-format",
+                "pattern": "^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\\(.+\\))?!?:\\s.+",
+                "errorMessage": "Commit 訊息應遵循 Conventional Commits 格式",
+                "example": "feat(auth): add login validation"
+            },
+            {
+                "name": "no-wip",
+                "pattern": "^(?!.*(WIP|wip|TODO|todo|FIXME|fixme))",
+                "severity": "warning",
+                "errorMessage": "⚠️ Commit 訊息包含 WIP/TODO 等未完成標記"
+            },
+            {
+                "name": "min-length",
+                "minLength": 10,
+                "errorMessage": "Commit 訊息過短（至少 10 字元）"
+            },
+            {
+                "name": "max-length",
+                "maxLength": 100,
+                "severity": "warning",
+                "errorMessage": "⚠️ 建議 Commit 標題不超過 100 字元"
+            }
+        ],
+        "onPass": {
+            "message": "✅ Commit 訊息格式正確"
+        },
+        "onFail": {
+            "blockCommit": false,
+            "showExamples": true,
+            "examples": [
+                "feat(user): add avatar upload feature",
+                "fix(api): resolve null pointer in getUser",
+                "docs: update README installation guide",
+                "refactor!: change API response format (breaking change)"
+            ]
+        }
+    },
+    "enabled": true
+}

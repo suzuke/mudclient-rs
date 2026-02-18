@@ -53,18 +53,18 @@ _G.IkkokuQuest.config = {
 
 -- ===== 任務步驟 =====
 local QUEST_STEPS = {
-    {name="wait_kyokoo",    target="kyokoo",   target_alias="音無響子", path="n;op n;n;w;op n;n", cmds={"talk kyokoo otonashi", "talk kyokoo yes"}, expect="看能不能說服他進來", next="find_otonashi_1"},
+    {name="wait_kyokoo",    target="kyokoo",   target_alias="音無響子(Kyokoo)", path="n;op n;n;w;op n;n", cmds={"talk kyokoo otonashi", "talk kyokoo yes"}, expect="看能不能說服他進來", next="find_otonashi_1"},
     {name="find_otonashi_1", handler="do_otonashi_logic", path="op s;s;e", expect="不要....叫響子出來見我..!!", next="find_kyokoo_2"},
-    {name="find_kyokoo_2",   target="kyokoo",   target_alias="音無響子", path="w;n", cmds={"talk kyokoo otonashi"}, expect="也許五代有辦法，你去問他看看吧...", next="find_godai_1"},
-    {name="find_godai_1",    target="godai",    target_alias="五代裕作", path="op n;n;e;3s;2w;n;op n;n;2e;n;u;s;2w;op n;n", cmds={"talk godai otonashi"}, expect="也許我奶奶有辦法吧....你去問看看吧..", next="find_yukari"},
-    {name="find_yukari",     target="yukari",   target_alias="五代由加莉", path="op s;s;2e;n;d;s;2w;op s;s;s;2e;3n;w;op s;s", cmds={"talk yukari godai", "talk yukari otonashi"}, expect="五代由加莉 把 錦囊 給了你.", next="find_godai_2"},
-    {name="find_godai_2",    target="godai",    target_alias="五代裕作", path="op n;n;e;3s;2w;n;op n;n;2e;n;u;s;2w;op n;n", cmds={"gi bag godai"}, expect="我奶奶說可以試著找四谷先生幫忙...不過四谷是個很怪的人喔..", next="talk_yotsuya"},
+    {name="find_kyokoo_2",   target="kyokoo",   target_alias="音無響子(Kyokoo)", path="w;n", cmds={"talk kyokoo otonashi"}, expect="也許五代有辦法，你去問他看看吧...", next="find_godai_1"},
+    {name="find_godai_1",    target="godai",    target_alias="五代裕作(Yusaku Godai)", path="open s;s;3e;n;u;s;2w;op n;n", cmds={"talk godai otonashi"}, expect="也許我奶奶有辦法吧....你去問看看吧..", next="find_yukari"},
+    {name="find_yukari",     target="yukari",   target_alias="五代由加莉(Yukari)", path="op s;s;2e;n;d;s;3w;n", cmds={"talk yukari godai", "talk yukari otonashi"}, expect="五代由加莉 把 錦囊 給了你.", next="find_godai_2"},
+    {name="find_godai_2",    target="godai",    target_alias="五代裕作(Yusaku Godai)", path="open s;s;3e;n;u;s;2w;op n;n", cmds={"gi bag godai"}, expect="我奶奶說可以試著找四谷先生幫忙...不過四谷是個很怪的人喔..", next="talk_yotsuya"},
     {name="talk_yotsuya",    target="yotsuya",  path="squeeze", handler="do_yotsuya_logic", expect="找朱美比較好解決", next="find_akemi_1"},
-    {name="find_akemi_1",    target="akemi",    target_alias="朱美", path="squeeze east;s;e;op n;n", cmds={"talk akemi yotsuya"}, expect="那麼你只要給我一瓶茶茶丸的白酒", next="go_keeper"},
-    {name="go_keeper",       target="keeper",   target_alias="茶茶丸的老闆", path="op s;s;e;n;d;s;2w;op s;s;s;push door;n;w", cmds={"talk keeper akemi"}, expect="好...你跟我來一下...", next="chachamaru"},
-    {name="chachamaru",      target="keeper",   target_alias="茶茶丸的老闆", path="enter chachamaru", cmds={"talk keeper akemi"}, expect="茶茶丸的老闆 把 白酒 給了你", next="find_akemi_2"},
-    {name="find_akemi_2",    target="akemi",    target_alias="朱美", path="push door;e;s;enter ikkoku;n;op n;n;2e;n;u;s;w;op n;n", cmds={"gi wine akemi"}, expect="你把 白酒 給了 朱美.", next="find_otonashi_2"},
-    {name="find_otonashi_2", target="otonashi", target_alias="響子的爸爸", path="op s;s;e;n;d;s;w;w", handler="do_otonashi_logic", expect="為了感謝你的幫助，這個戒指就送給你吧!!", next="done"},
+    {name="find_akemi_1",    target="akemi",    target_alias="朱美小姐(Akemi)", path="squeeze east;s;e;op n;n", cmds={"talk akemi yotsuya"}, expect="那麼你只要給我一瓶茶茶丸的白酒", next="go_keeper"},
+    {name="go_keeper",       target="keeper",   target_alias="一個年約四十的老闆(keeper)", path="op s;s;e;n;d;s;2w;op s;s;s;push door;n;w", cmds={"talk keeper akemi"}, expect="好...你跟我來一下...", next="chachamaru"},
+    {name="chachamaru",      target="keeper",   target_alias="一個年約四十的老闆(keeper)", path="enter chachamaru", cmds={"talk keeper akemi"}, expect="茶茶丸的老闆 把 白酒 給了你", next="find_akemi_2"},
+    {name="find_akemi_2",    target="akemi",    target_alias="朱美小姐(Akemi)", path="push door;e;s;enter ikkoku;n;op n;n;2e;n;u;s;w;op n;n", cmds={"gi wine akemi"}, expect="你把 白酒 給了 朱美.", next="find_otonashi_2"},
+    {name="find_otonashi_2", target="otonashi", target_alias="響子的爸爸(Otonashi)", path="op s;s;e;n;d;s;w;w", handler="do_otonashi_logic", expect="為了感謝你的幫助，這個戒指就送給你吧!!", next="done"},
 }
 local STEP_BY_NAME = {}
 for i, step in ipairs(QUEST_STEPS) do STEP_BY_NAME[step.name] = i end
@@ -85,6 +85,14 @@ end
 
 function _G.IkkokuQuest.echo(msg)
     mud.echo("[IkkokuQuest] " .. msg)
+end
+
+-- 輔助函數: 發送可能包含分號的複合指令
+function _G.IkkokuQuest.send_cmds(str)
+    local cmds = MudUtils.parse_cmds(str)
+    for _, cmd in ipairs(cmds) do
+        mud.send(cmd)
+    end
 end
 
 -- ===== 公開 API =====
@@ -113,25 +121,112 @@ function _G.IkkokuQuest.start()
     _G.IkkokuQuest.check_npc_existence(_G.IkkokuQuest.state.run_id)
 end
 
-function _G.IkkokuQuest.check_npc_existence(rid)
+-- 必須存在的 NPC 列表 (ID)
+local REQUIRED_NPCS = {
+    "otonashi", 
+    "kyokoo", 
+    "godai", 
+    "yukari", 
+    "yotsuya", 
+    "akemi", 
+    "keeper"
+}
+
+-- ... (QUEST_STEPS remains)
+
+-- ===== 狀態 =====
+_G.IkkokuQuest.state = {
+    running = false,
+    run_id = 0,
+    step_index = 0,
+    phase = "idle",
+    watchdog_last = 0,
+    finding = false, -- 是否由 MudExplorer 接管
+    missing_npcs = {}, -- 記錄檢查中缺少的 NPC
+    checking_npc_name = nil, -- 當前正在檢查的 NPC
+}
+
+-- ... (check_run, echo, send_cmds remain)
+
+-- ===== 公開 API =====
+
+function _G.IkkokuQuest.start()
+    if _G.IkkokuQuest.state.running then
+        _G.IkkokuQuest.echo("⚠️ 任務已在執行中")
+        return
+    end
+
+    _G.IkkokuQuest.state.running = true
+    _G.IkkokuQuest.state.run_id = MudUtils.get_new_run_id()
+    _G.IkkokuQuest.state.step_index = 1
+    _G.IkkokuQuest.state.phase = "starting"
+    _G.IkkokuQuest.state.finding = false
+    
+    -- 開始 Log
+    MudUtils.start_log("ikkoku")
+
+    -- 註冊並檢查物品
+    MudUtils.register_quest("IkkokuQuest", _G.IkkokuQuest.stop)
+    mud.send("i")
+
+    _G.IkkokuQuest.echo("🚀 啟動相聚一刻任務！")
+    
+    -- 開始檢查 NPC (從第 1 個開始)
+    _G.IkkokuQuest.check_npc_recursive(_G.IkkokuQuest.state.run_id, 1)
+end
+
+function _G.IkkokuQuest.check_npc_recursive(rid, index)
     if not check_run(rid) then return end
-    _G.IkkokuQuest.echo("🔍 正在確認關鍵角色 (otonashi) 是否存在...")
+    
+    -- 如果已經檢查完所有 NPC
+    if index > #REQUIRED_NPCS then
+        local missing_count = #_G.IkkokuQuest.state.missing_npcs
+        if missing_count == 0 then
+            _G.IkkokuQuest.echo("✅ 所有關鍵 NPC 確認存在，繼續執行...")
+            _G.IkkokuQuest.start_flow(rid)
+        else
+            local list_str = table.concat(_G.IkkokuQuest.state.missing_npcs, ", ")
+            _G.IkkokuQuest.echo("⏳ 發現 " .. missing_count .. " 位 NPC 缺席: [" .. list_str .. "]")
+            _G.IkkokuQuest.echo("💤 暫停 30 秒後重新檢查...")
+            
+            _G.IkkokuQuest.state.phase = "waiting_respawn"
+            MudUtils.safe_timer(30.0, function()
+                if not check_run(rid) then return end
+                _G.IkkokuQuest.echo("🔄 重新開始檢查 NPC...")
+                _G.IkkokuQuest.check_npc_recursive(rid, 1)
+            end)
+        end
+        return
+    end
+
+    -- 開始檢查當前 NPC
+    local npc_id = REQUIRED_NPCS[index]
+    -- 初始化狀態 (如果是第一個)
+    if index == 1 then
+        _G.IkkokuQuest.state.missing_npcs = {}
+    end
     
     _G.IkkokuQuest.state.phase = "checking_npc"
-    mud.send("q otonashi")
+    _G.IkkokuQuest.state.checking_npc_name = npc_id
     
-    -- 如果 1.5 秒內沒收到「不存在」的訊息，就假設沒問題
-    MudUtils.safe_timer(1.5, function(new_rid)
-        if not check_run(new_rid) then return end
-        if _G.IkkokuQuest.state.phase == "checking_npc" then
-            _G.IkkokuQuest.echo("✅ 角色確認完畢，繼續執行...")
-            _G.IkkokuQuest.start_flow(new_rid)
-        end
+    -- Silent query suggested? Or explicitly echo? User wants "check".
+    -- mud.send("q " .. npc_id)將會有 system output，Hook 會抓到 "不存在"
+    mud.send("q " .. npc_id)
+    
+    -- 0.8 秒後檢查下一個 (給予 Server 回應緩衝)
+    MudUtils.safe_timer(0.8, function()
+        _G.IkkokuQuest.check_npc_recursive(rid, index + 1)
     end)
+end
+
+function _G.IkkokuQuest.check_npc_existence(rid)
+    -- Deprecated, wrapper for recursive
+    _G.IkkokuQuest.check_npc_recursive(rid, 1)
 end
 
 function _G.IkkokuQuest.start_flow(rid)
     if not check_run(rid) then return end
+    _G.IkkokuQuest.echo("▶️ 開始正式流程 (Recall & Enter)...")
     -- Recall & Entry
     MudUtils.send_cmds("wa;recall") -- 正式開始前醒來
     MudNav.config.debug = _G.IkkokuQuest.config.debug
@@ -215,13 +310,15 @@ end
 
 -- ===== 流程控制 =====
 
--- 自訂 Yotsuya 邏輯
 -- 自訂 Yotsuya 邏輯：他會在地洞與 4, 5 號房之間移動
 function _G.IkkokuQuest.do_yotsuya_logic(rid)
     if not check_run(rid) then return end
     
     local function try_talk()
         if not check_run(rid) then return end
+        -- 嚴格檢查步驟，避免干擾後續流程
+        if _G.IkkokuQuest.state.step_index ~= STEP_BY_NAME["talk_yotsuya"] then return end
+        
         _G.IkkokuQuest.echo("📢 嘗試對話 (talk yotsuya godai)")
         mud.send("talk yotsuya godai")
         -- 核心修正：設定 phase 以便主 Hook 的 expect 檢查能生效
@@ -243,18 +340,28 @@ function _G.IkkokuQuest.do_yotsuya_logic(rid)
         -- 2. 去 Room 4 趕人
         MudUtils.safe_timer(1.5, function()
             if not check_run(rid) then return end
+            if _G.IkkokuQuest.state.step_index ~= STEP_BY_NAME["talk_yotsuya"] then return end
+            
             _G.IkkokuQuest.echo("👉 前往 4 號房...")
             mud.send("squeeze east") -- Gap -> Room 4
             MudUtils.safe_timer(1.2, function()
+                if not check_run(rid) then return end
+                if _G.IkkokuQuest.state.step_index ~= STEP_BY_NAME["talk_yotsuya"] then return end
+
                 try_talk()
                 mud.send("squeeze") -- Room 4 -> Gap
                 
                 -- 3. 去 Room 5 趕人
                 MudUtils.safe_timer(1.5, function()
                     if not check_run(rid) then return end
+                    if _G.IkkokuQuest.state.step_index ~= STEP_BY_NAME["talk_yotsuya"] then return end
+                    
                     _G.IkkokuQuest.echo("👉 前往 5 號房...")
                     mud.send("squeeze west") -- Gap -> Room 5
                     MudUtils.safe_timer(1.2, function()
+                        if not check_run(rid) then return end
+                        if _G.IkkokuQuest.state.step_index ~= STEP_BY_NAME["talk_yotsuya"] then return end
+                        
                         try_talk()
                         mud.send("squeeze") -- Room 5 -> Gap
                         
@@ -520,7 +627,7 @@ function _G.IkkokuQuest.on_server_message(line, clean_line)
     MudCombat.on_server_message(clean_line)
 
     -- 委派給 MudNav
-    MudNav.on_server_message(clean_line)
+    MudNav.on_server_message(line, clean_line)
     
     local s = _G.IkkokuQuest.state
     local step = QUEST_STEPS[s.step_index]
@@ -528,9 +635,14 @@ function _G.IkkokuQuest.on_server_message(line, clean_line)
     -- 檢查 NPC 是否存在 (Pre-check)
     if s.phase == "checking_npc" then
         if string.find(clean_line, "這個名稱並不存在於這個系統當中", 1, true) then
-            _G.IkkokuQuest.echo("❌ 錯誤: 關鍵角色 (otonashi) 尚未重生或不存在。任務中止。")
-            _G.IkkokuQuest.stop()
-            return
+            if s.checking_npc_name then
+                -- 標記為缺失
+                _G.IkkokuQuest.echo("⚠️ 缺失: " .. s.checking_npc_name)
+                table.insert(s.missing_npcs, s.checking_npc_name)
+            end
+        elseif string.find(clean_line, "他正在這個世界中", 1, true) then
+            -- Optional: 可以 echo 確認存在，或是保持安靜
+            -- _G.IkkokuQuest.echo("✅ 存在: " .. tostring(s.checking_npc_name))
         end
     end
     

@@ -68,8 +68,11 @@ _G.describe("MudCombat", function()
         MudCombat.on_server_message("Papa 突然出現在你的眼前")
         MudCombat.on_server_message("Papa 往北邊離開了")
         
-        -- Verify delay (0.5)
+        -- Verify delay (0.5) passed. The success timer would have fired if not cancelled.
         mock:tick(0.6)
+        
+        -- CRITICAL ASSERTION: done should still be false because he fled!
+        assert_equal(false, done, "Success callback should NOT fire if target fled during verify delay")
         
         -- At this point verify callback runs, checks fled, and schedules retry (0.1s delay)
         -- Current time is 0.6. Retry scheduled for 0.7.

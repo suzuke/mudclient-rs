@@ -9,9 +9,10 @@ function MockMud.new()
     self.timers = {}
     self.current_time = 0
     
-    -- Bind methods to self to allow dot notation calls (mud.timer vs mud:timer)
+    -- Use closures to bind 'self' because mud.func() is called without 'self'
     
     self.send = function(cmd)
+        -- print("MockSend called: " .. tostring(cmd))
         table.insert(self.sent, cmd)
     end
 
@@ -23,7 +24,18 @@ function MockMud.new()
         table.insert(self.logs, msg)
     end
 
-    self.timer = function(seconds, callback_code)
+    self.timer = function(a, b, c)
+        -- Handle colon call (self, seconds, callback) vs dot call (seconds, callback)
+        local seconds, callback_code
+        if type(a) == "table" and a == self then
+             seconds = b
+             callback_code = c
+        else
+             seconds = a
+             callback_code = b
+        end
+        
+        -- print("MockTimer called: " .. tostring(seconds))
         table.insert(self.timers, {
             trigger_time = self.current_time + seconds,
             code = callback_code
@@ -54,7 +66,13 @@ function MockMud:tick(seconds)
     for _, t in ipairs(to_run) do
         -- Mock execution
         -- Since code is likely "_G.MudUtils.exec_timer(...)", we load and run it
-        local f, err = load(t.code)
+        local f, err
+        if type(t.code) == "string" then
+            f, err = load(t.code)
+        elseif type(t.code) == "function" then
+            f = t.code
+        end
+
         if f then
             local status, run_err = pcall(f)
             if not status then
@@ -62,7 +80,7 @@ function MockMud:tick(seconds)
             end
             executed_count = executed_count + 1
         else
-             print("Mock Timer Load Error: " .. tostring(err) .. " | Code: " .. atosting(t.code))
+             print("Mock Timer Load Error: " .. tostring(err) .. " | Code: " .. tostring(t.code))
         end
     end
     return executed_count

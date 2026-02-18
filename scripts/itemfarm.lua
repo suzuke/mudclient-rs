@@ -21,9 +21,8 @@ local function require_module(name)
     error("ItemFarm cannot load dependency: " .. name)
 end
 
-local MudUtils = require_module("MudUtils")
-local MudNav = require_module("MudNav")
 local MudCombat = require_module("MudCombat")
+local MudLoot = require_module("MudLoot")
 
 -- local mud = mud -- 避免快取 userdata
 local string = string
@@ -53,8 +52,8 @@ _G.ItemFarm.jobs = {
     {
         name = "商務間諜",
         mode = "summon",             -- summon 或 direct
-        search_type = "quest",
-        search_cmd = "q 2.spy",
+        search_type = "locate",
+        search_cmd = "c loc grating",
         target_mob = "商務間諜",
         summon_cmd = "c sum spy",
         attack_cmd = "c flame spy",
@@ -78,30 +77,45 @@ _G.ItemFarm.jobs = {
         remove_nodrop = {},
         sac_corpse = true,
     },
-    -- {
-    --     name = "不動明王",
-    --     mode = "direct",
-    --     search_type = "quest",
-    --     search_cmd = "q 6.sentinel",
-    --     target_mob = "不動明王",
-    --     attack_cmd = "c star;c star;c star",
-    --     dispel_cmd = "c 'dispel m' sentinel",
-    --     dispel_indicators = {"(白色聖光)"},    -- 只要其中一個在場就繼續 dispel
-    --     hp_threshold = 100,               -- 特定怪物才檢查血量
-    --     hp_recover_cmd = "c heal",         -- 自定義恢復 HP 的指令
-    --     buffs = {
-    --         { cmd = "c sa",  indicator = "聖光", fade_msg = "你四周的白色聖光消散了" },
-    --         { cmd = "c pro", indicator = "聖佑術", fade_msg = "你感覺到失去上天的護佑." },
-    --         { cmd = "c b",   indicator = "女神庇祐術", fade_msg = "你覺得你的好運已經結束了." }
-    --     },
-    --     dispel_max_retries = 15,     -- 自定義重試次數
-    --     pre_travel_cmd = "c inv",  -- 隱身
-    --     path_to_mob = "recall;3w;4s;ta wizard help;7w;7n;6u;7n",
-    --     path_to_storage = "recall;3n;e",
-    --     loot_items = {"sword", "potato", "hamburg"},
-    --     remove_nodrop = {},
-    --     sac_corpse = true,
-    -- },
+    {
+        name = "不動明王",
+        mode = "direct",
+        search_type = "quest",
+        search_cmd = "q 6.sentinel",
+        target_mob = "不動明王",
+        attack_cmd = "c star;c star;c star",
+        dispel_cmd = "c 'dispel m' sentinel",
+        dispel_indicators = {"(白色聖光)"},    -- 只要其中一個在場就繼續 dispel
+        hp_threshold = 100,               -- 特定怪物才檢查血量
+        hp_recover_cmd = "c heal",         -- 自定義恢復 HP 的指令
+        buffs = {
+            { cmd = "c sa",  indicator = "聖光", fade_msg = "你四周的白色聖光消散了" },
+            { cmd = "c pro", indicator = "聖佑術", fade_msg = "你感覺到失去上天的護佑." },
+            { cmd = "c b",   indicator = "女神庇祐術", fade_msg = "你覺得你的好運已經結束了." }
+        },
+        dispel_max_retries = 15,     -- 自定義重試次數
+        pre_travel_cmd = "c inv",  -- 隱身
+        path_to_mob = "recall;3w;4s;ta wizard help;7w;7n;6u;7n",
+        path_to_storage = "recall;3n;e",
+        loot_items = {"sword", "potato", "hamburg"},
+        remove_nodrop = {},
+        sac_corpse = true,
+    },
+    {
+    -- Xiulou slash /11swn3e2ne3ne2nu4ne
+        name = "闇の一族幫員",
+        mode = "direct",
+        search_type = "quest",
+        search_cmd = "q clan_member",
+        target_mob = "闇の一族幫員",
+        attack_cmd = "c nu clan_member;c fl clan_member",
+        pre_travel_cmd = "c inv",  -- 隱身
+        path_to_mob = "recall;11s;w;n;3e;2n;e;3n;e;2n;u;4n;e",
+        path_to_storage = "recall;3n;e",
+        loot_items = {"Xiulou"},
+        remove_nodrop = {},
+        sac_corpse = true,
+    }
 }
 
 -- ===== 狀態 =====
@@ -299,6 +313,7 @@ function _G.ItemFarm.init()
     mud.echo("    ItemFarm.stop()   - 停止")
     mud.echo("    ItemFarm.status() - 顯示狀態")
     mud.echo("    ItemFarm.toggle_echo() - 切換是否顯示詳細日誌")
+    mud.echo("    ItemFarm.toggle_job(n) - 暫停/恢復第 n 個任務")
     mud.echo("  任務數: " .. #_G.ItemFarm.jobs)
     for i, j in ipairs(_G.ItemFarm.jobs) do
         local m = j.mode or "summon"
@@ -360,6 +375,18 @@ function _G.ItemFarm.status()
         local disabled = j.disabled and " [已停用]" or ""
         _G.ItemFarm.echo_force("     [" .. i .. "] " .. j.name .. disabled .. marker)
     end
+end
+
+-- 切換任務啟用/停用
+function _G.ItemFarm.toggle_job(index)
+    local j = _G.ItemFarm.jobs[tonumber(index)]
+    if not j then
+        _G.ItemFarm.echo_force("⚠️ 找不到任務 ID: " .. tostring(index))
+        return
+    end
+    j.disabled = not j.disabled
+    local status = j.disabled and "停用" or "啟用"
+    _G.ItemFarm.echo_force("🔧 任務 [" .. index .. "] " .. j.name .. " 已" .. status)
 end
 
 -- ===== 任務輪替 =====
@@ -517,8 +544,10 @@ function _G.ItemFarm.evaluate_status_before_summon(rid)
     if not hp_ok or not mp_ok then
         local reason = not hp_ok and "HP" or "MP"
         local threshold = not hp_ok and j_hp_threshold or j_mp_threshold
-        _G.ItemFarm.echo("⚠️ " .. reason .. " 不足 (" .. threshold .. "% 門檻)，先休息回滿...")
-        _G.ItemFarm.rest_and_repeat(s.run_id)
+        _G.ItemFarm.echo("⚠️ " .. reason .. " 不足 (" .. threshold .. "% 門檻)，返回休息...")
+        s.stage = "returning"
+        local path = j.path_to_storage or _G.ItemFarm.config.path_to_storage
+        _G.ItemFarm.walk_path(path, "_G.ItemFarm.after_return")
         return
     end
 
@@ -529,9 +558,11 @@ function _G.ItemFarm.evaluate_status_before_summon(rid)
         _G.ItemFarm.summon_and_attack(s.run_id)
     elseif buff_status == "waiting" then
         -- 等待消散中：30 秒保底檢查，其餘靠 Hook
+        s.stage = "buffing" -- 防止 Ok. 觸發重複檢查
         _G.ItemFarm.safe_timer(30.0, "_G.ItemFarm.check_status_before_summon")
     else
         -- 補 Buff 中：2 秒後再次檢查
+        s.stage = "buffing" -- 防止 Ok. 觸發重複檢查
         _G.ItemFarm.safe_timer(2.0, "_G.ItemFarm.check_status_before_summon")
     end
 end
@@ -767,9 +798,11 @@ function _G.ItemFarm.evaluate_status_and_fight(rid)
         send_cmds(j.attack_cmd)
     elseif buff_status == "waiting" then
         -- 等待消散中：30 秒保底檢查，其餘靠 Hook
+        s.stage = "buffing" -- 防止 Ok. 觸發重複檢查
         _G.ItemFarm.safe_timer(30.0, "_G.ItemFarm.do_attack")
     else
         -- 補 Buff 中：2 秒後再次檢查
+        s.stage = "buffing" -- 防止 Ok. 觸發重複檢查
         _G.ItemFarm.safe_timer(2.0, "_G.ItemFarm.do_attack")
     end
 end
@@ -804,20 +837,20 @@ end
 
 -- 5. 戰利品收集 (Looting)
 function _G.ItemFarm.loot()
-    -- 戰利品階段通常由 Hook 直接觸發，不需要 run_id 檢查，
-    -- 但其後續的 timer 需加上
     if not _G.ItemFarm.state.running then return end
     
     _G.ItemFarm.state.stage = "looting"
     local j = _G.ItemFarm.job()
-    _G.ItemFarm.echo("💰 收集戰利品...")
-    for _, item in ipairs(j.loot_items) do
-        mud.send("get " .. item .. " corpse")
-    end
-    if j.sac_corpse then
-        mud.send("sac corpse")
-    end
-    _G.ItemFarm.safe_timer(1.0, "_G.ItemFarm.go_to_storage")
+    _G.ItemFarm.echo("💰 收集戰利品 (MudLoot)...")
+    
+    MudLoot.process_loot({
+        items = j.loot_items,
+        sac = j.sac_corpse,
+        loot_ground = true, -- 預設開啟地面搜刮
+        fallback_blind = true
+    }, function()
+        _G.ItemFarm.go_to_storage(_G.ItemFarm.state.run_id)
+    end)
 end
 
 -- 5. 前往儲存地點
@@ -942,14 +975,13 @@ end
 _G.ItemFarm.hook_installed = true
 
 -- ===== 伺服器訊息 Hook 處理器 =====
-
--- ===== 伺服器訊息 Hook 處理器 =====
 function _G.ItemFarm.on_server_message(line, clean_line)
     if not _G.ItemFarm.state.running then return end
     
-    -- 委派給 MudNav 與 MudCombat
-    MudNav.on_server_message(clean_line)
+    -- 委派給 MudNav, MudCombat 與 MudLoot
+    MudNav.on_server_message(line, clean_line)
     MudCombat.on_server_message(clean_line)
+    MudLoot.on_server_message(line, clean_line)
     
     local s = _G.ItemFarm.state
     local j = _G.ItemFarm.job()

@@ -43,6 +43,7 @@ if not MudNav.reset then
     MudNav = require_module("MudNav")
 end
 local MudCombat = require_module("MudCombat")
+local MudLoot = require_module("MudLoot")
 
 local string = string
 local table = table
@@ -283,24 +284,13 @@ end
 
 function step_handlers.get_wand(rid)
     local s = _G.SmurfQuest.state
-    _G.SmurfQuest.echo("🔍 執行智慧搜刮：偵測環境屍體...")
-    s.corpse_count = 0
-    s.looting_active = true
-    mud.send("l")
-    
-    MudUtils.safe_timer(2.5, function(new_rid)
-        if not MudUtils.check_run(new_rid) then return end
-        s.looting_active = false
-        if s.corpse_count > 0 then
-            _G.SmurfQuest.echo("🧟 偵測到 " .. s.corpse_count .. " 具屍體，開始搜刮...")
-            for i = 1, s.corpse_count do
-                local suffix = (i == 1) and "" or (" " .. i .. ".corpse")
-                mud.send("get wand corpse" .. suffix)
-            end
-        else
-            _G.SmurfQuest.echo("⚠️ 未偵測到屍體，嘗試盲抓一次...")
-            mud.send("get wand corpse")
-        end
+    _G.SmurfQuest.echo("💰 戰利品階段，啟動 MudLoot...")
+    MudLoot.process_loot({
+        items = {"wand"},
+        fallback_blind = true,
+        sac = false
+    }, function()
+        _G.SmurfQuest.advance_step(rid)
     end)
 end
 
@@ -446,9 +436,9 @@ function _G.SmurfQuest.on_server_message(clean_line)
          s.target_found = true
     end
 
-    -- Looting Logic
-    if s.looting_active and (clean_line:find("屍體") or clean_line:find("/corpse")) and not clean_line:find("裡面有:") then
-        s.corpse_count = s.corpse_count + 1
+    -- Route messages to MudLoot
+    if MudLoot and MudLoot.on_server_message then
+        MudLoot.on_server_message(line, clean_line)
     end
 
     -- Step Expectation

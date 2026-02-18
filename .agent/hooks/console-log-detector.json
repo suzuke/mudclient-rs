@@ -1,0 +1,26 @@
+{
+    "name": "console-log-detector",
+    "description": "檢測 console.log 並警告移除",
+    "version": "1.0.0",
+    "triggers": [
+        {
+            "event": "onFileSave",
+            "filePatterns": [
+                "*.ts",
+                "*.tsx",
+                "*.js",
+                "*.jsx"
+            ]
+        }
+    ],
+    "action": {
+        "type": "scan",
+        "command": "grep -n 'console\\.log' \"$FILE_PATH\"",
+        "onMatch": {
+            "severity": "warning",
+            "message": "⚠️ 發現 console.log，請在提交前移除",
+            "showLineNumbers": true
+        }
+    },
+    "enabled": true
+}

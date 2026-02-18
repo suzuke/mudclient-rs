@@ -145,8 +145,8 @@ pub struct Session {
     /// 連線開始時間
     pub connected_at: Option<Instant>,
 
-    /// 當前房間 ID
-    pub current_room_id: Option<String>,
+    /// 當前房間
+    pub current_room: Option<Room>,
 
     // === 獨立的管理器（Profile 專屬） ===
     /// 別名管理器
@@ -233,6 +233,9 @@ pub struct Session {
     
     /// 用於識別房間特徵的行緩衝區
     pub line_buffer: std::collections::VecDeque<String>,
+    
+    /// [穩定化] 專用的伺服器純淨緩衝區，用於 Room ID 計算
+    pub server_buffer: std::collections::VecDeque<String>,
 }
 
 /// 畫面單字的中繼資料
@@ -302,7 +305,7 @@ impl Session {
             command_tx: None,
             message_rx: None,
             connected_at: None,
-            current_room_id: None,
+            current_room: None,
             alias_manager,
             trigger_manager,
             path_manager,
@@ -329,6 +332,7 @@ impl Session {
             last_sent_command: None,
             repeat_command_count: 0,
             line_buffer: std::collections::VecDeque::with_capacity(20),
+            server_buffer: std::collections::VecDeque::with_capacity(20),
         };
 
         // 自動載入 scripts/ 目錄下的腳本
@@ -435,7 +439,7 @@ impl Session {
 
         // 3. 回溯尋找房間名稱與描述
         // 策略: 往回找上一個出口行，中間就是名稱與描述
-        let n = self.line_buffer.len();
+        let n = self.server_buffer.len();
         if n < 2 { return; }
         
         // line_buffer 的最後一行 (n-1) 應該就是 current_line (因為剛 push 進去)
@@ -448,7 +452,7 @@ impl Session {
         let start_index = if n > scan_limit + 1 { n - 1 - scan_limit } else { 0 };
 
         for i in (start_index..n-1).rev() {
-            let line = &self.line_buffer[i];
+            let line = &self.server_buffer[i];
             // 同樣需要移除 ANSI
             let clean_line = if line.contains('\x1b') {
                 ANSI_STRIP_RE.replace_all(line, "").to_string()
@@ -500,9 +504,8 @@ impl Session {
         // 如果沒找到明確的分隔線，且我們回溯到了 start_index
         if !found_prev_exit {
             // 如果 buffer 夠大，我們假設 start_index 就是開始？
-            // 這有風險，但比完全不更新好。不過為了避免 "Bad Boy" 變房間名，
-            // 這裡我們選擇保守：如果沒找到分隔，就不更新，除非 buffer 很小 (剛連線)
-            if self.line_buffer.len() >= 20 && start_index > 0 {
+            // 這有風險，但比完全不更新好。
+            if self.server_buffer.len() >= 20 && start_index > 0 {
                 return;
             }
             name_index = 0;
@@ -514,7 +517,7 @@ impl Session {
         }
         
         // 取得名稱 (移除 ANSI)
-        let raw_name = &self.line_buffer[name_index];
+        let raw_name = &self.server_buffer[name_index];
         let name = if raw_name.contains('\x1b') {
             ANSI_STRIP_RE.replace_all(raw_name, "").to_string()
         } else {
@@ -522,35 +525,55 @@ impl Session {
         };
         
         // 描述是中間的部分 (移除 ANSI)
-        let mut description = String::new();
+        // [修正] 排除提示字元行 (Prompt)，這些行通常動態變化，會破壞 Hash 穩定性
+        let mut desc_lines = Vec::new();
         for i in (name_index + 1)..n-1 {
-            if i > name_index + 1 { description.push('\n'); }
-            let raw_desc = &self.line_buffer[i];
-             let clean_desc = if raw_desc.contains('\x1b') {
-                ANSI_STRIP_RE.replace_all(raw_desc, "").to_string()
+            let raw_line = &self.server_buffer[i];
+            let clean_line = if raw_line.contains('\x1b') {
+                ANSI_STRIP_RE.replace_all(raw_line, "").to_string()
             } else {
-                raw_desc.to_string()
+                raw_line.to_string()
             };
-            description.push_str(&clean_desc);
+            
+            // 偵測並排除干擾行，但必須保留標記為 [出口: 的行
+            let trimmed = clean_line.trim();
+            let is_prompt = (trimmed.starts_with('(') && clean_line.contains("hp")) || 
+                            (trimmed.starts_with('[') && clean_line.contains("hp"));
+            let is_exits = trimmed.starts_with("[出口:");
+            let is_script = trimmed.starts_with('[') && !is_exits;
+            
+            let is_noise = is_prompt || is_script;
+            
+            if !is_noise {
+                desc_lines.push(clean_line);
+            } else {
+                tracing::debug!("Excluding noise from room hash: {}", trimmed);
+            }
         }
+        let description = desc_lines.join("\n");
         
         // 建立 Room 物件
         let room = Room::new(&name, &description, exits);
-        let id = room.hash();
+        let id = room.hash(true); // 預設使用 Strict 模式記錄 Log
         
-        // 總是更新 ID，確保 Look 能觸發
+        // 總是更新，確保 Look 能觸發
         // 只有 ID 改變時才寫入 Log，避免刷屏
-        if self.current_room_id.as_deref() != Some(&id) {
+        let id_changed = if let Some(old_room) = &self.current_room {
+             old_room.hash(true) != id
+        } else {
+            true
+        };
+
+        if id_changed {
             tracing::info!("Room Detected: {} (ID: {})", name, id);
         }
         
-        self.current_room_id = Some(id.clone());
-        self.script_engine.set_current_room_id(Some(id.clone()));
+        self.current_room = Some(room.clone());
+        self.script_engine.set_current_room(Some(room));
         
         // 觸發 Lua Hook: on_room_detected(id, name)
-        // 使用 run_code 或是我們需要新增一個 invoke_hook_with_args?
-        // 為了簡單，我們借用 invoke_hook (name, arg, clean_arg)
-        // 把 id 當作 arg, name 當作 clean_arg
+        // 這裡我們傳入預設的 strict ID，但 Lua 腳本可以自己呼叫 mud.get_current_room() 取得更多資訊
+        // 或者 mud.get_current_room_id(false) 取得 lax ID
         // 觸發 Lua Hook: on_room_detected(id, name)
         match self.script_engine.invoke_hook("on_room_detected", &id, &name) {
             Ok(Some(context)) => {
@@ -788,31 +811,46 @@ impl Session {
         let mut gagged = false;
         let mut targets = vec!["main".to_string()];
 
+        // 提前計算 clean_text 以供各處使用
+        let clean_text = if text.contains('\x1b') {
+            ANSI_STRIP_RE.replace_all(text, "").to_string()
+        } else {
+            text.to_string()
+        };
+
+        // [穩定化] 先更新 Server Buffer 與 Room ID，確保 Lua Hook 能取得最新 Room ID
+        if !is_echo && !text.trim().is_empty() && !text.starts_with(">>>") {
+            let clean_lower_pre = clean_text.to_lowercase();
+            let is_prompt_pre = clean_lower_pre.starts_with('(') && clean_lower_pre.contains('/') && clean_lower_pre.contains(')');
+            if !is_prompt_pre {
+                if self.server_buffer.len() >= 20 {
+                    self.server_buffer.pop_front();
+                }
+                self.server_buffer.push_back(text.trim().to_string());
+                
+                // 嘗試偵測房間 (改用純淨緩衝區)
+                self.detect_room_info(text.trim());
+            }
+        }
+
+        // 0. 呼叫全域鉤子 (Global Hook)
+        // 這允許 Lua 腳本直接處理每一行伺服器訊息與回顯，無需透過正則表達式觸發器
+        match self.script_engine.invoke_hook("on_server_message", text, &clean_text) {
+            Ok(Some(context)) => {
+                if context.gag {
+                    gagged = true;
+                }
+                self.apply_script_context(context);
+            },
+            Ok(None) => {}, // Hook not defined
+            Err(e) => {
+                tracing::error!("on_server_message hook error: {}", e);
+                self.window_manager.send_to_main(format!("{{r[System] Hook Error: {}{{x}}", e));
+            }
+        }
+
         if !is_echo {
             // 提取單字用於自動補齊與狀態判斷
-            // 提前計算 clean_text 以供 hook 使用
-            let clean_text = if text.contains('\x1b') {
-                ANSI_STRIP_RE.replace_all(text, "").to_string()
-            } else {
-                text.to_string()
-            };
-
-            // 0. 呼叫全域鉤子 (Global Hook)
-            // 這允許 Lua 腳本直接處理每一行伺服器訊息，無需透過正則表達式觸發器
-            match self.script_engine.invoke_hook("on_server_message", text, &clean_text) {
-                Ok(Some(context)) => {
-                    if context.gag {
-                        gagged = true;
-                    }
-                    self.apply_script_context(context);
-                },
-                Ok(None) => {}, // Hook not defined
-                Err(e) => {
-                    tracing::error!("on_server_message hook error: {}", e);
-                    self.window_manager.send_to_main(format!("{{r[System] Hook Error: {}{{x}}", e));
-                }
-            }
-
             // 處理觸發器
             let triggers = self.trigger_manager.process(text);
             
@@ -877,32 +915,7 @@ impl Session {
             targets.retain(|t| t != "main");
         }
 
-        // 若 clean_text 尚未計算（例如 is_echo=true），則在此計算
-        let clean_text = if !is_echo {
-             // 上面已經計算過了，但為了避免生命週期問題或重複計算，這裡我們可以重新取得
-             // 或是為了效能，我們可以重構讓 clean_text 在更外層宣告
-             // 目前簡單起見，如果是 echo 就重算，如果不是 echo (上面算過了) 就重用...
-             // 但由於 rust 變數遮蔽特性，我們在這裡需要小心。
-             
-             // 簡單方式：統一在 handle_text_with_widths 開頭就計算 clean_text？
-             // 不行，因為有些觸發器可能不需要它。
-             
-             // 為了避免重複代碼，我們上面已經計算了 clean_text 並 move 給了 script 嗎？
-             // 沒有，上面是 &clean_text。
-             
-             if text.contains('\x1b') {
-                ANSI_STRIP_RE.replace_all(text, "").to_string()
-            } else {
-                text.to_string()
-            }
-        } else {
-             // Echo 也要去色
-             if text.contains('\x1b') {
-                ANSI_STRIP_RE.replace_all(text, "").to_string()
-            } else {
-                text.to_string()
-            }
-        };
+        // clean_text 已經在開頭計算過了
 
         let clean_lower = clean_text.to_lowercase();
         // 優化提示字元偵測：不分大小寫
@@ -955,16 +968,14 @@ impl Session {
             );
         }
 
-        // 更新 Line Buffer (只存非空、非 Prompt、非系統訊息)
+        // 更新 Line Buffer (通用緩衝區，包含 Echo)
         if !text.trim().is_empty() && !is_prompt && !text.starts_with(">>>") {
             if self.line_buffer.len() >= 20 {
                 self.line_buffer.pop_front();
             }
             self.line_buffer.push_back(text.trim().to_string());
-            
-            // 嘗試偵測房間
-            self.detect_room_info(text.trim());
         }
+
 
         // --- 迴圈偵測 ---
         if is_exit_line && self.path_recorder.is_recording {
@@ -1386,7 +1397,13 @@ impl Session {
                  self.path_recorder.record(&input);
             }
 
+            // 觸發 Lua Hook: on_command(command)
+            if let Ok(Some(context)) = self.script_engine.invoke_hook("on_command", &input, &input) {
+                 self.apply_script_context(context);
+            }
+
             let _ = tx.blocking_send(crate::session::Command::Send(input.to_string()));
+            tracing::info!("[DEBUG] Command sent to channel: '{}'", input);
         }
     }
 

@@ -1,78 +1,58 @@
 # MUD Client (mudclient-rs)
 
-一個使用 Rust 開發的高效能、跨平台 MUD 客戶端。
+[![Build Status](https://github.com/suzuke/mudclient-rs/actions/workflows/build.yml/badge.svg)](https://github.com/suzuke/mudclient-rs/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## 特色功能
+一個使用 Rust 與 egui 開發的高效能、現代化 MUD 客戶端。專為中文 MUD 環境設計，解決了長期以來的編碼與顯示痛點。
 
-- **多語言支援**：穩定處理 Big5 編碼，完美顯示中文
-- **ANSI 顏色**：完整解析 256 色與 TrueColor
-- **別名系統 (Alias)**：命令縮寫與參數展開（如 `kk $1` → `kill $1;loot`）
-- **觸發器系統 (Trigger)**：正則表達式匹配、自動發送命令、Lua 腳本執行
-- **Lua 腳本引擎**：內嵌 Lua 5.4，支援進階自動化邏輯
-- **多視窗管理**：將聊天、戰鬥等不同訊息路由到獨立子視窗
-- **路徑記錄與迴圈偵測**：自動記錄移動路徑，偵測迷宮迴圈
-- **日誌記錄**：純文字與 HTML 格式日誌，顏色完美重現
-- **Tab 補齊**：畫面上的 Mob 名稱智慧補齊
-- **自動重連**：斷線後自動嘗試重新連線
-- **Profile 管理**：多角色設定檔、自動登入
+## ✨ 特色功能
 
-## 下載
+*   **🚀 極速體驗**: Rust 打造，啟動快、佔用低。
+*   **🌏 完美中文支援**: 內建 Big5 編碼處理，修正 CJK 字元對齊問題 (`1:2` 寬度比例)。
+*   **🔌 強大腳本引擎**: 完整整合 **Lua 5.4**，支援觸發器 (Triggers)、別名 (Aliases)、計時器 (Timers)。
+*   **🎨 現代化介面**: 支援 256 色與 TrueColor，可自訂分頁、側邊欄工具與主題。
+*   **🤖 自動化助手**: 內建路徑記錄 (`#path`)、自動地圖 (開發中) 與多種任務腳本。
+*   **📜 完整紀錄**: 支援 HTML 格式日誌，保留顏色與格式，方便回顧。
 
-到 [Releases](https://github.com/suzuke/mudclient-rs/releases) 頁面下載預編譯的執行檔，或從 [Actions](https://github.com/suzuke/mudclient-rs/actions) 下載最新建置。
+## 📥 安裝與執行
 
-支援平台：
-- **macOS** (Apple Silicon)
-- **Windows** (x86_64)
+### 預編譯版本 (推薦)
+前往 [GitHub Releases](https://github.com/suzuke/mudclient-rs/releases) 下載適用於您可以平台的最新版本：
+- **macOS** (Apple Silicon/Intel)
+- **Windows** (x64)
 
-## 從原始碼編譯
+### 從原始碼編譯
+如果您熟悉 Rust 開發環境：
 
-### 前置要求
-- [Rust](https://rustup.rs/) (最新穩定版)
+1.  **安裝 Rust**: [https://rustup.rs/](https://rustup.rs/)
+2.  **複製專案**:
+    ```bash
+    git clone https://github.com/suzuke/mudclient-rs.git
+    cd mudclient-rs
+    ```
+3.  **編譯**:
+    ```bash
+    cargo build -p mudgui --release
+    ```
+4.  **執行**:
+    執行檔位於 `target/release/mudgui`。建議將 `scripts/` 目錄複製到執行檔同層。
 
-### 編譯與執行
-```bash
-cargo build -p mudgui --release
-```
+## 📖 使用指南
 
-執行檔將產生在 `target/release/mudgui`。
-將 `scripts/` 資料夾放在執行檔旁邊即可使用所有腳本功能。
+### 常用指令
+*   `#loop <次數> <指令>`: 重複執行指令。
+*   `#delay <毫秒> <指令>`: 延遲執行。
+*   `#path start/stop/back`: 路徑記錄與回溯。
+*   `/lua <代碼>`: 執行 Lua 代碼。
 
-## 目錄結構
+### 文件索引
+*   **[API 文件 (Lua Scripting)](docs/API.md)**: 詳細的腳本開發指南。
+*   **[系統架構 (Architecture)](docs/Architecture.md)**: 了解內部運作原理。
+*   **[開發路線圖 (Roadmap)](docs/RoadMap.md)**: 專案未來規劃。
+*   **[環境變數 (Env)](docs/Env.md)**: 進階設定選項。
 
-```
-mudclient-rs/
-├── crates/
-│   ├── mudcore/     # 核心：協定、編碼、別名、觸發器、Lua 腳本引擎
-│   └── mudgui/      # GUI：基於 egui 的跨平台圖形介面
-├── scripts/         # Lua 腳本（隨執行檔一起部署）
-└── docs/            # 文件
-```
+## 🤝 貢獻
+歡迎提交 Pull Request 或 Issue。請參考 [CONTRIBUTING.md](CONTRIBUTING.md) (如有) 了解詳情。
 
-## Lua 腳本 API
-
-在觸發器或別名中使用 Lua 腳本，或用 `/lua` 指令直接執行：
-
-```lua
-mud.send("north")               -- 發送指令到伺服器
-mud.echo("Hello!")               -- 本地顯示訊息
-mud.log("記錄")                  -- 寫入日誌
-mud.window("chat", text)         -- 輸出到子視窗
-mud.timer(2.5, "mud.send('hi')") -- 延遲執行
-mud.gag_message()                -- 攔截當前行
-mud.enable_trigger("name", true) -- 啟用/禁用觸發器
-```
-
-更多細節請參考 [Scripting_and_Commands.md](docs/Scripting_and_Commands.md)。
-
-## 快捷鍵
-
-| 按鍵 | 功能 |
-|------|------|
-| Tab | 智慧補齊（Mob 名稱 / 歷史指令） |
-| ↑ / ↓ | 瀏覽歷史指令 |
-| Escape | 關閉彈出視窗 |
-| F2-F4 | 開啟設定中心 |
-
-## 授權
-
+## 📄 授權
 MIT License

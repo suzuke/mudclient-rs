@@ -12,5 +12,13 @@ function on_room_detected(id, name)
     
     -- 範例 2: 近似使用者要求的格式
     -- 顯示在下一行，且帶有顏色
-    mud.echo(string.format("(ID: {c%s{x})", id))
+    -- 取得 Strict ID (忽略出口)
+    local strict_id = mud.get_current_room_id()
+    
+    -- 顯示兩個 ID 供比較
+    -- mud.echo(string.format("(ID: {c%s{x}) [Lax: {y%s{x}]", id, lax_id))
+    
+    -- 使用者最終希望的格式 (預設顯示 Strict ID)
+    -- 若需要使用 Lax ID，可自行修改腳本
+    mud.echo(string.format("(ID: %s)", strict_id))
 end

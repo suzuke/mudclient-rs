@@ -24,13 +24,20 @@ impl Room {
     }
 
     /// 生成唯一房間 ID
-    /// 使用 SHA256(name + description + sorted_exits)
-    pub fn hash(&self) -> String {
+    ///
+    /// # Arguments
+    /// * `strict` - 是否包含出口在雜湊計算中
+    ///   - `true`: Name + Description + Exits (預設，區分開門狀態)
+    ///   - `false`: Name + Description (忽略出口，解決開門後 ID 改變問題，但有碰撞風險)
+    pub fn hash(&self, strict: bool) -> String {
         let mut hasher = Sha256::new();
         hasher.update(self.name.as_bytes());
         hasher.update(self.description.as_bytes());
-        for exit in &self.exits {
-            hasher.update(exit.as_bytes());
+        
+        if strict {
+            for exit in &self.exits {
+                hasher.update(exit.as_bytes());
+            }
         }
         
         let result = hasher.finalize();
@@ -51,7 +58,7 @@ mod tests {
         let room1 = Room::new("Room A", "Description A", vec!["north".to_string(), "south".to_string()]);
         let room2 = Room::new("Room A", "Description A", vec!["south".to_string(), "north".to_string()]); // 出口順序不同
 
-        assert_eq!(room1.hash(), room2.hash(), "相同內容但出口順序不同的房間應該有相同的 Hash");
+        assert_eq!(room1.hash(true), room2.hash(true), "相同內容但出口順序不同的房間應該有相同的 Hash");
     }
 
     #[test]
@@ -61,8 +68,20 @@ mod tests {
         let room3 = Room::new("Room A", "Description B", vec!["north".to_string()]); // 描述不同
         let room4 = Room::new("Room A", "Description A", vec!["south".to_string()]); // 出口不同
 
-        assert_ne!(room1.hash(), room2.hash());
-        assert_ne!(room1.hash(), room3.hash());
-        assert_ne!(room1.hash(), room4.hash());
+        assert_ne!(room1.hash(true), room2.hash(true));
+        assert_ne!(room1.hash(true), room3.hash(true));
+        assert_ne!(room1.hash(true), room4.hash(true));
+    }
+
+    #[test]
+    fn test_room_hash_lax_mode() {
+        let room1 = Room::new("Room A", "Description A", vec!["north".to_string()]);
+        let room2 = Room::new("Room A", "Description A", vec!["north".to_string(), "south".to_string()]); // 出口不同 (例如開門)
+
+        // Strict 模式下 ID 不同
+        assert_ne!(room1.hash(true), room2.hash(true));
+
+        // Lax 模式下 ID 相同 (忽略出口)
+        assert_eq!(room1.hash(false), room2.hash(false));
     }
 }
