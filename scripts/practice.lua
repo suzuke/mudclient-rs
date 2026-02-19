@@ -4,6 +4,17 @@
 -- 啟動: /lua Practice.start()
 -- 掃描: /lua Practice.scan()
 
+local function require_module(name)
+    local paths = { "scripts.modules." .. name, "modules." .. name, name }
+    for _, p in ipairs(paths) do
+        local ok, res = pcall(require, p)
+        if ok then return res end
+    end
+    error("Practice cannot load dependency: " .. name)
+end
+
+local MudUtils = require_module("MudUtils")
+
 _G.Practice = _G.Practice or {}
 
 -- ===== 設定區 =====

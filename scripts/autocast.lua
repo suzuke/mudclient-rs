@@ -4,6 +4,17 @@
 -- 使用: /lua AutoCast.start("cast 'summon' boy")
 -- 停止: /lua AutoCast.stop()
 
+local function require_module(name)
+    local paths = { "scripts.modules." .. name, "modules." .. name, name }
+    for _, p in ipairs(paths) do
+        local ok, res = pcall(require, p)
+        if ok then return res end
+    end
+    error("AutoCast cannot load dependency: " .. name)
+end
+
+local MudUtils = require_module("MudUtils")
+
 _G.AutoCast = _G.AutoCast or {}
 
 -- 設定

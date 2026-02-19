@@ -3,6 +3,17 @@
 -- 載入: /lua dofile("memcalc.lua")
 -- 使用: /lua MemCalc.spell("holy arrow")
 
+local function require_module(name)
+    local paths = { "scripts.modules." .. name, "modules." .. name, name }
+    for _, p in ipairs(paths) do
+        local ok, res = pcall(require, p)
+        if ok then return res end
+    end
+    error("MemCalc cannot load dependency: " .. name)
+end
+
+local MudUtils = require_module("MudUtils")
+
 _G.MemCalc = _G.MemCalc or {}
 
 -- 狀態

@@ -5,6 +5,17 @@
 -- 自動偵測 box 中的物品，按優先順序選擇使用
 -- ============================================================
 
+local function require_module(name)
+    local paths = { "scripts.modules." .. name, "modules." .. name, name }
+    for _, p in ipairs(paths) do
+        local ok, res = pcall(require, p)
+        if ok then return res end
+    end
+    error("Benumb cannot load dependency: " .. name)
+end
+
+local MudUtils = require_module("MudUtils")
+
 _G.Benumb = _G.Benumb or {}
 
 -- 可用物品（優先順序）

@@ -19,6 +19,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
 use tokio::sync::mpsc;
+use crate::api::SharedApiState;
 use crate::config::{AliasConfig, Profile, TriggerConfig};
 use lazy_static::lazy_static;
 
@@ -236,6 +237,9 @@ pub struct Session {
     
     /// [穩定化] 專用的伺服器純淨緩衝區，用於 Room ID 計算
     pub server_buffer: std::collections::VecDeque<String>,
+
+    /// API 共享狀態（供 HTTP API 使用）
+    pub api_state: SharedApiState,
 }
 
 /// 畫面單字的中繼資料
@@ -249,7 +253,7 @@ pub struct WordMetadata {
 
 impl Session {
     /// 從 Profile 建立新的 Session
-    pub fn from_profile(profile: &Profile) -> Self {
+    pub fn from_profile(profile: &Profile, api_state: SharedApiState) -> Self {
         let mut alias_manager = AliasManager::new();
         let mut trigger_manager = TriggerManager::new();
         let mut path_manager = PathManager::new();
@@ -333,6 +337,7 @@ impl Session {
             repeat_command_count: 0,
             line_buffer: std::collections::VecDeque::with_capacity(20),
             server_buffer: std::collections::VecDeque::with_capacity(20),
+            api_state,
         };
 
         // 自動載入 scripts/ 目錄下的腳本
@@ -553,7 +558,7 @@ impl Session {
         let description = desc_lines.join("\n");
         
         // 建立 Room 物件
-        let room = Room::new(&name, &description, exits);
+        let room = Room::new(&name, &description, exits.clone());
         let id = room.hash(true); // 預設使用 Strict 模式記錄 Log
         
         // 總是更新，確保 Look 能觸發
@@ -570,6 +575,16 @@ impl Session {
         
         self.current_room = Some(room.clone());
         self.script_engine.set_current_room(Some(room));
+
+        // 更新 API 共享狀態的房間資訊
+        if let Ok(mut api) = self.api_state.lock() {
+            api.current_room = Some(crate::api::RoomInfo {
+                name: name.clone(),
+                exits: exits.clone(),
+                room_id: Some(id.clone()),
+                description: description.clone(),
+            });
+        }
         
         // 觸發 Lua Hook: on_room_detected(id, name)
         // 這裡我們傳入預設的 strict ID，但 Lua 腳本可以自己呼叫 mud.get_current_room() 取得更多資訊
@@ -613,6 +628,7 @@ impl Session {
 
     /// 載入並執行 scripts/ 目錄下的所有 .lua 腳本
     /// 搜尋順序：1) 工作目錄下的 scripts/  2) 執行檔旁的 scripts/
+    /// 載入順序：Phase 1 = scripts/modules/*.lua（字母排序），Phase 2 = scripts/*.lua（字母排序）
     fn load_startup_scripts(&mut self) {
         let scripts_dir = Self::resolve_scripts_dir();
 
@@ -624,15 +640,50 @@ impl Session {
         // 設定 scripts_dir 的絕對路徑，供 dofile 查找
         self.script_engine.set_scripts_dir(scripts_dir.to_string_lossy().as_ref());
 
-        match std::fs::read_dir(&scripts_dir) {
-            Ok(entries) => {
-                let mut valid_scripts = Vec::new();
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().map_or(false, |ext| ext == "lua") {
-                        valid_scripts.push(path);
+        // --- Phase 1: 優先載入 modules/ 子目錄 ---
+        let modules_dir = scripts_dir.join("modules");
+        if modules_dir.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&modules_dir) {
+                let mut module_scripts: Vec<std::path::PathBuf> = entries
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().map_or(false, |ext| ext == "lua"))
+                    .collect();
+                module_scripts.sort();
+
+                for path in module_scripts {
+                    if let Ok(code) = std::fs::read_to_string(&path) {
+                        let filename = path.file_name().unwrap_or_default().to_string_lossy();
+                        match self.script_engine.execute_inline(&code, "STARTUP", &[], false) {
+                            Ok(context) => {
+                                self.apply_script_context(context);
+                                let _ = self.logger.log(&format!("已自動載入模組: {}", filename));
+                                self.window_manager.route_message("main", mudcore::WindowMessage {
+                                    content: format!("\n[System] 自動載入模組: {}\n", filename),
+                                    preserve_ansi: true,
+                                    byte_widths: Vec::new(),
+                                    repeat_count: 1,
+                                });
+                            }
+                            Err(e) => {
+                                let msg = format!("模組載入錯誤 ({}): {}", filename, e);
+                                let _ = self.logger.log(&msg);
+                                self.system_message(&msg);
+                            }
+                        }
                     }
                 }
+            }
+        }
+
+        // --- Phase 2: 載入頂層 scripts/*.lua ---
+        match std::fs::read_dir(&scripts_dir) {
+            Ok(entries) => {
+                let mut valid_scripts: Vec<std::path::PathBuf> = entries
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().map_or(false, |ext| ext == "lua"))
+                    .collect();
                 valid_scripts.sort();
 
                 for path in valid_scripts {
@@ -642,8 +693,7 @@ impl Session {
                             Ok(context) => {
                                 self.apply_script_context(context);
                                 let _ = self.logger.log(&format!("已自動載入腳本: {}", filename));
-                                
-                                    self.window_manager.route_message("main", mudcore::WindowMessage {
+                                self.window_manager.route_message("main", mudcore::WindowMessage {
                                     content: format!("\n[System] 自動載入腳本: {}\n", filename),
                                     preserve_ansi: true,
                                     byte_widths: Vec::new(),
@@ -1067,6 +1117,13 @@ impl Session {
         // 日誌記錄
         let _ = self.logger.log(text);
 
+        // 推送純文字訊息到 API 共享狀態
+        if !text.trim().is_empty() {
+            if let Ok(mut api) = self.api_state.lock() {
+                api.push_message(clean_text.replace('\r', "").trim().to_string());
+            }
+        }
+
         self.last_active = Instant::now();
 
         true
@@ -1408,7 +1465,7 @@ impl Session {
     }
 
     /// 顯示系統訊息
-    fn system_message(&mut self, msg: &str) {
+    pub fn system_message(&mut self, msg: &str) {
         self.window_manager.route_message("main", mudcore::window::WindowMessage {
             content: format!("\n[System] {}\n", msg),
             preserve_ansi: true,
@@ -1488,8 +1545,8 @@ impl SessionManager {
     }
 
     /// 從 Profile 建立並新增 Session
-    pub fn create_session(&mut self, profile: &Profile) -> SessionId {
-        let mut session = Session::from_profile(profile);
+    pub fn create_session(&mut self, profile: &Profile, api_state: SharedApiState) -> SessionId {
+        let mut session = Session::from_profile(profile, api_state);
         session.merge_global_config(&self.global_aliases, &self.global_triggers);
         
         let id = session.id;
@@ -1625,6 +1682,7 @@ fn clean_pattern_string(pattern: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
     use crate::config::{ConnectionConfig, Profile};
 
     #[test]
@@ -1636,6 +1694,7 @@ mod tests {
 
     #[test]
     fn test_session_from_profile() {
+        let api_state = Arc::new(Mutex::new(crate::api::ApiState::new()));
         let profile = Profile {
             name: "test".to_string(),
             display_name: "測試".to_string(),
@@ -1654,7 +1713,7 @@ mod tests {
             paths: vec![],
         };
 
-        let session = Session::from_profile(&profile);
+        let session = Session::from_profile(&profile, api_state);
         assert_eq!(session.profile_name, "test");
         assert_eq!(session.display_name, "測試");
         assert_eq!(session.host, "localhost");
@@ -1662,6 +1721,7 @@ mod tests {
 
     #[test]
     fn test_session_manager_create_and_switch() {
+        let api_state = Arc::new(Mutex::new(crate::api::ApiState::new()));
         let mut manager = SessionManager::new();
         
         let profile1 = Profile::new("p1", "Profile 1")
@@ -1669,8 +1729,8 @@ mod tests {
         let profile2 = Profile::new("p2", "Profile 2")
             .with_connection("host2", "7778");
 
-        let id1 = manager.create_session(&profile1);
-        let id2 = manager.create_session(&profile2);
+        let id1 = manager.create_session(&profile1, api_state.clone());
+        let id2 = manager.create_session(&profile2, api_state.clone());
 
         assert_eq!(manager.len(), 2);
         assert_eq!(manager.active_index(), 1); // 自動切到新分頁
