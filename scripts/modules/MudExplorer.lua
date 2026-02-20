@@ -411,4 +411,5 @@ MudUtils.register_hook("MudExplorer", function(line, clean_line)
     MudExplorer.on_server_message(clean_line or line)
 end)
 
+_G.MudExplorer = MudExplorer
 return MudExplorer

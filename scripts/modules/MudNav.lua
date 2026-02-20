@@ -388,4 +388,5 @@ MudUtils.register_hook("MudNav", function(line, clean_line)
     MudNav.on_server_message(line, clean_line)
 end)
 
+_G.MudNav = MudNav
 return MudNav

@@ -184,4 +184,5 @@ MudUtils.register_hook("MudLoot", function(line, clean_line)
     MudLoot.on_server_message(line, clean_line)
 end)
 
+_G.MudLoot = MudLoot
 return MudLoot
