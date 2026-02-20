@@ -1559,17 +1559,27 @@ impl SessionManager {
     }
 
     /// 從 Profile 建立並新增 Session
-    pub fn create_session(&mut self, profile: &Profile, api_state: SharedApiState) -> SessionId {
+    pub fn create_session(&mut self, profile: &Profile, api_mgr: &crate::api::ApiStateManager) -> SessionId {
+        // 先產生 SessionId，用其 u64 值作為 session_key
+        let session_id = SessionId::new();
+        let session_key = session_id.value().to_string();
+        
+        // 在 ApiStateManager 中註冊並取得專屬的 SharedApiState
+        let api_state = api_mgr.register_session(&session_key, &profile.display_name);
+        
         let mut session = Session::from_profile(profile, api_state);
+        session.id = session_id; // 覆寫為已產生的 ID
         session.merge_global_config(&self.global_aliases, &self.global_triggers);
         
-        let id = session.id;
         self.sessions.push(session);
         
         // 自動切換到新分頁
         self.active_index = self.sessions.len() - 1;
         
-        id
+        // 設定為 active session
+        api_mgr.set_active(&session_key);
+        
+        session_id
     }
 
     /// 關閉 Session
@@ -1708,7 +1718,7 @@ mod tests {
 
     #[test]
     fn test_session_from_profile() {
-        let api_state = Arc::new(Mutex::new(crate::api::ApiState::new()));
+        let api_state = Arc::new(Mutex::new(crate::api::ApiState::new("test_key".to_string(), "test".to_string())));
         let profile = Profile {
             name: "test".to_string(),
             display_name: "測試".to_string(),
@@ -1735,7 +1745,7 @@ mod tests {
 
     #[test]
     fn test_session_manager_create_and_switch() {
-        let api_state = Arc::new(Mutex::new(crate::api::ApiState::new()));
+        let api_mgr = crate::api::ApiStateManager::new();
         let mut manager = SessionManager::new();
         
         let profile1 = Profile::new("p1", "Profile 1")
@@ -1743,8 +1753,8 @@ mod tests {
         let profile2 = Profile::new("p2", "Profile 2")
             .with_connection("host2", "7778");
 
-        let id1 = manager.create_session(&profile1, api_state.clone());
-        let id2 = manager.create_session(&profile2, api_state.clone());
+        let id1 = manager.create_session(&profile1, &api_mgr);
+        let id2 = manager.create_session(&profile2, &api_mgr);
 
         assert_eq!(manager.len(), 2);
         assert_eq!(manager.active_index(), 1); // 自動切到新分頁
@@ -1754,5 +1764,9 @@ mod tests {
 
         manager.switch_tab(1);
         assert_eq!(manager.active_session().unwrap().id, id2);
+        
+        // 驗證兩個 session 有獨立的 API state
+        let sessions = api_mgr.list_sessions();
+        assert_eq!(sessions.len(), 2);
     }
 }

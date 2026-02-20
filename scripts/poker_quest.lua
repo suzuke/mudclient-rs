@@ -57,10 +57,23 @@ _G.PokerQuest.config = {
 local QUEST_STEPS = {
     {name="explore_spade",  handler="do_explore_spade", expect="success_or_fail", next="deliver_stone"},
     {name="deliver_stone",  path=_G.PokerQuest.config.deliver_path, handler="do_deliver_stone", expect="把 黃色石頭 給了", next="talk_queen"},
-    -- Use Queen's response confirm success
-    {name="talk_queen",     path="e;2n;2e;n", cmds={"say goodmorning"}, expect="黑桃王后說道: 我可以告訴你是 'ireallywantleave'", next="go_palace"},
+    {name="talk_queen",     path={
+        {cmd="e", id="599a2b3c6ae523baa16b9b0e003f37f630d8b12ab59df0159c8e007a1dd4eb35"},
+        {cmd="n", id="1f500fee6b93223e3fb05f90d5d736a3afe10945575ed0e405345ea4e23e6eaf"},
+        {cmd="n", id="dc8ebf0f8a0855f5fb73a816a8141bc61ba17442b69028b2d77efaba358074d2"},
+        {cmd="e", id="2e4c206da593c765217ce70bc338ab1d1ff1d94399db481907342bb37497aed7"},
+        {cmd="e", id="599a2b3c6ae523baa16b9b0e003f37f630d8b12ab59df0159c8e007a1dd4eb35"},
+        {cmd="n", id="e3ed2718aaa3057e9fe101769f1e9802856620e087af80aeaafc2c01cdee09c1"},
+    }, cmds={"say goodmorning"}, expect="黑桃王后說道: 我可以告訴你是 'ireallywantleave'", next="go_palace"},
     -- Use Heart Queen response or generic say confirm
-    {name="go_palace",      path="3s;3u", cmds={"say ireallywantleave"}, expect="紅心女王說道: 好吧 !我再試一試這咒語", next="done"},
+    {name="go_palace",      path={
+        {cmd="s", id="599a2b3c6ae523baa16b9b0e003f37f630d8b12ab59df0159c8e007a1dd4eb35"},
+        {cmd="s", id="01a409a86468d51321afb10612a476182322418dd7f035d3b09160ac714fff1f"},
+        {cmd="s", id="3df270de3b1f75782f968a2550a560394ea2c1aef0a7c9a4f4e5145152fae94d"},
+        {cmd="u", id="53708d2d3016da68ca3ccc21c4c88f0140ee967a33d11e2e62ba861558595cdb"},
+        {cmd="u", id="53708d2d3016da68ca3ccc21c4c88f0140ee967a33d11e2e62ba861558595cdb"},
+        {cmd="u", id="a2d02785de42d1e98017058bb0dff1bfa5ab5432cc35f45b19479215a05aa792"},
+    }, cmds={"say ireallywantleave"}, expect="紅心女王說道: 好吧 !我再試一試這咒語", next="done"},
 }
 
 local STEP_BY_NAME = {}
@@ -101,6 +114,7 @@ function _G.PokerQuest.start()
     _G.PokerQuest.state.kills = 0
     _G.PokerQuest.state.got_stone = false
     _G.PokerQuest.state.finding = false
+    _G.PokerQuest.state.recovering = false
     
     MudUtils.start_log("poker")
     MudUtils.register_quest("PokerQuest", _G.PokerQuest.stop)
@@ -190,6 +204,13 @@ function _G.PokerQuest.process_step(rid)
                  for _, cmd in ipairs(step.cmds) do mud.send(cmd) end
                  if step.expect then
                      s.phase = "waiting_response"
+                     -- Script Wait Timeout
+                     MudUtils.safe_timer(5.0, function()
+                         if check_run(s.run_id) and s.phase == "waiting_response" then
+                             _G.PokerQuest.echo("❌ 等待回應超時 (" .. step.expect .. ")！任務失敗。")
+                             _G.PokerQuest.stop()
+                         end
+                     end)
                  else
                      _G.PokerQuest.advance_step(rid)
                  end
@@ -236,7 +257,7 @@ end
 function _G.PokerQuest.combat_heartbeat(rid)
     if not check_run(rid) then return end
     local s = _G.PokerQuest.state
-    if s.phase ~= "fighting" then return end
+    if s.phase ~= "fighting" or s.recovering then return end
     
     if _G.PokerQuest.config.attack_cmd then
         mud.send(_G.PokerQuest.config.attack_cmd)
@@ -306,15 +327,18 @@ function _G.PokerQuest.do_deliver_stone(rid)
     if not check_run(rid) then return end
     local s = _G.PokerQuest.state
     
-    -- 需要先找出是第幾個 King (Diamond King)
-    -- 這邊簡化邏輯：我們已經走到 King 的房間了 (由 path 保證)
-    -- 我們可以 look 並解析，或者直接嘗試 give
-    
     _G.PokerQuest.echo("🎁 尋找方塊國王給予石頭...")
     s.phase = "detecting_king"
     s.king_count = 0 -- Reset counter
     mud.send("l")
-    -- Hook 會處理 detecting_king 的邏輯
+    
+    -- Timeout protection
+    MudUtils.safe_timer(5.0, function()
+        if check_run(s.run_id) and s.phase == "detecting_king" then
+            _G.PokerQuest.echo("❌ 尋找方塊國王超時 (5秒內未發現)！任務失敗。")
+            _G.PokerQuest.stop()
+        end
+    end)
 end
 
 -- ===== 戰鬥與物品處置 logic =====
@@ -477,15 +501,23 @@ function _G.PokerQuest.on_server_message(line, clean_line)
         
         -- Low MV/MP Handling
         if string.find(clean_line, "你的移動力不足") or string.find(clean_line, "你的法力不足") then
-             _G.PokerQuest.echo("⚠️ 精力不足，嘗試恢復...")
-             mud.send("c ref")
-             MudUtils.safe_timer(1.0, function()
-                 if check_run(s.run_id) then mud.send(_G.PokerQuest.config.attack_cmd) end
-             end)
+             if not s.recovering then
+                 _G.PokerQuest.echo("⚠️ 精力不足，暫停攻擊並嘗試恢復...")
+                 s.recovering = true
+                 mud.send("c ref")
+                 -- 安全解鎖防呆，避免 c ref 被打斷永遠卡在 recovering
+                 MudUtils.safe_timer(5.0, function()
+                     if check_run(s.run_id) and s.recovering then
+                         s.recovering = false
+                         _G.PokerQuest.combat_heartbeat(s.run_id)
+                     end
+                 end)
+             end
         end
         
         if string.find(clean_line, "Spade .*離開了") then
              _G.PokerQuest.echo("⚠️ 目標逃跑了！恢復探索...")
+             s.recovering = false -- 重置
              s.phase = "finding"
              s.finding = true -- IMPORTANT: Enable MudExplorer hooks
              if _G.PokerQuest.explore_cb_ref then
@@ -493,10 +525,20 @@ function _G.PokerQuest.on_server_message(line, clean_line)
              end
         end
 
-        -- 追加攻擊?
+        -- 追加攻擊與恢復確認
         if string.find(clean_line, "你的體力逐漸地恢復") then
-             -- 戰鬥中恢復，可能沒在打? 確保攻擊
-             mud.send(_G.PokerQuest.config.attack_cmd)
+             if s.recovering then
+                 _G.PokerQuest.echo("✨ 精力恢復，繼續攻擊！")
+                 s.recovering = false
+                 if s.phase == "fighting" then
+                     _G.PokerQuest.combat_heartbeat(s.run_id)
+                 end
+             else
+                 -- 戰鬥中恢復，可能沒在打? 確保攻擊
+                 if s.phase == "fighting" then
+                     mud.send(_G.PokerQuest.config.attack_cmd)
+                 end
+             end
         end
     end
     
@@ -509,9 +551,9 @@ function _G.PokerQuest.on_server_message(line, clean_line)
     
     -- Deliver Stone: Detecting King
     if s.phase == "detecting_king" then
-        -- Count occurrences of "king" or "King" (case insensitive check might be safer, but log showed "king" in parens)
-        -- Log: 方塊國王(king) ,正坐在這裡 .
-        if string.find(clean_line, "(king)", 1, true) or string.find(clean_line, "King", 1, true) then
+        -- Count occurrences of "king" or "King" 
+        -- Log: 方塊國王(King) ,正坐在這裡 .
+        if string.find(clean_line, "國王%([kK]ing%)") then
             s.king_count = (s.king_count or 0) + 1
             
             if string.find(clean_line, "方塊") then

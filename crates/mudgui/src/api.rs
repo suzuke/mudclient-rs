@@ -2,8 +2,11 @@
 //!
 //! 提供 REST API 讓外部程式（如 MCP Server）操控 MUD client。
 //! 監聽 `127.0.0.1:9527`，僅限本機存取。
+//!
+//! 支援多 Session：所有端點接受 `?session=<key>` 參數指定 Session，
+//! 不指定則使用當前活動的 Session。
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use axum::{
@@ -17,12 +20,16 @@ use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 
 // ============================================================================
-// 共享狀態
+// Per-Session 共享狀態
 // ============================================================================
 
-/// API 共享狀態，透過 Arc<Mutex<>> 在 HTTP server 和 GUI 之間共享
+/// 單一 Session 的 API 狀態
 #[derive(Debug)]
 pub struct ApiState {
+    /// Session 的唯一 key（由 SessionId 產生）
+    pub session_key: String,
+    /// Session 的顯示名稱
+    pub display_name: String,
     /// 最近的訊息（純文字，已去除 ANSI）
     pub recent_messages: VecDeque<String>,
     /// 最大訊息數量
@@ -31,12 +38,12 @@ pub struct ApiState {
     pub current_room: Option<RoomInfo>,
     /// 連線狀態描述
     pub connection_status: String,
-    /// 當前 Session 名稱
-    pub session_name: String,
     /// 待發送的指令佇列（由 HTTP handler 寫入，GUI 讀取執行）
     pub pending_commands: VecDeque<String>,
     /// 待執行的 Lua 程式碼佇列
     pub pending_lua: VecDeque<String>,
+    /// 待評估的 Lua 程式碼佇列 (附帶 oneshot channel 用於回傳結果)
+    pub pending_eval_lua: VecDeque<(String, tokio::sync::oneshot::Sender<String>)>,
 }
 
 /// 房間資訊
@@ -49,15 +56,17 @@ pub struct RoomInfo {
 }
 
 impl ApiState {
-    pub fn new() -> Self {
+    pub fn new(session_key: String, display_name: String) -> Self {
         Self {
+            session_key,
+            display_name,
             recent_messages: VecDeque::with_capacity(200),
             max_messages: 200,
             current_room: None,
             connection_status: "disconnected".to_string(),
-            session_name: String::new(),
             pending_commands: VecDeque::new(),
             pending_lua: VecDeque::new(),
+            pending_eval_lua: VecDeque::new(),
         }
     }
 
@@ -78,9 +87,134 @@ impl ApiState {
     pub fn drain_lua(&mut self) -> Vec<String> {
         self.pending_lua.drain(..).collect()
     }
+
+    /// 取出所有待評估的 Lua（GUI 呼叫）
+    pub fn drain_eval_lua(&mut self) -> Vec<(String, tokio::sync::oneshot::Sender<String>)> {
+        self.pending_eval_lua.drain(..).collect()
+    }
 }
 
 pub type SharedApiState = Arc<Mutex<ApiState>>;
+
+// ============================================================================
+// ApiStateManager — 管理所有 Session 的 API 狀態
+// ============================================================================
+
+/// 管理多個 Session 的 API 狀態
+#[derive(Debug, Clone)]
+pub struct ApiStateManager {
+    inner: Arc<Mutex<ApiStateManagerInner>>,
+}
+
+#[derive(Debug)]
+struct ApiStateManagerInner {
+    /// session_key → SharedApiState
+    states: HashMap<String, SharedApiState>,
+    /// 目前活動的 session key
+    active_key: Option<String>,
+    /// session_key 的插入順序（用於列舉）
+    order: Vec<String>,
+}
+
+impl ApiStateManager {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(ApiStateManagerInner {
+                states: HashMap::new(),
+                active_key: None,
+                order: Vec::new(),
+            })),
+        }
+    }
+
+    /// 註冊一個新的 Session，回傳其專屬的 SharedApiState
+    pub fn register_session(&self, session_key: &str, display_name: &str) -> SharedApiState {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(existing) = inner.states.get(session_key) {
+            return existing.clone();
+        }
+        let state = Arc::new(Mutex::new(ApiState::new(
+            session_key.to_string(),
+            display_name.to_string(),
+        )));
+        inner.states.insert(session_key.to_string(), state.clone());
+        inner.order.push(session_key.to_string());
+        // 第一個註冊的自動成為 active
+        if inner.active_key.is_none() {
+            inner.active_key = Some(session_key.to_string());
+        }
+        state
+    }
+
+    /// 移除一個 Session
+    pub fn unregister_session(&self, session_key: &str) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.states.remove(session_key);
+        inner.order.retain(|k| k != session_key);
+        if inner.active_key.as_deref() == Some(session_key) {
+            inner.active_key = inner.order.first().cloned();
+        }
+    }
+
+    /// 設定當前活動的 Session
+    pub fn set_active(&self, session_key: &str) {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.states.contains_key(session_key) {
+            inner.active_key = Some(session_key.to_string());
+        }
+    }
+
+    /// 取得指定 Session 的 ApiState（透過 key）
+    pub fn get(&self, session_key: &str) -> Option<SharedApiState> {
+        let inner = self.inner.lock().unwrap();
+        inner.states.get(session_key).cloned()
+    }
+
+    /// 取得當前活動 Session 的 ApiState
+    pub fn get_active(&self) -> Option<SharedApiState> {
+        let inner = self.inner.lock().unwrap();
+        inner.active_key.as_ref().and_then(|k| inner.states.get(k).cloned())
+    }
+
+    /// 列出所有 Session 資訊
+    pub fn list_sessions(&self) -> Vec<SessionInfo> {
+        let inner = self.inner.lock().unwrap();
+        inner.order.iter().filter_map(|key| {
+            let state = inner.states.get(key)?;
+            let s = state.lock().ok()?;
+            Some(SessionInfo {
+                session_key: key.clone(),
+                display_name: s.display_name.clone(),
+                status: s.connection_status.clone(),
+                is_active: inner.active_key.as_deref() == Some(key.as_str()),
+            })
+        }).collect()
+    }
+
+    /// 取得所有 session key → SharedApiState 的映射（用於遍歷 drain）
+    pub fn all_states(&self) -> Vec<(String, SharedApiState)> {
+        let inner = self.inner.lock().unwrap();
+        inner.order.iter().filter_map(|key| {
+            inner.states.get(key).map(|s| (key.clone(), s.clone()))
+        }).collect()
+    }
+
+    /// 解析 session 參數：若指定了 ?session=key 則用該 session，否則用 active
+    fn resolve(&self, session_param: Option<&str>) -> Option<SharedApiState> {
+        match session_param {
+            Some(key) => self.get(key),
+            None => self.get_active(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionInfo {
+    pub session_key: String,
+    pub display_name: String,
+    pub status: String,
+    pub is_active: bool,
+}
 
 // ============================================================================
 // API 請求/回應結構
@@ -89,12 +223,19 @@ pub type SharedApiState = Arc<Mutex<ApiState>>;
 #[derive(Deserialize)]
 pub struct MessagesQuery {
     count: Option<usize>,
+    session: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct SessionQuery {
+    session: Option<String>,
 }
 
 #[derive(Serialize)]
 struct StatusResponse {
     status: String,
     session_name: String,
+    session_key: String,
     connected: bool,
     api_version: String,
 }
@@ -103,6 +244,7 @@ struct StatusResponse {
 struct MessagesResponse {
     messages: Vec<String>,
     total: usize,
+    session_key: String,
 }
 
 #[derive(Deserialize)]
@@ -121,106 +263,202 @@ struct OkResponse {
     message: String,
 }
 
+#[derive(Serialize)]
+struct SessionsResponse {
+    sessions: Vec<SessionInfo>,
+}
+
 // ============================================================================
 // HTTP Handlers
 // ============================================================================
 
 async fn health() -> &'static str {
-    "mudclient-rs API v1"
+    "mudclient-rs API v2 (multi-session)"
 }
 
-async fn get_status(State(state): State<SharedApiState>) -> Json<StatusResponse> {
-    let s = state.lock().unwrap();
-    let connected = s.connection_status.contains("connected")
-        || s.connection_status.contains("Connected");
-    Json(StatusResponse {
-        status: s.connection_status.clone(),
-        session_name: s.session_name.clone(),
-        connected,
-        api_version: "1.0".to_string(),
+async fn get_sessions(
+    State(mgr): State<ApiStateManager>,
+) -> Json<SessionsResponse> {
+    Json(SessionsResponse {
+        sessions: mgr.list_sessions(),
     })
 }
 
+async fn get_status(
+    State(mgr): State<ApiStateManager>,
+    Query(params): Query<SessionQuery>,
+) -> Result<Json<StatusResponse>, StatusCode> {
+    let state = mgr.resolve(params.session.as_deref())
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let s = state.lock().unwrap();
+    let connected = s.connection_status.contains("connected")
+        || s.connection_status.contains("Connected");
+    Ok(Json(StatusResponse {
+        status: s.connection_status.clone(),
+        session_name: s.display_name.clone(),
+        session_key: s.session_key.clone(),
+        connected,
+        api_version: "2.0".to_string(),
+    }))
+}
+
 async fn get_messages(
-    State(state): State<SharedApiState>,
+    State(mgr): State<ApiStateManager>,
     Query(params): Query<MessagesQuery>,
-) -> Json<MessagesResponse> {
+) -> Result<Json<MessagesResponse>, StatusCode> {
+    let state = mgr.resolve(params.session.as_deref())
+        .ok_or(StatusCode::NOT_FOUND)?;
     let s = state.lock().unwrap();
     let count = params.count.unwrap_or(50).min(s.recent_messages.len());
     let start = s.recent_messages.len().saturating_sub(count);
     let messages: Vec<String> = s.recent_messages.iter().skip(start).cloned().collect();
-    Json(MessagesResponse {
+    let session_key = s.session_key.clone();
+    Ok(Json(MessagesResponse {
         total: s.recent_messages.len(),
         messages,
-    })
+        session_key,
+    }))
 }
 
-async fn get_room(State(state): State<SharedApiState>) -> Json<serde_json::Value> {
+async fn delete_messages(
+    State(mgr): State<ApiStateManager>,
+    Query(params): Query<SessionQuery>,
+) -> Result<(StatusCode, Json<OkResponse>), StatusCode> {
+    let state = mgr.resolve(params.session.as_deref())
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let mut s = state.lock().unwrap();
+    let num_cleared = s.recent_messages.len();
+    s.recent_messages.clear();
+    Ok((
+        StatusCode::OK,
+        Json(OkResponse {
+            ok: true,
+            message: format!("Cleared {} messages from session {}", num_cleared, s.session_key),
+        }),
+    ))
+}
+
+async fn get_room(
+    State(mgr): State<ApiStateManager>,
+    Query(params): Query<SessionQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let state = mgr.resolve(params.session.as_deref())
+        .ok_or(StatusCode::NOT_FOUND)?;
     let s = state.lock().unwrap();
     match &s.current_room {
-        Some(room) => Json(serde_json::json!({
+        Some(room) => Ok(Json(serde_json::json!({
             "found": true,
             "name": room.name,
             "exits": room.exits,
             "room_id": room.room_id,
             "description": room.description,
-        })),
-        None => Json(serde_json::json!({
+            "session_key": s.session_key,
+        }))),
+        None => Ok(Json(serde_json::json!({
             "found": false,
-        })),
+            "session_key": s.session_key,
+        }))),
     }
 }
 
 async fn send_command(
-    State(state): State<SharedApiState>,
+    State(mgr): State<ApiStateManager>,
+    Query(params): Query<SessionQuery>,
     Json(payload): Json<SendRequest>,
-) -> (StatusCode, Json<OkResponse>) {
+) -> Result<(StatusCode, Json<OkResponse>), StatusCode> {
+    let state = mgr.resolve(params.session.as_deref())
+        .ok_or(StatusCode::NOT_FOUND)?;
     let mut s = state.lock().unwrap();
     s.pending_commands.push_back(payload.command.clone());
-    (
+    Ok((
         StatusCode::OK,
         Json(OkResponse {
             ok: true,
             message: format!("Queued command: {}", payload.command),
         }),
-    )
+    ))
 }
 
 async fn execute_lua(
-    State(state): State<SharedApiState>,
+    State(mgr): State<ApiStateManager>,
+    Query(params): Query<SessionQuery>,
     Json(payload): Json<LuaRequest>,
-) -> (StatusCode, Json<OkResponse>) {
+) -> Result<(StatusCode, Json<OkResponse>), StatusCode> {
+    let state = mgr.resolve(params.session.as_deref())
+        .ok_or(StatusCode::NOT_FOUND)?;
     let mut s = state.lock().unwrap();
     s.pending_lua.push_back(payload.code.clone());
-    (
+    Ok((
         StatusCode::OK,
         Json(OkResponse {
             ok: true,
             message: "Queued Lua code for execution".to_string(),
         }),
-    )
+    ))
+}
+
+async fn evaluate_lua(
+    State(mgr): State<ApiStateManager>,
+    Query(params): Query<SessionQuery>,
+    Json(payload): Json<LuaRequest>,
+) -> Result<(StatusCode, Json<OkResponse>), StatusCode> {
+    let state = mgr.resolve(params.session.as_deref())
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    {
+        let mut s = state.lock().unwrap();
+        s.pending_eval_lua.push_back((payload.code.clone(), tx));
+    }
+
+    // Wait for the result with a timeout of 5 seconds
+    match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
+        Ok(Ok(result)) => Ok((
+            StatusCode::OK,
+            Json(OkResponse {
+                ok: true,
+                message: result,
+            }),
+        )),
+        Ok(Err(_)) => Ok((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(OkResponse {
+                ok: false,
+                message: "Failed to wait for Lua execution result".to_string(),
+            }),
+        )),
+        Err(_) => Ok((
+            StatusCode::REQUEST_TIMEOUT,
+            Json(OkResponse {
+                ok: false,
+                message: "Timeout waiting for Lua execution".to_string(),
+            }),
+        )),
+    }
 }
 
 // ============================================================================
 // 啟動 API Server
 // ============================================================================
 
-/// 啟動 HTTP API Server（應在 tokio runtime 上 spawn）
-pub fn create_api_router(state: SharedApiState) -> Router {
+/// 建立 API Router（使用 ApiStateManager）
+pub fn create_api_router(mgr: ApiStateManager) -> Router {
     Router::new()
         .route("/", get(health))
+        .route("/api/sessions", get(get_sessions))
         .route("/api/status", get(get_status))
         .route("/api/messages", get(get_messages))
+        .route("/api/messages", axum::routing::delete(delete_messages))
         .route("/api/room", get(get_room))
         .route("/api/send", post(send_command))
         .route("/api/lua", post(execute_lua))
+        .route("/api/evaluate", post(evaluate_lua))
         .layer(CorsLayer::permissive())
-        .with_state(state)
+        .with_state(mgr)
 }
 
 /// 在背景啟動 API server
-pub fn start_api_server(runtime: &tokio::runtime::Runtime, state: SharedApiState) {
-    let router = create_api_router(state);
+pub fn start_api_server(runtime: &tokio::runtime::Runtime, mgr: ApiStateManager) {
+    let router = create_api_router(mgr);
 
     runtime.spawn(async move {
         let listener = match tokio::net::TcpListener::bind("127.0.0.1:9527").await {

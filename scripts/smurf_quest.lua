@@ -42,17 +42,25 @@ local CONSTANTS = {
 
 -- ===== 正則表達式 =====
 local PATTERNS = {
-    -- Navigation related patterns are now handled by MudNav
     SUMMON_FAIL = "你失敗了",
     PAPA_GIVE_KEY = "小精靈老爸 把 小鑰匙 給了你",
     GARGAMEL_DIE = "賈不妙魂歸西天了",
     WAND_TAKEN = "中拿出了 小魔杖",
     PAPA_GIVE_POTION = "小精靈老爸 把 粉紅藥劑 給了你",
-    CHAT_FILTER = "^【",
     MOB_ALIVE = "他正在這個世界中",
     MOB_NOT_FOUND = "並不存在於這個系統當中",
     TARGET_NOT_HERE = "你想攻擊的對象不在這裡",
 }
+
+-- ===== 信號機制 =====
+-- Handler 完成時注入信號，統一由 expect 推進
+local function signal(name)
+    MudUtils.safe_timer(0.3, function(rid)
+        if MudUtils.check_run(rid) then
+            _G.SmurfQuest.on_server_message("__SIGNAL__:" .. name)
+        end
+    end)
+end
 
 -- ===== 設定 =====
 _G.SmurfQuest.config = {
@@ -62,16 +70,17 @@ _G.SmurfQuest.config = {
 }
 
 -- ===== 任務步驟定義 =====
+-- 所有步驟統一由 expect 推進，handler 完成後注入 signal 觸發 expect
 local QUEST_STEPS = {
-    {name="go_entrance",    target=nil,      cmds={"5n;2w;n"}, expect="通往賈不妙的城堡的小徑", next="summon_papa_1"},
-    {name="summon_papa_1",  target="papa",   cmds={}, expect="", next="talk_papa_yes"}, -- Handled by MudCombat
-    {name="talk_papa_yes",  target="papa",   cmds={"ta papa yes"}, expect=PATTERNS.PAPA_GIVE_KEY, next="go_castle_gate"},
-    {name="go_castle_gate", target=nil,      cmds={"n"}, expect="賈不妙的城堡外", next="enter_castle"},
-    {name="enter_castle",   target=nil,      cmds={}, expect="賈不妙的城堡", next="kill_gargamel"}, -- Handled by handler
-    {name="kill_gargamel",  target="gargamel", cmds={"c sa", "ear gargamel"}, expect=PATTERNS.GARGAMEL_DIE, next="get_wand"},
-    {name="get_wand",       target=nil,      cmds={}, expect=PATTERNS.WAND_TAKEN, next="summon_papa_2"},
-    {name="summon_papa_2",  target="papa",   cmds={}, expect="", next="give_wand"}, -- Handled by MudCombat
-    {name="give_wand",      target="papa",   cmds={"gi wand papa"}, expect=PATTERNS.PAPA_GIVE_POTION, next="done"},
+    {name="go_entrance",    cmds={"5n;2w;n"}, expect="通往賈不妙的城堡的小徑"},
+    {name="summon_papa_1",  cmds={},          expect="__SIGNAL__:summon_papa_1"},
+    {name="talk_papa_yes",  cmds={"ta papa yes"}, expect=PATTERNS.PAPA_GIVE_KEY},
+    {name="go_castle_gate", cmds={"n"},       expect="賈不妙的城堡外"},
+    {name="enter_castle",   cmds={},          expect="賈不妙的城堡"},
+    {name="kill_gargamel",  cmds={},          expect="__SIGNAL__:kill_gargamel"},
+    {name="get_wand",       cmds={},          expect="__SIGNAL__:get_wand"},
+    {name="summon_papa_2",  cmds={},          expect="__SIGNAL__:summon_papa_2"},
+    {name="give_wand",      cmds={"gi wand papa"}, expect=PATTERNS.PAPA_GIVE_POTION},
 }
 
 -- ===== 狀態變數 =====
@@ -181,40 +190,22 @@ function step_handlers.summon_papa_1(rid)
     MudCombat.safe_summon("小精靈老爸", "c sum papa", {max_retries=10, retry_delay=3.0, verify_delay=3.0}, 
         function() 
             _G.SmurfQuest.echo("✅ 老爸召喚成功！")
-            -- Give a small delay before advancing to ensure state is stable
-            MudUtils.safe_timer(1.0, function(new_rid)
-                 if MudUtils.check_run(new_rid) then
-                     _G.SmurfQuest.advance_step(new_rid) 
-                 end
-            end)
+            signal("summon_papa_1")
         end,
         function() 
             _G.SmurfQuest.echo("❌ 召喚失敗次數過多！")
-            -- Instead of stopping, maybe we should restart the quest if loop mode?
-            -- For now, just stop.
             _G.SmurfQuest.stop()
         end
     )
 end
 
 function step_handlers.summon_papa_2(rid)
-    _G.SmurfQuest.echo("✨ 召喚小精靈老爸 (第二次)...")
-    -- Move south first as per original logic if needed, but original logic had "s;c sum papa" in cmds.
-    -- Wait, step 8 commands were "s;c sum papa". 
-    -- If we use handler, we should send "s" first then summon?
-    -- Or just include "s" in summon cmd? "s;c sum papa" might work if MudCombat just sends it.
-    -- But safe_summon expects a summon command. 
-    -- Better: send "s" explicitly here, then call safe_summon.
-    
-    mud.send("s")
-    
-    -- Delayed summon to allow move?
-    MudUtils.safe_timer(0.5, function(new_rid)
-        if not MudUtils.check_run(new_rid) then return end
+    _G.SmurfQuest.echo("✨ 向南移動並召喚小精靈老爸 (第二次)...")
+    MudNav.walk("s", function()
         MudCombat.safe_summon("小精靈老爸", "c sum papa", {max_retries=10, retry_delay=3.0, verify_delay=3.0}, 
             function() 
                 _G.SmurfQuest.echo("✅ 老爸召喚成功！")
-                _G.SmurfQuest.advance_step(new_rid) 
+                signal("summon_papa_2")
             end,
             function() 
                 _G.SmurfQuest.echo("❌ 召喚失敗次數過多！")
@@ -230,18 +221,11 @@ function step_handlers.enter_castle(rid)
     _G.SmurfQuest.echo("🔑 解鎖並進入城堡...")
     mud.send("un n")
     mud.send("op n")
-    
-    -- Give a small delay for server processing unlock/open
     MudUtils.safe_timer(0.5, function(new_rid)
         if not MudUtils.check_run(new_rid) then return end
         MudNav.walk("n", function()
-            -- Success callback (optional, usually handled by expect match in on_server_message)
-             _G.SmurfQuest.echo("🏰 進入城堡！")
-             -- Note: on_server_message will catch "賈不妙的城堡" and advance step.
-             -- But wait, MudNav callback runs AFTER walk is done.
-             -- If walk is successful, we are in the room.
-             -- on_server_message detects "賈不妙的城堡" -> advance_step.
-             -- If we advance via on_server_message, we don't need to do anything here.
+            _G.SmurfQuest.echo("🏰 進入城堡！")
+            -- expect "賈不妙的城堡" 會在 on_server_message 中自動推進
         end)
     end)
 end
@@ -260,20 +244,33 @@ function step_handlers.kill_gargamel(rid)
         else
             _G.SmurfQuest.echo("💥 賈不妙在場，發動攻擊！")
             mud.send("c sa")
-            mud.send("ear gargamel")
+            mud.send("kill gargamel")
+            
+            -- 技能循環：每 4 秒施放一次，死亡時 expect 會觸發信號推進
+            local function combat_loop(loop_rid)
+                if not MudUtils.check_run(loop_rid) or not _G.SmurfQuest.state.running then return end
+                local current_step = QUEST_STEPS[_G.SmurfQuest.state.step_index]
+                if not current_step or current_step.name ~= "kill_gargamel" then return end
+                if _G.SmurfQuest.state.step_completed then return end  -- 已擊殺，停止循環
+                mud.send("ear gargamel")
+                MudUtils.safe_timer(4.0, combat_loop)
+            end
+            combat_loop(new_rid)
         end
     end)
 end
 
 function step_handlers.get_wand(rid)
-    local s = _G.SmurfQuest.state
-    _G.SmurfQuest.echo("💰 戰利品階段，啟動 MudLoot...")
-    MudLoot.process_loot({
-        items = {"wand"},
-        fallback_blind = true,
-        sac = false
-    }, function()
-        _G.SmurfQuest.advance_step(rid)
+    _G.SmurfQuest.echo("💰 戰利品階段，等待掉落結算...")
+    MudUtils.safe_timer(1.0, function(new_rid)
+        if not MudUtils.check_run(new_rid) then return end
+        MudLoot.process_loot({
+            items = {"wand"},
+            fallback_blind = true,
+            sac = false
+        }, function()
+            signal("get_wand")
+        end)
     end)
 end
 
@@ -395,14 +392,40 @@ function _G.SmurfQuest.on_server_message(clean_line)
 
     if s.combat_target and (clean_line:find(s.combat_target) or clean_line:lower():find(s.combat_target)) then
          s.target_found = true
+         _G.SmurfQuest.update_activity()
     end
 
-    -- Step Expectation
+    -- 戰鬥時若移動力不足，自動嘗試施展恢復技能
+    if clean_line:find("移動力不足") or clean_line:find("精疲力竭") then
+        mud.send("c ref")
+    end
+
+    -- 非預期戰鬥：自動逃跑並終止任務
+    local step = QUEST_STEPS[s.step_index]
+    if step and step.name ~= "kill_gargamel" then
+        if clean_line:find("你現在正身陷戰鬥中") then
+            _G.SmurfQuest.echo("⚠️ 遭遇非預期戰鬥，嘗試逃跑...")
+            mud.send("flee")
+        end
+        if clean_line:find("不顧面子從戰鬥中逃了") then
+            _G.SmurfQuest.echo("🏃 逃跑成功，終止任務。")
+            _G.SmurfQuest.stop()
+            return
+        end
+    end
+
+    -- 偵測賈不妙死亡 → 發送信號
+    if clean_line:find(PATTERNS.GARGAMEL_DIE, 1, true) then
+        signal("kill_gargamel")
+    end
+
+    -- Step Expectation（統一推進機制）
     local step = QUEST_STEPS[s.step_index]
     if step and step.expect and step.expect ~= "" and not s.step_completed then
         if match_pattern(clean_line, step.expect) then
             _G.SmurfQuest.echo("✨ 達成條件: " .. step.name)
             s.step_completed = true
+            _G.SmurfQuest.update_activity()
             MudUtils.safe_timer(0.5, _G.SmurfQuest.advance_step)
         end
     end
@@ -412,6 +435,11 @@ end
 function _G.SmurfQuest.watchdog(rid)
     if not MudUtils.check_run(rid) or not _G.SmurfQuest.state.watchdog_enabled then return end
     local s = _G.SmurfQuest.state
+    
+    if MudCombat.is_fighting() then
+        _G.SmurfQuest.update_activity()
+    end
+    
     local idle = os.time() - s.last_activity
     if idle > _G.SmurfQuest.config.watchdog_timeout then
         _G.SmurfQuest.echo("⚠️ Watchdog 超時！重置任務...")

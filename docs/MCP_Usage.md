@@ -47,7 +47,38 @@ curl -X POST http://127.0.0.1:9527/api/lua \
   -d '{"code":"package.loaded[\"scripts.modules.MudUtils\"] = nil; require(\"scripts.modules.MudUtils\"); mud.echo(\"Reloaded!\")"}'
 ```
 
-### 2. 獲取遊戲訊息 (`GET /api/messages`)
+### 2. 同步評估 Lua 腳本 (`POST /api/evaluate`)
+
+發送 Lua 代碼到客戶端執行，並且**等待**並回傳執行結果的 JSON 字串表示。適用於需要即時讀取遊戲狀態或變數的場景。
+
+*   **URL**: `http://127.0.0.1:9527/api/evaluate`
+*   **Method**: `POST`
+*   **Content-Type**: `application/json`
+*   **Body**:
+    ```json
+    {
+      "code": "return mud.get_current_room_id()"
+    }
+    ```
+
+#### 範例 (curl)
+
+**取得目前的房間 ID:**
+```bash
+curl -X POST http://127.0.0.1:9527/api/evaluate \
+  -H 'Content-Type: application/json' \
+  -d '{"code":"return mud.get_current_room_id()"}'
+```
+
+**回應 (`"ok": true` 搭配 JSON 化腳本結果):**
+```json
+{
+  "ok": true,
+  "message": "\"d41d8cd98f00b204e9800998ecf8427e\""
+}
+```
+
+### 3. 獲取遊戲訊息 (`GET /api/messages`)
 
 獲取 MUD 視窗中最新的遊戲訊息。支援 Polling。
 
@@ -72,6 +103,27 @@ curl -s "http://127.0.0.1:9527/api/messages?count=20"
     "小精靈的老爸(Papa Smurf)正在練習著魔法."
   ],
   "total": 3
+}
+```
+
+### 4. 清空訊息緩衝區 (`DELETE /api/messages`)
+
+清空 MUD 客戶端目前的訊息緩衝區。這在開始特定任務（例如戰鬥或對話）前非常有用，可以用來清除舊的無關訊息，確保之後讀取到的都是最新狀態，能大幅降低 AI 解析負擔。
+
+*   **URL**: `http://127.0.0.1:9527/api/messages`
+*   **Method**: `DELETE`
+
+#### 範例 (curl)
+
+```bash
+curl -X DELETE http://127.0.0.1:9527/api/messages
+```
+
+**回應:**
+```json
+{
+  "ok": true,
+  "message": "Cleared 150 messages"
 }
 ```
 

@@ -85,7 +85,16 @@ function MudLoot.on_server_message(line, clean_line)
     
     -- 3. 解析屍體
     if string.find(clean_line, "的屍體", 1, true) or string.find(clean_line, "/corpse", 1, true) then
-        s.found_corpses = s.found_corpses + 1
+        -- Check if there's a multiplier like "( 2) 賈不妙 那慘不忍睹的屍體/corpse"
+        local count_match = clean_line:match("^%s*%(%s*(%d+)%)")
+        if count_match then
+            local count = tonumber(count_match)
+            if count and count > s.found_corpses then
+                s.found_corpses = count
+            end
+        else
+            s.found_corpses = s.found_corpses + 1
+        end
         return
     end
     

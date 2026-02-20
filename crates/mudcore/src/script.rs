@@ -142,7 +142,7 @@ impl ScriptEngine {
             .ok_or_else(|| ScriptError::NotFound(script_name.to_string()))?;
 
         // 執行腳本時也預設 clean_message = message
-        self.run_code(code, message, message, captures, is_echo)
+        self.run_code(code, None, message, message, captures, is_echo).map(|(ctx, _)| ctx)
     }
 
     /// 執行內聯代碼
@@ -155,21 +155,80 @@ impl ScriptEngine {
     ) -> Result<MudContext, ScriptError> {
         // inline 執行通常只有 message，沒有特定的 clean_message 來源，預設與 message 相同或空
         // 這裡為了兼容現有調用，將 clean_message 設為與 message 相同
-        self.run_code(code, message, message, captures, is_echo)
+        self.run_code(code, None, message, message, captures, is_echo).map(|(ctx, _)| ctx)
+    }
+
+    /// 執行內聯代碼並返回 JSON 字串結果 (用於 evaluate_lua)
+    pub fn execute_inline_with_result(
+        &self,
+        code: &str,
+        message: &str,
+        captures: &[String],
+    ) -> Result<String, ScriptError> {
+        let (_, result) = self.run_code("", Some(code), message, message, captures, false)?;
+        Ok(result.unwrap_or_else(|| "null".to_string()))
+    }
+
+    fn lua_value_to_json(val: &mlua::Value) -> serde_json::Value {
+        match val {
+            mlua::Value::Nil => serde_json::Value::Null,
+            mlua::Value::Boolean(b) => serde_json::Value::Bool(*b),
+            mlua::Value::Integer(i) => serde_json::Value::Number((*i).into()),
+            mlua::Value::Number(n) => {
+                if let Some(num) = serde_json::Number::from_f64(*n) {
+                    serde_json::Value::Number(num)
+                } else {
+                    serde_json::Value::Null
+                }
+            }
+            mlua::Value::String(s) => {
+                serde_json::Value::String(s.to_string_lossy())
+            }
+            mlua::Value::Table(t) => {
+                // Determine if it's an array or object
+                let len = t.len().unwrap_or(0);
+                if len > 0 {
+                    let mut arr = Vec::new();
+                    for i in 1..=len {
+                        if let Ok(v) = t.get(i) {
+                            arr.push(Self::lua_value_to_json(&v));
+                        } else {
+                            arr.push(serde_json::Value::Null);
+                        }
+                    }
+                    serde_json::Value::Array(arr)
+                } else {
+                    let mut obj = serde_json::Map::new();
+                    for pair in t.pairs::<mlua::Value, mlua::Value>() {
+                        if let Ok((k, v)) = pair {
+                            let key_str = match k {
+                                mlua::Value::String(s) => s.to_string_lossy(),
+                                mlua::Value::Integer(i) => i.to_string(),
+                                _ => continue, // Cannot use non-string/int keys in JSON object
+                            };
+                            obj.insert(key_str, Self::lua_value_to_json(&v));
+                        }
+                    }
+                    serde_json::Value::Object(obj)
+                }
+            }
+            _ => serde_json::Value::String(format!("{:?}", val)),
+        }
     }
 
     /// 運行 Lua 代碼
     fn run_code(
         &self,
         code: &str,
+        eval_code: Option<&str>,
         message: &str,
         clean_message: &str,
         captures: &[String],
         is_echo: bool,
-    ) -> Result<MudContext, ScriptError> {
+    ) -> Result<(MudContext, Option<String>), ScriptError> {
         let mut context = MudContext::new();
 
-        self.lua.scope(|scope| {
+        let eval_result_str = self.lua.scope(|scope| {
             // 創建 mud 表用於存放 API
             let mud = self.lua.create_table()?;
             
@@ -432,7 +491,17 @@ impl ScriptEngine {
             }
             
             // 執行腳本
-            self.lua.load(code).exec()?;
+            if !code.is_empty() {
+                self.lua.load(code).exec()?;
+            }
+            
+            // 如果有 eval_code，執行並獲取結果
+            let mut eval_res_str = None;
+            if let Some(ec) = eval_code {
+                let lua_result: mlua::Value = self.lua.load(ec).eval()?;
+                let json_value = Self::lua_value_to_json(&lua_result);
+                eval_res_str = Some(serde_json::to_string(&json_value).unwrap_or_else(|_| "null".to_string()));
+            }
             
             // 收集結果
             let mud: mlua::Table = self.lua.globals().get("mud")?;
@@ -536,10 +605,10 @@ impl ScriptEngine {
                 }
             }
             
-            Ok::<_, mlua::Error>(())
+            Ok::<_, mlua::Error>(eval_res_str)
         })?;
 
-        Ok(context)
+        Ok((context, eval_result_str))
     }
 
     /// 驗證腳本語法
@@ -567,7 +636,7 @@ impl ScriptEngine {
         let adapter_code = format!("if _G['{0}'] then _G['{0}'](message, clean_message) end", hook_name);
         // 注意：這裡我們依賴 execute_inline 將 message 注入到全局
         
-        self.run_code(&adapter_code, arg, clean_arg, &[], false).map(Some)
+        self.run_code(&adapter_code, None, arg, clean_arg, &[], false).map(|(ctx, _)| Some(ctx))
     }
 }
 

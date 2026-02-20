@@ -237,3 +237,188 @@ Rust: load_startup_scripts()
 ```
 
 > Modules 層只執行一次，後續的 `require` 直接命中快取（`package.loaded`），零開銷。
+
+---
+
+## 任務腳本架構（Signal Pattern）
+
+任務腳本（如 `smurf_quest.lua`、`poker_quest.lua`）建議採用 **Signal Pattern**，統一以 `expect` 匹配推進步驟，避免多重推進路徑造成的 race condition。
+
+### 核心原則
+
+> **Handler 只管動作，Expect 統一管推進。**
+
+```
+┌──────────┐     signal(name)     ┌──────────────┐
+│ Handler  │ ──────────────────▶  │ expect 匹配   │ ──▶ advance_step
+│ (動作)    │                      │ (統一推進)     │
+└──────────┘                      └──────────────┘
+                                         ▲
+┌──────────┐                             │
+│ 伺服器回應 │ ────────────────────────────┘
+│ (直接匹配) │   如: "賈不妙的城堡外"
+└──────────┘
+```
+
+### signal 函數
+
+Handler 完成時呼叫 `signal(name)` 注入虛擬訊號到 `on_server_message`，觸發 expect 匹配：
+
+```lua
+local function signal(name)
+    MudUtils.safe_timer(0.3, function(rid)
+        if MudUtils.check_run(rid) then
+            _G.MyQuest.on_server_message("__SIGNAL__:" .. name)
+        end
+    end)
+end
+```
+
+### QUEST_STEPS 定義方式
+
+```lua
+local QUEST_STEPS = {
+    -- 伺服器回應直接匹配
+    {name="go_entrance",    cmds={"5n;2w;n"}, expect="目標房間名稱"},
+
+    -- Handler 完成後發信號推進
+    {name="summon_npc",     cmds={},          expect="__SIGNAL__:summon_npc"},
+
+    -- 發送指令後等伺服器回應
+    {name="talk_npc",       cmds={"ta npc yes"}, expect="NPC 回應文字"},
+}
+```
+
+### on_server_message 推進邏輯
+
+```lua
+-- 統一推進：無條件匹配 expect 後 advance
+local step = QUEST_STEPS[s.step_index]
+if step and step.expect ~= "" and not s.step_completed then
+    if clean_line:find(step.expect, 1, true) then
+        s.step_completed = true
+        MudUtils.safe_timer(0.5, advance_step)
+    end
+end
+```
+
+### Handler 範例
+
+```lua
+-- 召喚類：等 MudCombat 驗證完畢再發信號
+function step_handlers.summon_npc(rid)
+    MudCombat.safe_summon("NPC名", "c sum npc", {max_retries=10},
+        function() signal("summon_npc") end,   -- ✅ 不呼叫 advance_step
+        function() MyQuest.stop() end
+    )
+end
+
+-- 戰鬥類：handler 負責循環施技，死亡偵測寫在 on_server_message
+function step_handlers.kill_boss(rid)
+    mud.send("kill boss")
+    local function loop(loop_rid)
+        if not MudUtils.check_run(loop_rid) then return end
+        if QUEST_STEPS[state.step_index].name ~= "kill_boss" then return end
+        mud.send("skill boss")
+        MudUtils.safe_timer(4.0, loop)
+    end
+    loop(rid)
+end
+
+-- on_server_message 中偵測死亡並發信號
+if clean_line:find("Boss魂歸西天了", 1, true) then
+    signal("kill_boss")
+end
+
+-- 搜刮類：等 MudLoot 完成再發信號
+function step_handlers.get_loot(rid)
+    MudUtils.safe_timer(1.0, function(new_rid)  -- 等掉落結算
+        MudLoot.process_loot({items={"item"}, fallback_blind=true},
+            function() signal("get_loot") end
+        )
+    end)
+end
+```
+
+---
+
+## 常見陷阱
+
+### ❌ 雙重推進 Race Condition
+
+```lua
+-- 反面教材：handler 和 expect 同時推進
+{name="get_item", expect="拿出了 物品"},  -- expect 會匹配推進
+function step_handlers.get_item()
+    MudLoot.process_loot({...}, function()
+        advance_step()  -- handler 也推進 → 跳過下一步！
+    end)
+end
+```
+
+**解法**：使用 signal pattern，handler 永遠不直接呼叫 `advance_step()`。
+
+### ❌ 移動力不足導致卡住
+
+技能需要移動力（如大地之斬需 mv > 500），移動力耗盡時技能施放失敗但不會進入戰鬥。
+
+**解法**：在 `on_server_message` 中偵測並自動恢復：
+
+```lua
+if clean_line:find("移動力不足") or clean_line:find("精疲力竭") then
+    mud.send("c ref")  -- 恢復移動力
+end
+```
+
+同時戰鬥開局應加入普攻保底 `mud.send("kill target")`。
+
+### ❌ 搜刮時機過早
+
+怪物死亡後系統需要數行輸出結算（經驗值、金幣、掉落物）。立即 `look` 可能看不到屍體。
+
+**解法**：搜刮步驟加入 1 秒延遲等待結算完成。
+
+### ❌ Watchdog 誤殺長時間戰鬥
+
+戰鬥可能超過 watchdog timeout（預設 180 秒），觸發自動停止。
+
+**解法**：Watchdog 檢查 `MudCombat.is_fighting()` 並展延活躍時間：
+
+```lua
+if MudCombat.is_fighting() then
+    update_activity()
+end
+```
+
+### ❌ 使用 Prompt 作為偵測條件
+
+Prompt（如 `(hp2741/2741 ma2154/2154 v1364/1364 ...)`）是**玩家自訂的格式**，不同玩家的 prompt 完全不同，甚至可能為空。**永遠不要**拿 prompt 的內容來判斷訊息結束、解析狀態或觸發邏輯。
+
+```lua
+-- ❌ 禁止
+if clean_line:find("^%(hp%d") then  -- prompt 格式因人而異！
+    scan_complete = true
+end
+
+-- ✅ 正確：使用伺服器固定輸出標記
+if clean_line:find("[出口:", 1, true) then
+    scan_complete = true
+end
+```
+
+### ❌ 行走途中遭遇非預期戰鬥
+
+MudNav 走路時可能遇到主動攻擊的怪物（如野狗），導致移動指令被伺服器拒絕（`不行! 你現在正身陷戰鬥中!`），後續路步全部錯位。
+
+**解法**：在 `on_server_message` 中偵測並自動逃跑，逃跑後終止任務：
+
+```lua
+if step.name ~= "kill_boss" then  -- 排除預期的戰鬥步驟
+    if clean_line:find("你現在正身陷戰鬥中") then
+        mud.send("flee")
+    end
+    if clean_line:find("不顧面子從戰鬥中逃了") then
+        MyQuest.stop()
+    end
+end
+```

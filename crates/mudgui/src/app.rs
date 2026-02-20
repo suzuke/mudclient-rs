@@ -1,6 +1,5 @@
 //! MUD Client 主要 UI 邏輯
 
-use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use eframe::egui::{self, Color32, FontId, RichText, ScrollArea, TextEdit};
@@ -13,7 +12,7 @@ use mudcore::{
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 
-use crate::api::{self, SharedApiState};
+use crate::api::{self, ApiStateManager};
 use crate::config::{GlobalConfig, ProfileManager, TriggerConfig};
 use crate::session::SessionManager;
 
@@ -93,8 +92,8 @@ pub struct MudApp {
     /// 當前選中的攻略檔案名稱
     active_guide_name: Option<String>,
 
-    /// API 共享狀態
-    api_state: SharedApiState,
+    /// API 狀態管理器（每個 Session 獨立的 API 狀態）
+    api_state_mgr: ApiStateManager,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,9 +139,9 @@ impl MudApp {
         // 創建 Tokio 運行時
         let runtime = Runtime::new().expect("無法創建 Tokio 運行時");
 
-        // 建立並啟動 API Server
-        let api_state = Arc::new(Mutex::new(api::ApiState::new()));
-        api::start_api_server(&runtime, api_state.clone());
+        // 建立並啟動 API Server（多 Session 版）
+        let api_state_mgr = ApiStateManager::new();
+        api::start_api_server(&runtime, api_state_mgr.clone());
 
         Self {
             runtime,
@@ -197,7 +196,7 @@ impl MudApp {
             active_guide_content: String::new(),
             active_guide_name: None,
 
-            api_state,
+            api_state_mgr,
         }
     }
 
@@ -349,8 +348,8 @@ impl MudApp {
         if let Some(profile) = self.profile_manager.get(profile_name) {
             tracing::info!("建立 Profile 連線: {}", profile_name);
             
-            // 建立新的 Session
-            let session_id = self.session_manager.create_session(profile, self.api_state.clone());
+            // 為新 Session 建立專屬的 ApiState
+            let session_id = self.session_manager.create_session(profile, &self.api_state_mgr);
             
             // 啟動連線
             self.start_connection(session_id, ctx.clone());
@@ -706,9 +705,8 @@ impl MudApp {
                                     let info = text.replace(">>> 已連線到 ", "").replace("\n", "");
                                     session.status = SessionStatus::Connected(info.clone());
                                     session.connected_at = Some(Instant::now());
-                                    if let Ok(mut api) = self.api_state.lock() {
+                                    if let Ok(mut api) = session.api_state.lock() {
                                         api.connection_status = format!("connected:{}", info);
-                                        api.session_name = session.display_name.clone();
                                     }
                                 } else if text.contains("連線已關閉") || text.contains("已斷開連線") {
                                     session.connected_at = None;
@@ -716,12 +714,12 @@ impl MudApp {
                                         use std::time::Duration;
                                         session.reconnect_delay_until = Some(Instant::now() + Duration::from_secs(3));
                                         session.status = SessionStatus::Reconnecting;
-                                        if let Ok(mut api) = self.api_state.lock() {
+                                        if let Ok(mut api) = session.api_state.lock() {
                                             api.connection_status = "reconnecting".to_string();
                                         }
                                     } else {
                                         session.status = SessionStatus::Disconnected;
-                                        if let Ok(mut api) = self.api_state.lock() {
+                                        if let Ok(mut api) = session.api_state.lock() {
                                             api.connection_status = "disconnected".to_string();
                                         }
                                     }
@@ -739,29 +737,51 @@ impl MudApp {
         self.process_api_commands();
     }
 
-    /// 處理 API 傳入的指令和 Lua 程式碼
+    /// 處理 API 傳入的指令和 Lua 程式碼（多 Session 版）
     fn process_api_commands(&mut self) {
-        // 從 ApiState 取出待處理的指令
-        let (commands, lua_codes) = {
-            if let Ok(mut api) = self.api_state.lock() {
-                (api.drain_commands(), api.drain_lua())
-            } else {
-                (vec![], vec![])
-            }
-        };
+        // 遍歷所有 Session 的 ApiState，取出各自的 pending 佇列
+        let all_states = self.api_state_mgr.all_states();
+        
+        for (session_key, api_state) in all_states {
+            let (commands, lua_codes, eval_lua_codes) = {
+                if let Ok(mut api) = api_state.lock() {
+                    (api.drain_commands(), api.drain_lua(), api.drain_eval_lua())
+                } else {
+                    continue;
+                }
+            };
 
-        // 取得活躍 Session 並執行
-        if let Some(session) = self.session_manager.active_session_mut() {
-            for cmd in commands {
-                session.handle_user_input(&cmd);
+            // 跳過沒有待處理項目的 Session
+            if commands.is_empty() && lua_codes.is_empty() && eval_lua_codes.is_empty() {
+                continue;
             }
-            for code in lua_codes {
-                match session.script_engine.execute_inline(&code, "API", &[], false) {
-                    Ok(ctx) => session.apply_script_context(ctx),
-                    Err(e) => {
-                        tracing::error!("API Lua error: {}", e);
-                        session.system_message(&format!("API Lua Error: {}", e));
+
+            // 找到對應的 Session 並執行
+            let session = self.session_manager.sessions_mut().iter_mut()
+                .find(|s| s.id.value().to_string() == session_key);
+            
+            if let Some(session) = session {
+                for cmd in commands {
+                    session.handle_user_input(&cmd);
+                }
+                for code in lua_codes {
+                    match session.script_engine.execute_inline(&code, "API", &[], false) {
+                        Ok(ctx) => session.apply_script_context(ctx),
+                        Err(e) => {
+                            tracing::error!("API Lua error (session {}): {}", session_key, e);
+                            session.system_message(&format!("API Lua Error: {}", e));
+                        }
                     }
+                }
+                for (code, tx) in eval_lua_codes {
+                    let result_str = match session.script_engine.execute_inline_with_result(&code, "API_EVAL", &[]) {
+                        Ok(result) => result,
+                        Err(e) => {
+                            tracing::error!("API Eval Lua error (session {}): {}", session_key, e);
+                            format!("Error: {}", e)
+                        }
+                    };
+                    let _ = tx.send(result_str);
                 }
             }
         }
