@@ -22,22 +22,6 @@ local MudNav = require_module("MudNav")
 local MudExplorer = require_module("MudExplorer")
 local MudCombat = require_module("MudCombat")
 
--- Hot-reload MudUtils if show_script_usage is missing (update check)
-if not MudUtils.show_script_usage then
-    for k, _ in pairs(package.loaded) do
-        if k:match("MudUtils$") then package.loaded[k] = nil end
-    end
-    MudUtils = require_module("MudUtils")
-end
-
--- Hot-reload MudNav if reset is missing
-if not MudNav.reset then
-    for k, _ in pairs(package.loaded) do
-        if k:match("MudNav$") then package.loaded[k] = nil end
-    end
-    MudNav = require_module("MudNav")
-end
-
 -- ===== 常數定義 =====
 local CONSTANTS = {
     MAX_FIND_LAPS = 5,

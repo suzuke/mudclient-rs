@@ -1,5 +1,6 @@
 //! MUD Client 主要 UI 邏輯
 
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use eframe::egui::{self, Color32, FontId, RichText, ScrollArea, TextEdit};
@@ -12,7 +13,7 @@ use mudcore::{
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 
-// 移除未使用匯入
+use crate::api::{self, SharedApiState};
 use crate::config::{GlobalConfig, ProfileManager, TriggerConfig};
 use crate::session::SessionManager;
 
@@ -91,6 +92,9 @@ pub struct MudApp {
     active_guide_content: String,
     /// 當前選中的攻略檔案名稱
     active_guide_name: Option<String>,
+
+    /// API 共享狀態
+    api_state: SharedApiState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +139,10 @@ impl MudApp {
 
         // 創建 Tokio 運行時
         let runtime = Runtime::new().expect("無法創建 Tokio 運行時");
+
+        // 建立並啟動 API Server
+        let api_state = Arc::new(Mutex::new(api::ApiState::new()));
+        api::start_api_server(&runtime, api_state.clone());
 
         Self {
             runtime,
@@ -188,6 +196,8 @@ impl MudApp {
             guide_file_list: Vec::new(),
             active_guide_content: String::new(),
             active_guide_name: None,
+
+            api_state,
         }
     }
 
@@ -340,7 +350,7 @@ impl MudApp {
             tracing::info!("建立 Profile 連線: {}", profile_name);
             
             // 建立新的 Session
-            let session_id = self.session_manager.create_session(profile);
+            let session_id = self.session_manager.create_session(profile, self.api_state.clone());
             
             // 啟動連線
             self.start_connection(session_id, ctx.clone());
@@ -391,8 +401,9 @@ impl MudApp {
 
         // 創建 channels
         use crate::session::Command as SessionCommand;
+        use crate::session::NetMessage;
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<SessionCommand>(32);
-        let (msg_tx, msg_rx) = mpsc::channel::<(String, Vec<u8>)>(1024);
+        let (msg_tx, msg_rx) = mpsc::channel::<NetMessage>(1024);
 
         if let Some(session) = self.session_manager.get_mut(session_id) {
             session.command_tx = Some(cmd_tx.clone());
@@ -412,14 +423,14 @@ impl MudApp {
                             SessionCommand::Connect(h, p, u, pwd) => {
                                 match client.connect(&h, p).await {
                                     Ok(_) => {
-                                        let _ = msg_tx.send((format!(">>> 已連線到 {}:{}\n", h, p), Vec::new())).await;
+                                        let _ = msg_tx.send(NetMessage::Text(format!(">>> 已連線到 {}:{}\n", h, p), Vec::new())).await;
 
                                         // 自動登入邏輯
                                         if let Some(username) = u {
                                             // 稍微延遲一點點確保連線穩定（簡易版）
                                             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                                             if let Err(e) = client.send(&username).await {
-                                                let _ = msg_tx.send((format!(">>> 自動登入(帳號)失敗: {}\n", e), Vec::new())).await;
+                                                let _ = msg_tx.send(NetMessage::Text(format!(">>> 自動登入(帳號)失敗: {}\n", e), Vec::new())).await;
                                             } else {
                                                 // let _ = msg_tx.send(">>> 已發送帳號\n".to_string()).await;
                                             }
@@ -427,9 +438,9 @@ impl MudApp {
                                             if let Some(password) = pwd {
                                                 tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
                                                 if let Err(e) = client.send(&password).await {
-                                                     let _ = msg_tx.send((format!(">>> 自動登入(密碼)失敗: {}\n", e), Vec::new())).await;
+                                                     let _ = msg_tx.send(NetMessage::Text(format!(">>> 自動登入(密碼)失敗: {}\n", e), Vec::new())).await;
                                                 } else {
-                                                    let _ = msg_tx.send((">>> 已嘗試自動登入\n".to_string(), Vec::new())).await;
+                                                    let _ = msg_tx.send(NetMessage::Text(">>> 已嘗試自動登入\n".to_string(), Vec::new())).await;
                                                     
                                                     // 延遲並發送空指令，確保能排除可能殘留在伺服器輸入緩衝區的任何干擾
                                                     // 增加延遲到 1000ms 確保伺服器已完全進入遊戲狀態
@@ -445,15 +456,15 @@ impl MudApp {
                                                 result = client.read_with_widths() => {
                                                     match result {
                                                         Ok((text, widths)) if !text.is_empty() => {
-                                                            let _ = msg_tx.send((text, widths)).await;
+                                                            let _ = msg_tx.send(NetMessage::Text(text, widths)).await;
                                                             ctx.request_repaint();
                                                         }
                                                         Ok(_) => {
-                                                            let _ = msg_tx.send((">>> 連線已關閉\n".to_string(), Vec::new())).await;
+                                                            let _ = msg_tx.send(NetMessage::Text(">>> 連線已關閉\n".to_string(), Vec::new())).await;
                                                             break;
                                                         }
                                                         Err(e) => {
-                                                            let _ = msg_tx.send((format!(">>> 連線已關閉 (錯誤: {})\n", e), Vec::new())).await;
+                                                            let _ = msg_tx.send(NetMessage::Text(format!(">>> 連線已關閉 (錯誤: {})\n", e), Vec::new())).await;
                                                             break;
                                                         }
                                                     }
@@ -462,12 +473,109 @@ impl MudApp {
                                                     match cmd {
                                                         SessionCommand::Send(text) => {
                                                             if let Err(e) = client.send(&text).await {
-                                                                let _ = msg_tx.send((format!(">>> 發送失敗: {}\n", e), Vec::new())).await;
+                                                                let _ = msg_tx.send(NetMessage::Text(format!(">>> 發送失敗: {}\n", e), Vec::new())).await;
                                                             }
+                                                        }
+                                                        SessionCommand::CollectResponse { command, callback_code } => {
+                                                            // === Phase 0: 先把 channel 裡所有等待的 Send 指令發出去 ===
+                                                            while let Ok(pending_cmd) = cmd_rx.try_recv() {
+                                                                match pending_cmd {
+                                                                    SessionCommand::Send(text) => {
+                                                                        if let Err(e) = client.send(&text).await {
+                                                                            let _ = msg_tx.send(NetMessage::Text(format!(">>> 發送失敗: {}\n", e), Vec::new())).await;
+                                                                        }
+                                                                    }
+                                                                    // 如果有另一個 CollectResponse 排在後面，暫時忽略（不應該發生）
+                                                                    _ => {}
+                                                                }
+                                                            }
+
+                                                            // === Phase 1: Drain — 讀盡管線中所有待處理的回應 ===
+                                                            // 所有前序指令已發送，等待它們的回應全部到達
+                                                            loop {
+                                                                match tokio::time::timeout(
+                                                                    std::time::Duration::from_millis(300),
+                                                                    client.read_with_widths()
+                                                                ).await {
+                                                                    Ok(Ok((text, widths))) if !text.is_empty() => {
+                                                                        let _ = msg_tx.send(NetMessage::Text(text, widths)).await;
+                                                                        ctx.request_repaint();
+                                                                    }
+                                                                    _ => break, // Timeout 或錯誤 = 管線已清
+                                                                }
+                                                            }
+
+                                                            // === Phase 2: 發送指令 ===
+                                                            if let Err(e) = client.send(&command).await {
+                                                                let _ = msg_tx.send(NetMessage::Text(format!(">>> CollectResponse 發送失敗: {}\n", e), Vec::new())).await;
+                                                                continue;
+                                                            }
+
+                                                            // === Phase 3: Collect — 收集回應直到 prompt ===
+                                                            let mut collected_lines: Vec<String> = Vec::new();
+                                                            loop {
+                                                                match tokio::time::timeout(
+                                                                    std::time::Duration::from_secs(5),
+                                                                    client.read_with_widths()
+                                                                ).await {
+                                                                    Ok(Ok((text, widths))) if !text.is_empty() => {
+                                                                        // 轉發給 UI 顯示
+                                                                        let _ = msg_tx.send(NetMessage::Text(text.clone(), widths)).await;
+                                                                        ctx.request_repaint();
+
+                                                                        // 解析行，加入收集
+                                                                        for line in text.split('\n') {
+                                                                            let clean = crate::ansi::strip_ansi(line);
+                                                                            let trimmed = clean.replace('\r', "");
+                                                                            let trimmed = trimmed.trim();
+                                                                            if !trimmed.is_empty() {
+                                                                                collected_lines.push(trimmed.to_string());
+                                                                            }
+                                                                        }
+
+                                                                        // 判斷回應是否結束：不以 \n 結尾 + 50ms 確認
+                                                                        if !text.ends_with('\n') {
+                                                                            match tokio::time::timeout(
+                                                                                std::time::Duration::from_millis(50),
+                                                                                client.read_with_widths()
+                                                                            ).await {
+                                                                                Err(_) => {
+                                                                                    // 確認：prompt，收集結束
+                                                                                    // 移除最後一行（prompt 行）
+                                                                                    collected_lines.pop();
+                                                                                    break;
+                                                                                }
+                                                                                Ok(Ok((more, w))) if !more.is_empty() => {
+                                                                                    // 有更多資料，繼續收集
+                                                                                    let _ = msg_tx.send(NetMessage::Text(more.clone(), w)).await;
+                                                                                    ctx.request_repaint();
+                                                                                    for line in more.split('\n') {
+                                                                                        let clean = crate::ansi::strip_ansi(line);
+                                                                                        let trimmed = clean.replace('\r', "");
+                                                                                        let trimmed = trimmed.trim();
+                                                                                        if !trimmed.is_empty() {
+                                                                                            collected_lines.push(trimmed.to_string());
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                                _ => break,
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                    _ => break, // 超時或錯誤
+                                                                }
+                                                            }
+
+                                                            // === Phase 4: 發送收集結果 ===
+                                                            let _ = msg_tx.send(NetMessage::CollectedResponse {
+                                                                lines: collected_lines,
+                                                                callback_code,
+                                                            }).await;
+                                                            ctx.request_repaint();
                                                         }
                                                         SessionCommand::Disconnect => {
                                                             client.disconnect().await;
-                                                            let _ = msg_tx.send((">>> 已斷開連線\n".to_string(), Vec::new())).await;
+                                                            let _ = msg_tx.send(NetMessage::Text(">>> 已斷開連線\n".to_string(), Vec::new())).await;
                                                             break;
                                                         }
                                                         _ => {}
@@ -477,7 +585,7 @@ impl MudApp {
                                         }
                                     }
                                     Err(e) => {
-                                        let _ = msg_tx.send((format!(">>> 連線已關閉 (連線失敗: {})\n", e), Vec::new())).await;
+                                        let _ = msg_tx.send(NetMessage::Text(format!(">>> 連線已關閉 (連線失敗: {})\n", e), Vec::new())).await;
                                     }
                                 }
                             }
@@ -562,6 +670,7 @@ impl MudApp {
 
     /// 處理所有活躍 Session 的網路訊息
     fn process_messages(&mut self) {
+        use crate::session::NetMessage;
         let session_ids: Vec<_> = self.session_manager.sessions().iter().map(|s| s.id).collect();
 
         for id in session_ids {
@@ -583,28 +692,75 @@ impl MudApp {
             // 處理收集到的訊息
             if !messages.is_empty() {
                 if let Some(session) = self.session_manager.get_mut(id) {
-                    for (text, widths) in messages {
-                        if widths.is_empty() {
-                            session.handle_text(&text, false);
-                        } else {
-                            session.handle_text_with_widths(&text, false, Some(&widths));
-                        }
+                    for msg in messages {
+                        match msg {
+                            NetMessage::Text(text, widths) => {
+                                if widths.is_empty() {
+                                    session.handle_text(&text, false);
+                                } else {
+                                    session.handle_text_with_widths(&text, false, Some(&widths));
+                                }
 
-                        use crate::session::ConnectionStatus as SessionStatus;
-                        if text.contains("已連線到") {
-                            let info = text.replace(">>> 已連線到 ", "").replace("\n", "");
-                            session.status = SessionStatus::Connected(info);
-                            session.connected_at = Some(Instant::now());
-                        } else if text.contains("連線已關閉") || text.contains("已斷開連線") {
-                            session.connected_at = None;
-                            if session.auto_reconnect {
-                                use std::time::Duration;
-                                session.reconnect_delay_until = Some(Instant::now() + Duration::from_secs(3));
-                                session.status = SessionStatus::Reconnecting;
-                            } else {
-                                session.status = SessionStatus::Disconnected;
+                                use crate::session::ConnectionStatus as SessionStatus;
+                                if text.contains("已連線到") {
+                                    let info = text.replace(">>> 已連線到 ", "").replace("\n", "");
+                                    session.status = SessionStatus::Connected(info.clone());
+                                    session.connected_at = Some(Instant::now());
+                                    if let Ok(mut api) = self.api_state.lock() {
+                                        api.connection_status = format!("connected:{}", info);
+                                        api.session_name = session.display_name.clone();
+                                    }
+                                } else if text.contains("連線已關閉") || text.contains("已斷開連線") {
+                                    session.connected_at = None;
+                                    if session.auto_reconnect {
+                                        use std::time::Duration;
+                                        session.reconnect_delay_until = Some(Instant::now() + Duration::from_secs(3));
+                                        session.status = SessionStatus::Reconnecting;
+                                        if let Ok(mut api) = self.api_state.lock() {
+                                            api.connection_status = "reconnecting".to_string();
+                                        }
+                                    } else {
+                                        session.status = SessionStatus::Disconnected;
+                                        if let Ok(mut api) = self.api_state.lock() {
+                                            api.connection_status = "disconnected".to_string();
+                                        }
+                                    }
+                                }
+                            }
+                            NetMessage::CollectedResponse { lines, callback_code } => {
+                                session.execute_collected_response(lines, callback_code);
                             }
                         }
+                    }
+                }
+            }
+        }
+        // 處理 API 命令
+        self.process_api_commands();
+    }
+
+    /// 處理 API 傳入的指令和 Lua 程式碼
+    fn process_api_commands(&mut self) {
+        // 從 ApiState 取出待處理的指令
+        let (commands, lua_codes) = {
+            if let Ok(mut api) = self.api_state.lock() {
+                (api.drain_commands(), api.drain_lua())
+            } else {
+                (vec![], vec![])
+            }
+        };
+
+        // 取得活躍 Session 並執行
+        if let Some(session) = self.session_manager.active_session_mut() {
+            for cmd in commands {
+                session.handle_user_input(&cmd);
+            }
+            for code in lua_codes {
+                match session.script_engine.execute_inline(&code, "API", &[], false) {
+                    Ok(ctx) => session.apply_script_context(ctx),
+                    Err(e) => {
+                        tracing::error!("API Lua error: {}", e);
+                        session.system_message(&format!("API Lua Error: {}", e));
                     }
                 }
             }

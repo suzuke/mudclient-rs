@@ -23,12 +23,6 @@ local MudExplorer = require_module("MudExplorer")
 local MudCombat = require_module("MudCombat")
 local MudLoot = require_module("MudLoot")
 
--- Hot-reload Modules if needed (Consistency check)
-if not MudUtils.show_script_usage then
-    package.loaded["scripts.modules.MudUtils"] = nil
-    MudUtils = require_module("MudUtils")
-end
-
 -- ===== 設定 =====
 _G.PokerQuest.config = {
     entry_path = {

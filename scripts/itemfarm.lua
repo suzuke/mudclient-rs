@@ -23,6 +23,8 @@ end
 
 local MudCombat = require_module("MudCombat")
 local MudLoot = require_module("MudLoot")
+local MudNav = require_module("MudNav")
+local MudUtils = require_module("MudUtils")
 
 -- local mud = mud -- 避免快取 userdata
 local string = string
@@ -77,45 +79,68 @@ _G.ItemFarm.jobs = {
         remove_nodrop = {},
         sac_corpse = true,
     },
-    {
-        name = "不動明王",
-        mode = "direct",
-        search_type = "quest",
-        search_cmd = "q 6.sentinel",
-        target_mob = "不動明王",
-        attack_cmd = "c star;c star;c star",
-        dispel_cmd = "c 'dispel m' sentinel",
-        dispel_indicators = {"(白色聖光)"},    -- 只要其中一個在場就繼續 dispel
-        hp_threshold = 100,               -- 特定怪物才檢查血量
-        hp_recover_cmd = "c heal",         -- 自定義恢復 HP 的指令
-        buffs = {
-            { cmd = "c sa",  indicator = "聖光", fade_msg = "你四周的白色聖光消散了" },
-            { cmd = "c pro", indicator = "聖佑術", fade_msg = "你感覺到失去上天的護佑." },
-            { cmd = "c b",   indicator = "女神庇祐術", fade_msg = "你覺得你的好運已經結束了." }
-        },
-        dispel_max_retries = 15,     -- 自定義重試次數
-        pre_travel_cmd = "c inv",  -- 隱身
-        path_to_mob = "recall;3w;4s;ta wizard help;7w;7n;6u;7n",
-        path_to_storage = "recall;3n;e",
-        loot_items = {"sword", "potato", "hamburg"},
-        remove_nodrop = {},
-        sac_corpse = true,
-    },
-    {
-    -- Xiulou slash /11swn3e2ne3ne2nu4ne
-        name = "闇の一族幫員",
-        mode = "direct",
-        search_type = "quest",
-        search_cmd = "q clan_member",
-        target_mob = "闇の一族幫員",
-        attack_cmd = "c nu clan_member;c fl clan_member",
-        pre_travel_cmd = "c inv",  -- 隱身
-        path_to_mob = "recall;11s;w;n;3e;2n;e;3n;e;2n;u;4n;e",
-        path_to_storage = "recall;3n;e",
-        loot_items = {"Xiulou"},
-        remove_nodrop = {},
-        sac_corpse = true,
-    }
+    -- {
+    --     name = "不動明王",
+    --     mode = "direct",
+    --     search_type = "quest",
+    --     search_cmd = "q 6.sentinel",
+    --     target_mob = "不動明王",
+    --     attack_cmd = "c star;c star;c star",
+    --     dispel_cmd = "c 'dispel m' sentinel",
+    --     dispel_indicators = {"白色聖光"},    -- 只要其中一個在場就繼續 dispel
+    --     hp_threshold = 100,               -- 特定怪物才檢查血量
+    --     hp_recover_cmd = "c heal",         -- 自定義恢復 HP 的指令
+    --     buffs = {
+    --         { cmd = "c sa",  indicator = "聖光", fade_msg = "你四周的白色聖光消散了" },
+    --         { cmd = "c pro", indicator = "聖佑術", fade_msg = "你感覺到失去上天的護佑." },
+    --         { cmd = "c b",   indicator = "女神庇祐術", fade_msg = "你覺得你的好運已經結束了." }
+    --     },
+    --     dispel_max_retries = 15,     -- 自定義重試次數
+    --     pre_travel_cmd = "c inv",  -- 隱身
+    --     path_to_mob = "recall;3w;4s;ta wizard help;7w;7n;6u;7n",
+    --     path_to_storage = "recall;3n;e",
+    --     loot_items = {"sword", "potato", "hamburg"},
+    --     remove_nodrop = {},
+    --     sac_corpse = true,
+    -- },
+    -- {
+    -- -- Xiulou slash /11swn3e2ne3ne2nu4ne
+    --     name = "闇の一族幫員",
+    --     mode = "direct",
+    --     search_type = "quest",
+    --     search_cmd = "q clan_member",
+    --     target_mob = "闇の一族幫員",
+    --     attack_cmd = "c nu clan_member;c fl clan_member",
+    --     pre_travel_cmd = "c inv",  -- 隱身
+    --     path_to_mob = "recall;11s;w;n;3e;2n;e;3n;e;2n;u;4n;e",
+    --     path_to_storage = "recall;3n;e",
+    --     loot_items = {"Xiulou"},
+    --     remove_nodrop = {},
+    --     sac_corpse = true,
+    -- },
+    -- {
+    --     name = "天堂守護者麥倫．薩爾達",
+    --     mode = "direct",
+    --     search_type = "quest",
+    --     search_cmd = "q 2.paradiser",
+    --     target_mob = "麥倫．薩爾達",
+    --     attack_cmd = "c star;c star;c star;",
+    --     dispel_cmd = "c 'dispel m' paradiser",
+    --     dispel_indicators = {"白色聖光"},    -- 只要其中一個在場就繼續 dispel
+    --     hp_threshold = 100,               -- 特定怪物才檢查血量
+    --     hp_recover_cmd = "c heal",         -- 自定義恢復 HP 的指令
+    --     buffs = {
+    --         { cmd = "c sa",  indicator = "聖光", fade_msg = "你四周的白色聖光消散了" },
+    --         { cmd = "c pro", indicator = "聖佑術", fade_msg = "你感覺到失去上天的護佑." },
+    --         { cmd = "c b",   indicator = "女神庇祐術", fade_msg = "你覺得你的好運已經結束了." }
+    --     },
+    --     dispel_max_retries = 15,     -- 自定義重試次數
+    --     path_to_mob = "recall;3w;2s;5e;2s;e;op e;e",
+    --     path_to_storage = "recall;3n;e",
+    --     loot_items = {"wisdom"},
+    --     remove_nodrop = {},
+    --     sac_corpse = true,
+    -- },
 }
 
 -- ===== 狀態 =====
@@ -342,12 +367,25 @@ function _G.ItemFarm.start()
     local j = _G.ItemFarm.job()
     mud.echo("🎯 開始自動收集 (" .. #_G.ItemFarm.jobs .. " 個任務)")
     MudUtils.start_log("itemfarm")
+    
+    -- 註冊並觸發物品檢查（非同步），完成後呼叫 after_inventory_checked
+    MudUtils.register_quest("ItemFarm", _G.ItemFarm.stop)
+    mud.echo("🔍 正在檢查隨身物品...")
+    MudUtils.start_inventory_check("_G.ItemFarm.after_inventory_checked(tostring(" .. s.run_id .. "))")
+end
+
+-- 物品檢查通過後，真正開始掛機流程
+function _G.ItemFarm.after_inventory_checked(rid)
+    -- 注意參數傳遞問題，這裡轉成數字比較安全
+    local run_id = tonumber(rid)
+    if not check_run(run_id) then return end
+    if not _G.ItemFarm.state.running then return end
+
+    local s = _G.ItemFarm.state
+    local j = _G.ItemFarm.job()
+    mud.echo("✅ 物品檢查通過，開始執行任務")
     mud.echo("   當前任務: [" .. s.current_job .. "] " .. j.name)
     _G.ItemFarm.search(s.run_id)
-    
-    -- 註冊並觸發物品檢查
-    MudUtils.register_quest("ItemFarm", _G.ItemFarm.stop)
-    mud.send("i")
 end
 
 function _G.ItemFarm.stop()

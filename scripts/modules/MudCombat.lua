@@ -1,5 +1,17 @@
 -- MudCombat Module
 -- 戰鬥偵測與召喚管理
+
+local function require_module(name)
+    local paths = { "scripts.modules." .. name, "modules." .. name, name }
+    for _, p in ipairs(paths) do
+        local status, res = pcall(require, p)
+        if status then return res end
+    end
+    error("MudCombat cannot load dependency: " .. name)
+end
+
+local MudUtils = require_module("MudUtils")
+
 local MudCombat = {}
 MudCombat.__index = MudCombat
 
@@ -192,7 +204,6 @@ end
 _G.MudCombat = MudCombat
 
 -- ===== 註冊到 Hook Registry =====
-local MudUtils = _G.MudUtils
 if MudUtils and MudUtils.register_hook then
     MudUtils.register_hook("MudCombat", function(line, clean_line)
         MudCombat.on_server_message(clean_line or line)

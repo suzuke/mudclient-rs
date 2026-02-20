@@ -2,8 +2,18 @@
 -- 提供通用、智慧型的搜刮邏輯
 -- 載入方式: local MudLoot = require("scripts.modules.MudLoot")
 
+local function require_module(name)
+    local paths = { "scripts.modules." .. name, "modules." .. name, name }
+    for _, p in ipairs(paths) do
+        local status, res = pcall(require, p)
+        if status then return res end
+    end
+    error("MudLoot cannot load dependency: " .. name)
+end
+
+local MudUtils = require_module("MudUtils")
+
 local MudLoot = {}
-_G.MudLoot = MudLoot
 
 -- 狀態
 MudLoot.state = {

@@ -85,7 +85,18 @@ impl Default for ConnectionStatus {
 pub enum Command {
     Connect(String, u16, Option<String>, Option<String>), // Host, Port, Username, Password
     Send(String),
+    /// 指令回應收集：網路執行緒先 drain 管線，再發送指令並收集回應
+    CollectResponse { command: String, callback_code: String },
     Disconnect,
+}
+
+/// 網路執行緒傳回的訊息
+#[derive(Debug)]
+pub enum NetMessage {
+    /// 一般文字資料
+    Text(String, Vec<u8>),
+    /// 指令回應收集完成
+    CollectedResponse { lines: Vec<String>, callback_code: String },
 }
 
 // ============================================================================
@@ -104,6 +115,8 @@ pub struct ActiveTimer {
 // ============================================================================
 // Session
 // ============================================================================
+
+
 
 /// 單一連線會話
 ///
@@ -141,7 +154,7 @@ pub struct Session {
     pub command_tx: Option<mpsc::Sender<Command>>,
     
     /// 從網路執行緒接收訊息的 channel (內容, 原始位元組寬度)
-    pub message_rx: Option<mpsc::Receiver<(String, Vec<u8>)>>,
+    pub message_rx: Option<mpsc::Receiver<NetMessage>>,
     
     /// 連線開始時間
     pub connected_at: Option<Instant>,
@@ -620,8 +633,12 @@ impl Session {
         });
 
         for code in expired {
-            if let Ok(context) = self.script_engine.execute_inline(&code, "TIMER_EXPIRED", &[], false) {
-                self.apply_script_context(context);
+            match self.script_engine.execute_inline(&code, "TIMER_EXPIRED", &[], false) {
+                Ok(context) => self.apply_script_context(context),
+                Err(e) => {
+                    tracing::error!("Timer execution failed: {}\nCode: {}", e, code);
+                    self.system_message(&format!("Timer Error: {}", e));
+                }
             }
         }
     }
@@ -640,41 +657,8 @@ impl Session {
         // 設定 scripts_dir 的絕對路徑，供 dofile 查找
         self.script_engine.set_scripts_dir(scripts_dir.to_string_lossy().as_ref());
 
-        // --- Phase 1: 優先載入 modules/ 子目錄 ---
-        let modules_dir = scripts_dir.join("modules");
-        if modules_dir.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&modules_dir) {
-                let mut module_scripts: Vec<std::path::PathBuf> = entries
-                    .flatten()
-                    .map(|e| e.path())
-                    .filter(|p| p.extension().map_or(false, |ext| ext == "lua"))
-                    .collect();
-                module_scripts.sort();
-
-                for path in module_scripts {
-                    if let Ok(code) = std::fs::read_to_string(&path) {
-                        let filename = path.file_name().unwrap_or_default().to_string_lossy();
-                        match self.script_engine.execute_inline(&code, "STARTUP", &[], false) {
-                            Ok(context) => {
-                                self.apply_script_context(context);
-                                let _ = self.logger.log(&format!("已自動載入模組: {}", filename));
-                                self.window_manager.route_message("main", mudcore::WindowMessage {
-                                    content: format!("\n[System] 自動載入模組: {}\n", filename),
-                                    preserve_ansi: true,
-                                    byte_widths: Vec::new(),
-                                    repeat_count: 1,
-                                });
-                            }
-                            Err(e) => {
-                                let msg = format!("模組載入錯誤 ({}): {}", filename, e);
-                                let _ = self.logger.log(&msg);
-                                self.system_message(&msg);
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // --- Phase 1: 已移除 ---
+        // (交由 Lua 端的 require 來管理 modules/ 目錄的相依性，避免重複載入覆蓋狀態)
 
         // --- Phase 2: 載入頂層 scripts/*.lua ---
         match std::fs::read_dir(&scripts_dir) {
@@ -816,9 +800,19 @@ impl Session {
                 }
             }
         }
+
+        // 8. 指令回應收集器（透過 Command channel 發送到網路執行緒）
+        for (cmd, callback_code) in context.response_collectors {
+            if let Some(tx) = &self.command_tx {
+                let _ = tx.blocking_send(Command::CollectResponse {
+                    command: cmd.clone(),
+                    callback_code,
+                });
+                tracing::info!("CollectResponse: queued for command '{}'", cmd);
+            }
+        }
     }
 
-    /// 處理接收到的文字與觸發器
     /// 處理接收到的文字與觸發器
     pub fn handle_text(&mut self, text: &str, is_echo: bool) -> bool {
         self.handle_text_with_widths(text, is_echo, None)
@@ -830,7 +824,6 @@ impl Session {
         if text.contains('\n') {
             let mut result = true;
             let mut current_pos = 0;
-            
             let lines: Vec<&str> = text.split('\n').collect();
             for line in lines {
                 // 計算該行的位元組寬度切片
@@ -1127,6 +1120,27 @@ impl Session {
         self.last_active = Instant::now();
 
         true
+    }
+
+    /// 處理網路執行緒收集的指令回應
+    pub fn execute_collected_response(&mut self, lines: Vec<String>, callback_code: String) {
+        // 構建 Lua table 字串
+        let mut lines_lua = String::from("{");
+        for (i, line) in lines.iter().enumerate() {
+            if i > 0 { lines_lua.push(','); }
+            let escaped = line.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
+            lines_lua.push('"');
+            lines_lua.push_str(&escaped);
+            lines_lua.push('"');
+        }
+        lines_lua.push('}');
+        
+        let code = format!("_G._collected_lines = {} \n {}", lines_lua, callback_code);
+        tracing::info!("CollectedResponse: {} lines, executing callback", lines.len());
+        
+        if let Ok(ctx) = self.script_engine.execute_inline(&code, "COLLECT_RESPONSE", &[], false) {
+            self.apply_script_context(ctx);
+        }
     }
 
     /// 處理使用者輸入的指令 (包含特殊指令如 #loop, #delay, /lua)

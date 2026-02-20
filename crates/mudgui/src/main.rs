@@ -1,6 +1,7 @@
 //! MUD Client GUI 應用程式
 
 mod ansi;
+mod api;
 mod app;
 mod config;
 mod session;

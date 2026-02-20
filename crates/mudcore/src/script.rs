@@ -55,6 +55,9 @@ pub struct MudContext {
     
     /// 觸發器狀態更新 (name, enabled)
     pub trigger_updates: Vec<(String, bool)>,
+
+    /// 指令回應收集請求 (command, callback_code)
+    pub response_collectors: Vec<(String, String)>,
 }
 
 impl MudContext {
@@ -200,6 +203,10 @@ impl ScriptEngine {
             // 創建 trigger_updates 表
             let trigger_updates = self.lua.create_table()?;
             mud.set("trigger_updates", trigger_updates)?;
+
+            // 創建 response_collectors 表
+            let response_collectors = self.lua.create_table()?;
+            mud.set("response_collectors", response_collectors)?;
             
             // gag 標記
             mud.set("gag", false)?;
@@ -310,6 +317,20 @@ impl ScriptEngine {
                 Ok(())
             })?;
             mud.set("enable_trigger", enable_trigger_fn)?;
+
+            // mud.collect_response(cmd, callback_code) 函數
+            // 發送指令並收集所有回應行直到 prompt（網路層指令佇列化）
+            let collect_response_fn = scope.create_function(|lua, (cmd, callback_code): (String, String)| {
+                let mud: mlua::Table = lua.globals().get("mud")?;
+                let collectors: mlua::Table = mud.get("response_collectors")?;
+                let len = collectors.len()? + 1;
+                let entry = lua.create_table()?;
+                entry.set(1, cmd)?;
+                entry.set(2, callback_code)?;
+                collectors.set(len, entry)?;
+                Ok(())
+            })?;
+            mud.set("collect_response", collect_response_fn)?;
 
             // mud.get_room_id(name, desc, exits, [strict]) -> string
             let get_room_id_fn = scope.create_function(|_lua, (name, desc, exits, strict): (String, String, Vec<String>, Option<bool>)| {
@@ -499,6 +520,17 @@ impl ScriptEngine {
                     if let Ok((_, tbl)) = pair {
                         if let (Ok(name), Ok(enabled)) = (tbl.get::<String>(1), tbl.get::<bool>(2)) {
                             context.trigger_updates.push((name, enabled));
+                        }
+                    }
+                }
+            }
+
+            // 收集 response_collectors
+            if let Ok(collectors) = mud.get::<mlua::Table>("response_collectors") {
+                for pair in collectors.pairs::<i64, mlua::Table>() {
+                    if let Ok((_, tbl)) = pair {
+                        if let (Ok(cmd), Ok(callback)) = (tbl.get::<String>(1), tbl.get::<String>(2)) {
+                            context.response_collectors.push((cmd, callback));
                         }
                     }
                 }

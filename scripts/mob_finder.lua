@@ -20,12 +20,6 @@ local MudUtils = require_module("MudUtils")
 local MudNav = require_module("MudNav")
 local MudExplorer = require_module("MudExplorer")
 
--- Force reload if needed (for dev)
-if not MudUtils.print_script_help then
-    package.loaded["scripts/modules/MudUtils"] = nil
-    MudUtils = require_module("MudUtils")
-end
-
 -- ===== 設定 =====
 _G.MobFinder.config = {
     target = "otonashi",          

@@ -15,7 +15,6 @@ end
 local MudUtils = require_module("MudUtils")
 
 local MudNav = {}
-_G.MudNav = MudNav 
 
 MudNav.config = {
     refresh_cmd = "c ref",

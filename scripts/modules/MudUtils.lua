@@ -53,8 +53,9 @@ function MudUtils.safe_timer(seconds, callback)
     -- In our mock, we can capture this string
     local code = "_G.MudUtils.exec_timer(" .. set_cb_id .. ", " .. rid .. ")"
     if mud and mud.timer then
-        mud.timer(seconds, code)
+        return mud.timer(seconds, code)
     end
+    return nil
 end
 
 function MudUtils.exec_timer(cb_id, rid)
@@ -143,8 +144,8 @@ function MudUtils.halt_all_quests(reason)
     local any_stopped = false
     for name, stop_fn in pairs(MudUtils.active_quests) do
         if stop_fn then
-            pcall(stop_fn)
             any_stopped = true
+            break
         end
     end
     
@@ -153,38 +154,51 @@ function MudUtils.halt_all_quests(reason)
         mud.echo("🚨 [全局停止] 原因: " .. (reason or "未知"))
         mud.echo("════════════════════════════════════════")
     end
+
+    for name, stop_fn in pairs(MudUtils.active_quests) do
+        if stop_fn then
+            pcall(stop_fn)
+        end
+    end
 end
 
 -- ===== 物品檢查邏輯 =====
+-- 使用 Rust 端 mud.collect_response 收集完整的 inventory 回應
+-- Rust 偵測 prompt（不完整行）作為回應結束標記，萬無一失
+
+function MudUtils.start_inventory_check(on_complete_callback)
+    MudUtils._inventory_callback = on_complete_callback
+    mud.collect_response("i", "_G.MudUtils._on_inventory_collected()")
+end
+
+function MudUtils._on_inventory_collected()
+    local lines = _G._collected_lines or {}
+    local found = false
+    for _, line in ipairs(lines) do
+        if string.find(line, "生命水晶", 1, true) or
+           string.find(line, "life crystal", 1, true) then
+            found = true
+            break
+        end
+    end
+    MudUtils.has_life_crystal = found
+    if not found then
+        MudUtils.halt_all_quests("身上未攜帶生命水晶！")
+    else
+        if MudUtils._inventory_callback then
+            if type(MudUtils._inventory_callback) == "string" then
+                -- 使用 0 秒計時器確保在目前執行緒脈絡外執行，避免錯誤中斷當前流程
+                mud.timer(0.1, MudUtils._inventory_callback)
+            elseif type(MudUtils._inventory_callback) == "function" then
+                pcall(MudUtils._inventory_callback)
+            end
+        end
+    end
+end
 
 function MudUtils.on_server_message(line, clean_line)
-    -- 偵測物品清單開始
-    if string.find(clean_line, "你身上攜帶著有:", 1, true) then
-        MudUtils.inventory_parsing = true
-        MudUtils.temp_has_crystal = false
-        return
-    end
-
-    if MudUtils.inventory_parsing then
-        -- 檢查是否包含生命水晶
-        if string.find(clean_line, "生命水晶", 1, true) or string.find(clean_line, "life crystal", 1, true) then
-            MudUtils.temp_has_crystal = true
-        end
-
-        -- 偵測清單結束 (通常是空行或特定結尾，這裡簡單處理：只要有內容就繼續，若遇到 Ok. 或指令提示點則結束)
-        -- 但 MUD 的 i 通常很短。我們可以設定一個短延遲後的評估，或是偵測下一行。
-        -- 這裡改用通用 Hook 觸發：如果下一行是空行或包含特定特徵，則評估。
-        -- 更簡單做法：每看到一行就檢查，並用一個 timer (0.1s) 延遲評估，新的行會重設 timer。
-        
-        if MudUtils.inv_timer_id then mud.timer_stop(MudUtils.inv_timer_id) end
-        MudUtils.inv_timer_id = MudUtils.safe_timer(0.2, function()
-            MudUtils.inventory_parsing = false
-            MudUtils.has_life_crystal = MudUtils.temp_has_crystal
-            if not MudUtils.has_life_crystal then
-                MudUtils.halt_all_quests("身上未攜帶生命水晶！")
-            end
-        end)
-    end
+    -- 目前無需在 hook 中做 inventory 解析
+    -- 保留此函數供未來擴充
 end
 
 -- ===== Hook Registry =====
