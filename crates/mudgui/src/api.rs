@@ -146,15 +146,6 @@ impl ApiStateManager {
         state
     }
 
-    /// 移除一個 Session
-    pub fn unregister_session(&self, session_key: &str) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.states.remove(session_key);
-        inner.order.retain(|k| k != session_key);
-        if inner.active_key.as_deref() == Some(session_key) {
-            inner.active_key = inner.order.first().cloned();
-        }
-    }
 
     /// 設定當前活動的 Session
     pub fn set_active(&self, session_key: &str) {
@@ -171,9 +162,25 @@ impl ApiStateManager {
     }
 
     /// 取得當前活動 Session 的 ApiState
+    /// 若 active_key 指向的 Session 已不存在，自動 fallback 到第一個可用的 Session
     pub fn get_active(&self) -> Option<SharedApiState> {
-        let inner = self.inner.lock().unwrap();
-        inner.active_key.as_ref().and_then(|k| inner.states.get(k).cloned())
+        let mut inner = self.inner.lock().unwrap();
+        // 先嘗試用 active_key
+        if let Some(key) = &inner.active_key {
+            if let Some(state) = inner.states.get(key) {
+                return Some(state.clone());
+            }
+        }
+        // active_key 失效 → fallback 到 order 中第一個仍存在的 session
+        let fallback = inner.order.iter()
+            .find_map(|k| inner.states.get(k).map(|s| (k.clone(), s.clone())));
+        if let Some((key, state)) = fallback {
+            tracing::warn!("API active_key 失效，自動切換至 session '{}'", key);
+            inner.active_key = Some(key);
+            Some(state)
+        } else {
+            None
+        }
     }
 
     /// 列出所有 Session 資訊
@@ -200,6 +207,8 @@ impl ApiStateManager {
     }
 
     /// 解析 session 參數：若指定了 ?session=key 則用該 session，否則用 active
+    /// 不帶 session 時，若 active_key 失效會自動 fallback（由 get_active 處理）
+    /// 明確指定不存在的 key 則回傳 None → 404
     fn resolve(&self, session_param: Option<&str>) -> Option<SharedApiState> {
         match session_param {
             Some(key) => self.get(key),

@@ -211,7 +211,29 @@ function MudNav.on_server_message(line, clean_line)
             return
         end
         
-        -- 2. Capture Room ID (Confirming the move)
+        -- 2. Capture action success (open, unlock, etc. do not change room ID)
+        if s.last_rec_cmd then
+            local cmd = string.lower(s.last_rec_cmd)
+            if cmd:match("^open") or cmd:match("^op") or 
+               cmd:match("^unlock") or cmd:match("^un") or 
+               cmd:match("^enter") or cmd:match("^ent") or
+               cmd:match("^push") or cmd:match("^look") or cmd:match("^l%s") or 
+               cmd:match("^ta%s") or cmd:match("^talk%s") then
+               
+               local success_patterns = {"Ok%.", "opened", "OK%.", "打開了", "解開了", "已經打開", "門老早就是開著", "光芒閃起", "時空突然扭曲", "漸漸的消失了"}
+               for _, pat in ipairs(success_patterns) do
+                   if string.find(text, pat) then
+                       local current_id = mud and mud.get_current_room_id() or "unknown"
+                       table.insert(s.recorded_path, { cmd = s.last_rec_cmd, id = current_id })
+                       mud.echo("[MudNav] ⏺️ 動作記錄成功: " .. s.last_rec_cmd)
+                       s.last_rec_cmd = nil
+                       return
+                   end
+               end
+            end
+        end
+
+        -- 3. Capture Room ID (Confirming the move)
         local id = text:match("%(ID: (.-)%)")
         if id then
              if s.last_rec_cmd then
@@ -332,9 +354,10 @@ function MudNav.on_server_message(line, clean_line)
     if current_cmd and (current_cmd:match("^open") or current_cmd:match("^op") or 
                         current_cmd:match("^unlock") or current_cmd:match("^un") or 
                         current_cmd:match("^enter") or current_cmd:match("^ent") or
-                        current_cmd:match("^push")) then
+                        current_cmd:match("^push") or current_cmd:match("^look") or current_cmd:match("^l%s") or
+                        current_cmd:match("^ta%s") or current_cmd:match("^talk%s")) then
                         
-         local success_patterns = {"Ok%.", "opened", "OK%.", "打開了", "解開了", "已經打開", "門老早就是開著"}
+         local success_patterns = {"Ok%.", "opened", "OK%.", "打開了", "解開了", "已經打開", "門老早就是開著", "光芒閃起", "時空突然扭曲", "漸漸的消失了"}
          
          for _, pat in ipairs(success_patterns) do
              if string.find(text, pat) then
@@ -384,7 +407,8 @@ function MudNav.record_step(cmd)
 end
 
 -- ===== 註冊到 Hook Registry =====
-MudUtils.register_hook("MudNav", function(line, clean_line)
+MudUtils.register_hook("MudNav", function(line, clean_line, is_echo)
+    if is_echo then return end
     MudNav.on_server_message(line, clean_line)
 end)
 

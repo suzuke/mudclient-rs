@@ -208,7 +208,7 @@ MudUtils.hook_registry = MudUtils.hook_registry or {}
 
 --- 註冊一個 on_server_message hook
 --- @param name string 唯一名稱（重複註冊會覆蓋舊的）
---- @param fn function(line, clean_line) 回呼函數
+--- @param fn function(line, clean_line, is_echo) 回呼函數
 function MudUtils.register_hook(name, fn)
     MudUtils.hook_registry[name] = fn
 end
@@ -225,9 +225,9 @@ MudUtils.register_hook("MudUtils", MudUtils.on_server_message)
 -- 設定全域 on_server_message 為 registry dispatcher
 -- 只設定一次，reload 時 registry 內容會被覆蓋但 dispatcher 不變
 if not MudUtils._dispatcher_installed then
-    _G.on_server_message = function(line, clean_line)
+    _G.on_server_message = function(line, clean_line, is_echo)
         for name, fn in pairs(MudUtils.hook_registry) do
-            local ok, err = pcall(fn, line, clean_line)
+            local ok, err = pcall(fn, line, clean_line, is_echo)
             if not ok and mud then
                 mud.echo("[Hook Error: " .. name .. "] " .. tostring(err))
             end

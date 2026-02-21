@@ -4,6 +4,7 @@
 -- 模式：
 --   summon  = 前往安全點 → 召喚 → 攻擊
 --   direct  = 前往怪物處 → (dispel → buff) → 攻擊
+--   charm   = 前往怪物處 → 魅惑 (attack_cmd) → 帶領到擊殺點 (path_to_kill) → 等待被殺 / 撿取
 -- 流程：
 -- 1. 查詢當前任務的怪物是否重生
 -- 2. 未重生 → 跳到下一個任務；全部都沒重生 → 等待後重新輪替
@@ -64,6 +65,7 @@ _G.ItemFarm.jobs = {
         loot_items = {"anesthetic", "grating"},
         remove_nodrop = {"anesthetic", "grating"},
         sac_corpse = true,
+        disabled = true,
     },
     {
         name = "街頭混混",
@@ -73,73 +75,176 @@ _G.ItemFarm.jobs = {
         target_mob = "街頭混混",
         summon_cmd = "c sum boy",
         attack_cmd = "c flame boy",
-        path_to_mob = "recall;2e",
+        path_to_mob = "recall",
         path_to_storage = "recall;3n;e",
         loot_items = {"take"},
         remove_nodrop = {},
         sac_corpse = true,
+        disabled = true,
+    },
+    {
+        name = "某校生",
+        mode = "summon",
+        search_type = "locate",
+        search_cmd = "c loc id",
+        target_mob = "某校生",
+        summon_cmd = "c sum student",
+        attack_cmd = "c nu student;c fl student",
+        path_to_mob = "recall",
+        path_to_storage = "recall;3n;e",
+        loot_items = {"id"},
+        remove_nodrop = {},
+        sac_corpse = true,
+        disabled = false,
+    },
+    {
+        name = "不動明王",
+        mode = "direct",
+        search_type = "quest",
+        search_cmd = "q 6.sentinel",
+        target_mob = "不動明王",
+        attack_cmd = "c star;c star;c star",
+        dispel_cmd = "c 'dispel m' sentinel",
+        dispel_indicators = {"白色聖光"},    -- 只要其中一個在場就繼續 dispel
+        hp_threshold = 100,               -- 特定怪物才檢查血量
+        hp_recover_cmd = "c heal",         -- 自定義恢復 HP 的指令
+        buffs = {
+            { cmd = "c sa",  indicator = "聖光", fade_msg = "你四周的白色聖光消散了" },
+            { cmd = "c pro", indicator = "聖佑術", fade_msg = "你感覺到失去上天的護佑." },
+            { cmd = "c b",   indicator = "女神庇祐術", fade_msg = "你覺得你的好運已經結束了." }
+        },
+        dispel_max_retries = 15,     -- 自定義重試次數
+        pre_travel_cmd = "c inv",  -- 隱身
+        path_to_mob = "recall;3w;4s;ta wizard help;7w;7n;6u;7n",
+        path_to_storage = "recall;3n;e",
+        loot_items = {"sword", "potato", "hamburg"},
+        remove_nodrop = {},
+        sac_corpse = true,
+        disabled = true,
+    },
+    {
+    -- Xiulou slash /11swn3e2ne3ne2nu4ne
+        name = "闇の一族幫員",
+        mode = "direct",
+        search_type = "quest",
+        search_cmd = "q clan_member",
+        target_mob = "闇の一族幫員",
+        attack_cmd = "c nu clan_member;c fl clan_member",
+        pre_travel_cmd = "c inv",  -- 隱身
+        path_to_mob = "recall;11s;w;n;3e;2n;e;3n;e;2n;u;4n;e",
+        path_to_storage = "recall;3n;e",
+        loot_items = {"Xiulou"},
+        remove_nodrop = {},
+        sac_corpse = true,
+        disabled = true,
+    },
+    {
+        name = "天堂守護者麥倫．薩爾達",
+        mode = "direct",
+        search_type = "quest",
+        search_cmd = "q 2.paradiser",
+        target_mob = "麥倫．薩爾達",
+        attack_cmd = "c star;c star;c star;",
+        dispel_cmd = "c 'dispel m' paradiser",
+        dispel_indicators = {"白色聖光"},    -- 只要其中一個在場就繼續 dispel
+        hp_threshold = 100,               -- 特定怪物才檢查血量
+        hp_recover_cmd = "c heal",         -- 自定義恢復 HP 的指令
+        buffs = {
+            { cmd = "c sa",  indicator = "聖光", fade_msg = "你四周的白色聖光消散了" },
+            { cmd = "c pro", indicator = "聖佑術", fade_msg = "你感覺到失去上天的護佑." },
+            { cmd = "c b",   indicator = "女神庇祐術", fade_msg = "你覺得你的好運已經結束了." }
+        },
+        dispel_max_retries = 15,     -- 自定義重試次數
+        path_to_mob = "recall;3w;2s;5e;2s;e;op e;e",
+        path_to_storage = "recall;3n;e",
+        loot_items = {"wisdom"},
+        remove_nodrop = {},
+        sac_corpse = true,
+        disabled = true,
+    },
+
+    -- 動靈帽 (Charm 模式)
+    {
+        name = "動靈帽",
+        mode = "charm",
+        search_type = "locate",
+        search_cmd = "c loc mind",
+        target_mob = {"一位魔法見習生", "魔法見習生"},
+        attack_cmd = "c charm student", -- 魅惑指令
+
+        path_to_mob = {
+            {cmd="recall", id="4f918fc15a8b069659b31992056d461a0cfa7d5f582328ecf6155c1ba7124796"}, -- 開頭通常需要 recall
+            {cmd="w", id="be100b7e304b3ed4e70d3bf961f3f94746ae8816df57b4422a6bfc8be0c702c4"},
+            {cmd="w", id="eb257918905bfb009def79fcaa0fc531cece9cd8fdc5deb498195160f322e37e"},
+            {cmd="w", id="649a77e5e2d1a2cb9355d83dca9bea4e280e356dd4874f8bbd7933f47a74a7c5"},
+            {cmd="s", id="72008fa8a1dd170fcf415d13368ebdb8da3647244a10df44bffc5189be8dc653"},
+            {cmd="s", id="2a695678483d60ef8dcc35d3dad1e0e55062fed9ca86de6c689870905cb0297a"},
+            {cmd="s", id="c398e18f18255d90f9232dd806a4e83c3e7434958e40fb011de5a01563fac7cb"},
+            {cmd="e", id="2c473de7cf10e0ce4d7d52a42fbdc3fee857c7d6c62187c478cc45af1b579139"},
+            {cmd="look painting", id="2c473de7cf10e0ce4d7d52a42fbdc3fee857c7d6c62187c478cc45af1b579139"},
+            {cmd="s", id="72313d7a6e0b544c81fc2cfd65cc8da356939eb906ea5d572d1397cbcc8198f0"},
+            {cmd="w", id="2259a448daecaebeca8357e460987e0b95c058ee55fee51a19dd99a69fa55f9b"},
+            {cmd="w", id="cfeb1f603e90d9eca7d3fd42b8066c0fceb496567b9b95a34131d2c37380779c"},
+            {cmd="s", id="ca13c9f0bede1d2284cb413bc6301eb3441bfe488ff73e320380c3172aa259d7"},
+        },
+        -- 魅惑後帶往擊殺點的路徑
+        path_to_kill = "or all hi;or all recall;recall;n;n;n;e", 
+        -- 抵達擊殺點後，若需強制目標卸下裝備可設定此項
+        kill_action = "or all drop hat;w;s;s;s;w;w;n",
+        path_to_storage = "recall;3n;e",
+        loot_items = {},
+        remove_nodrop = {},
+        sac_corpse = false, -- 目標可能被系統清掉，不需要 sac
+        disabled = false, -- 預設先停用，修改好參數後可把這行移除
+    },
+    {
+        name = "詛咒之劍",
+        mode = "summon",
+        search_type = "quest",
+        search_cmd = "q 17.traveller",
+        summon_cmd = "c summon traveller",
+        target_mob = {"一位四處旅行的","旅人"},
+        attack_cmd = "c fire traveller",
+        path_to_mob = {
+            {cmd="recall", id="4f918fc15a8b069659b31992056d461a0cfa7d5f582328ecf6155c1ba7124796"}, -- 開頭通常需要 recall
+            {cmd="w", id="be100b7e304b3ed4e70d3bf961f3f94746ae8816df57b4422a6bfc8be0c702c4"},
+            {cmd="w", id="eb257918905bfb009def79fcaa0fc531cece9cd8fdc5deb498195160f322e37e"},
+            {cmd="w", id="649a77e5e2d1a2cb9355d83dca9bea4e280e356dd4874f8bbd7933f47a74a7c5"},
+            {cmd="s", id="72008fa8a1dd170fcf415d13368ebdb8da3647244a10df44bffc5189be8dc653"},
+            {cmd="s", id="2a695678483d60ef8dcc35d3dad1e0e55062fed9ca86de6c689870905cb0297a"},
+            {cmd="s", id="c398e18f18255d90f9232dd806a4e83c3e7434958e40fb011de5a01563fac7cb"},
+            {cmd="e", id="2c473de7cf10e0ce4d7d52a42fbdc3fee857c7d6c62187c478cc45af1b579139"},
+            {cmd="look painting", id="2c473de7cf10e0ce4d7d52a42fbdc3fee857c7d6c62187c478cc45af1b579139"},
+            {cmd="s", id="72313d7a6e0b544c81fc2cfd65cc8da356939eb906ea5d572d1397cbcc8198f0"},
+        },
+        path_to_storage = "recall;3n;e",
+        loot_items = {"curse"},
+        remove_nodrop = {},
+        sac_corpse = true,
+        disabled = false,
     },
     -- {
-    --     name = "不動明王",
-    --     mode = "direct",
+    --     name = "銀行職員 (測試 safe_charm)",
+    --     mode = "charm",
     --     search_type = "quest",
-    --     search_cmd = "q 6.sentinel",
-    --     target_mob = "不動明王",
-    --     attack_cmd = "c star;c star;c star",
-    --     dispel_cmd = "c 'dispel m' sentinel",
-    --     dispel_indicators = {"白色聖光"},    -- 只要其中一個在場就繼續 dispel
-    --     hp_threshold = 100,               -- 特定怪物才檢查血量
-    --     hp_recover_cmd = "c heal",         -- 自定義恢復 HP 的指令
-    --     buffs = {
-    --         { cmd = "c sa",  indicator = "聖光", fade_msg = "你四周的白色聖光消散了" },
-    --         { cmd = "c pro", indicator = "聖佑術", fade_msg = "你感覺到失去上天的護佑." },
-    --         { cmd = "c b",   indicator = "女神庇祐術", fade_msg = "你覺得你的好運已經結束了." }
+    --     search_cmd = "q servant",
+    --     target_mob = {"西裝筆挺", "銀行職員"},
+    --     attack_cmd = "c charm servant",
+    --     path_to_mob = {
+    --         {cmd="recall", id="4f918fc15a8b069659b31992056d461a0cfa7d5f582328ecf6155c1ba7124796"},
+    --         {cmd="n", id="1a37bff38fa05f235f537bbd4e5b3e46502d046cae0310c7993e352bdffd69ec"},
+    --         {cmd="n", id="20a3a70f08c21a9d16cf512ed82828c11a7c9afa4d1a674fc3bef8c61e743513"},
+    --         {cmd="n", id="9de3abc7fdced045c822d512f10a5a62d85fd3f4c77438be5957b7474fad4b71"},
+    --         {cmd="n", id="41a1d27ac2bc1662a970f35523ff006edcd6a7ea5cc5753a0ef547998306ee33"},
+    --         {cmd="e", id="4379ebe8f14d8626e9f0f19282a791c3d64301264fec95e4a0007209e146ad4d"},
     --     },
-    --     dispel_max_retries = 15,     -- 自定義重試次數
-    --     pre_travel_cmd = "c inv",  -- 隱身
-    --     path_to_mob = "recall;3w;4s;ta wizard help;7w;7n;6u;7n",
-    --     path_to_storage = "recall;3n;e",
-    --     loot_items = {"sword", "potato", "hamburg"},
+    --     path_to_kill = "w;s;s;s;e", 
+    --     kill_action = "or all drop all",
+    --     path_to_storage = "recall",
+    --     loot_items = {},
     --     remove_nodrop = {},
-    --     sac_corpse = true,
-    -- },
-    -- {
-    -- -- Xiulou slash /11swn3e2ne3ne2nu4ne
-    --     name = "闇の一族幫員",
-    --     mode = "direct",
-    --     search_type = "quest",
-    --     search_cmd = "q clan_member",
-    --     target_mob = "闇の一族幫員",
-    --     attack_cmd = "c nu clan_member;c fl clan_member",
-    --     pre_travel_cmd = "c inv",  -- 隱身
-    --     path_to_mob = "recall;11s;w;n;3e;2n;e;3n;e;2n;u;4n;e",
-    --     path_to_storage = "recall;3n;e",
-    --     loot_items = {"Xiulou"},
-    --     remove_nodrop = {},
-    --     sac_corpse = true,
-    -- },
-    -- {
-    --     name = "天堂守護者麥倫．薩爾達",
-    --     mode = "direct",
-    --     search_type = "quest",
-    --     search_cmd = "q 2.paradiser",
-    --     target_mob = "麥倫．薩爾達",
-    --     attack_cmd = "c star;c star;c star;",
-    --     dispel_cmd = "c 'dispel m' paradiser",
-    --     dispel_indicators = {"白色聖光"},    -- 只要其中一個在場就繼續 dispel
-    --     hp_threshold = 100,               -- 特定怪物才檢查血量
-    --     hp_recover_cmd = "c heal",         -- 自定義恢復 HP 的指令
-    --     buffs = {
-    --         { cmd = "c sa",  indicator = "聖光", fade_msg = "你四周的白色聖光消散了" },
-    --         { cmd = "c pro", indicator = "聖佑術", fade_msg = "你感覺到失去上天的護佑." },
-    --         { cmd = "c b",   indicator = "女神庇祐術", fade_msg = "你覺得你的好運已經結束了." }
-    --     },
-    --     dispel_max_retries = 15,     -- 自定義重試次數
-    --     path_to_mob = "recall;3w;2s;5e;2s;e;op e;e",
-    --     path_to_storage = "recall;3n;e",
-    --     loot_items = {"wisdom"},
-    --     remove_nodrop = {},
-    --     sac_corpse = true,
+    --     sac_corpse = false,
+    --     disabled = false,
     -- },
 }
 
@@ -157,6 +262,7 @@ _G.ItemFarm.state = {
     search_count = 0,
     summon_retries = 0,
     dispel_retries = 0,
+    charm_retries = 0,
     current_job = 1,       -- 當前任務索引
     jobs_checked = 0,      -- 本輪已檢查的任務數
     last_score_time = 0,   -- 上次發送 score 的時間
@@ -170,8 +276,8 @@ _G.ItemFarm.state = {
 
 -- 檢查 run_id 是否有效
 local function check_run(run_id)
-    if not run_id then return true end -- 相容舊呼叫 (過渡期)
-    return run_id == _G.ItemFarm.state.run_id
+    if not run_id then return true end
+    return tonumber(run_id) == tonumber(_G.ItemFarm.state.run_id)
 end
 
 -- ===== 訊息輸出輔助 =====
@@ -199,6 +305,18 @@ end
 -- ===== 輔助函數 =====
 function _G.ItemFarm.job()
     return _G.ItemFarm.jobs[_G.ItemFarm.state.current_job]
+end
+
+-- 匹配 target_mob（支援 string 或 table）
+local function match_target(line, target_mob)
+    if type(target_mob) == "table" then
+        for _, kw in ipairs(target_mob) do
+            if string.find(line, kw, 1, true) then return true end
+        end
+        return false
+    else
+        return string.find(line, target_mob, 1, true) ~= nil
+    end
 end
 
 -- 解析指令字串，展開重複語法 (7w → 7 次 w)
@@ -430,10 +548,8 @@ end
 -- ===== 任務輪替 =====
 function _G.ItemFarm.next_job()
     local s = _G.ItemFarm.state
-    s.jobs_checked = s.jobs_checked + 1
     
-    -- 所有任務都檢查過了（或被停用）
-    -- 檢查是否還有可用任務
+    -- 計算有多少啟用的任務
     local active_count = 0
     for _, j in ipairs(_G.ItemFarm.jobs) do
         if not j.disabled then active_count = active_count + 1 end
@@ -443,6 +559,12 @@ function _G.ItemFarm.next_job()
         _G.ItemFarm.echo_force("⚠️ 所有任務已停用，停止運行")
         _G.ItemFarm.stop()
         return
+    end
+
+    -- 只有當前任務是啟用的，跳過時才算「檢查過」
+    local original_j = _G.ItemFarm.job()
+    if not original_j.disabled then
+        s.jobs_checked = s.jobs_checked + 1
     end
     
     if s.jobs_checked >= active_count then
@@ -466,6 +588,7 @@ function _G.ItemFarm.next_job()
             return
         end
     end
+
     -- 所有任務都停用
     mud.echo("⚠️ 所有任務已停用")
     _G.ItemFarm.stop()
@@ -536,9 +659,10 @@ function _G.ItemFarm.go_and_fight()
         send_cmds(j.pre_travel_cmd)
     end
 
-    local callback
     if mode == "direct" then
         callback = "_G.ItemFarm.engage_direct"
+    elseif mode == "charm" then
+        callback = "_G.ItemFarm.engage_charm"
     else
         -- 召喚前先檢查狀態
         callback = "_G.ItemFarm.check_status_before_summon"
@@ -614,6 +738,18 @@ function _G.ItemFarm.engage_direct(rid)
     local j = _G.ItemFarm.job()
     local s = _G.ItemFarm.state
     
+    -- [修正] 檢查當前房間是否正確
+    local last_node = j.path_to_mob[#j.path_to_mob]
+    local target_id = j.target_room_id or (type(last_node) == "table" and last_node.id)
+    if target_id then
+        local current_id = mud.get_current_room_id()
+        if current_id ~= target_id then
+            _G.ItemFarm.echo("📍 位置不正確 (目前: " .. tostring(current_id) .. ", 預期: " .. tostring(target_id) .. ")，重新導航中...")
+            _G.ItemFarm.go_and_fight()
+            return
+        end
+    end
+
     -- 先 look 確認 mob 是否在場
     s.stage = "verifying_mob"
     _G.ItemFarm.echo("🔍 [​" .. j.name .. "] 確認目標是否在場...")
@@ -622,12 +758,54 @@ function _G.ItemFarm.engage_direct(rid)
     _G.ItemFarm.safe_timer(3.0, "_G.ItemFarm.verify_mob_timeout")
 end
 
+-- 2c. 魅惑模式（到場 → 驗證 mob → charm → lead_to_kill）
+function _G.ItemFarm.engage_charm(rid)
+    _G.ItemFarm.echo_force("[DEBUG] engage_charm called with rid=" .. tostring(rid))
+    if not check_run(rid) then 
+        _G.ItemFarm.echo_force("[DEBUG] check_run failed. rid=" .. tostring(rid) .. " MudUtils.run_id=" .. tostring(MudUtils.run_id))
+        return 
+    end
+    if not _G.ItemFarm.state.running then 
+        _G.ItemFarm.echo_force("[DEBUG] state.running is false")
+        return 
+    end
+    if _G.ItemFarm.state.stage ~= "traveling" and _G.ItemFarm.state.stage ~= "retry_charming" then 
+        _G.ItemFarm.echo_force("[DEBUG] stage mismatch: " .. _G.ItemFarm.state.stage)
+        return 
+    end
+    
+    local j = _G.ItemFarm.job()
+    local s = _G.ItemFarm.state
+    
+    -- [修正] 檢查當前房間是否正確
+    local last_node = j.path_to_mob[#j.path_to_mob]
+    local target_id = j.target_room_id or (type(last_node) == "table" and last_node.id)
+    if target_id then
+        local current_id = mud.get_current_room_id()
+        if current_id ~= target_id then
+            _G.ItemFarm.echo("📍 位置不正確 (目前: " .. tostring(current_id) .. ", 預期: " .. tostring(target_id) .. ")，重新導航中...")
+            _G.ItemFarm.go_and_fight()
+            return
+        end
+    end
+
+    s.stage = "verifying_charm_mob"
+    _G.ItemFarm.echo("🔍 [​" .. j.name .. "] (Charm) 確認目標是否在場...")
+    _G.ItemFarm.safe_timer(0.1, "_G.ItemFarm.send_look")
+    _G.ItemFarm.safe_timer(3.0, "_G.ItemFarm.verify_mob_timeout")
+end
+
+function _G.ItemFarm.send_look(rid)
+    if not check_run(rid) then return end
+    mud.send("l")
+end
+
 
 -- mob 不在場 → 用 search_cmd 確認是死亡還是迷路
 function _G.ItemFarm.verify_mob_timeout(rid)
     if not check_run(rid) then return end
     if not _G.ItemFarm.state.running then return end
-    if _G.ItemFarm.state.stage ~= "verifying_mob" then return end
+    if _G.ItemFarm.state.stage ~= "verifying_mob" and _G.ItemFarm.state.stage ~= "verifying_charm_mob" then return end
     
     local j = _G.ItemFarm.job()
     local s = _G.ItemFarm.state
@@ -773,6 +951,98 @@ function _G.ItemFarm.summon_and_attack(rid)
     end)
 end
 
+-- 3a. 魅惑階段 (Charming & Leading)
+function _G.ItemFarm.do_charm_and_lead(rid)
+    if not check_run(rid) then return end
+    if not _G.ItemFarm.state.running then return end
+    
+    local j = _G.ItemFarm.job()
+    local s = _G.ItemFarm.state
+    
+    s.stage = "charming"
+    _G.ItemFarm.echo("💖 [" .. j.name .. "] 施放魅惑中 (第 " .. (s.charm_retries + 1) .. " 次)...")
+    send_cmds(j.attack_cmd)
+    
+    -- 等待確認魅惑成功 (由 hook 攔截 "開始跟隨你了" 或 超時重試)
+    _G.ItemFarm.safe_timer(3.0, "_G.ItemFarm.check_charm_timeout")
+end
+
+function _G.ItemFarm.check_charm_timeout(rid)
+    if not check_run(rid) then return end
+    if not _G.ItemFarm.state.running then return end
+    if _G.ItemFarm.state.stage ~= "charming" then return end
+    
+    local j = _G.ItemFarm.job()
+    _G.ItemFarm.handle_charm_failed(j, "timeout")
+end
+
+function _G.ItemFarm.handle_charm_failed(j, reason)
+    local s = _G.ItemFarm.state
+    s.charm_retries = s.charm_retries + 1
+    
+    if s.charm_retries > 3 then
+        _G.ItemFarm.echo("🚫 [" .. j.name .. "] 魅惑失敗達上限，放棄並返回儲存點...")
+        s.charm_retries = 0
+        s.stage = "returning"
+        _G.ItemFarm.walk_path(j.path_to_storage, "_G.ItemFarm.after_return")
+        return
+    end
+    
+    if reason == "combat" then
+        _G.ItemFarm.echo("⚠️ [" .. j.name .. "] 魅惑失敗並進入戰鬥，嘗試逃脫重試中...")
+        s.stage = "fleeing_for_charm"
+        mud.send("fl")
+    else
+        _G.ItemFarm.echo("⚠️ [" .. j.name .. "] 魅惑似乎失敗或無回應，重試中...")
+        _G.ItemFarm.do_charm_and_lead(s.run_id)
+    end
+end
+
+
+function _G.ItemFarm.lead_to_kill_zone(rid)
+    if not check_run(rid) then return end
+    if not _G.ItemFarm.state.running then return end
+    
+    local j = _G.ItemFarm.job()
+    local s = _G.ItemFarm.state
+    
+    s.stage = "leading_to_kill"
+    _G.ItemFarm.echo("🚶‍♂️ [" .. j.name .. "] 魅惑成功，帶領目標前往擊殺點...")
+    _G.ItemFarm.walk_path(j.path_to_kill, "_G.ItemFarm.arrive_at_kill_zone")
+end
+
+function _G.ItemFarm.arrive_at_kill_zone(rid)
+    if not check_run(rid) then return end
+    if not _G.ItemFarm.state.running then return end
+    
+    local j = _G.ItemFarm.job()
+    local s = _G.ItemFarm.state
+    
+    s.stage = "waiting_for_kill"
+    _G.ItemFarm.echo("⚔️ [" .. j.name .. "] 已抵達擊殺點，等待目標被擊殺或釋放道具...")
+    
+    -- [優化] 補充體力，避免 kill_action 中的導航指令耗盡移動力
+    mud.send("wa")
+    mud.send("c ref")
+    
+    if j.kill_action then
+        send_cmds(j.kill_action)
+    end
+    
+    -- 設定等待超時 (如果超過太久沒死，可能發生異常，嘗試強制 loot 或放棄)
+    _G.ItemFarm.safe_timer(30.0, "_G.ItemFarm.wait_kill_timeout")
+end
+
+function _G.ItemFarm.wait_kill_timeout(rid)
+    if not check_run(rid) then return end
+    if not _G.ItemFarm.state.running then return end
+    if _G.ItemFarm.state.stage ~= "waiting_for_kill" then return end
+    
+    local j = _G.ItemFarm.job()
+    _G.ItemFarm.echo("⚠️ [" .. j.name .. "] 等待擊殺超時，嘗試強制收集戰利品...")
+    _G.ItemFarm.loot(rid)
+end
+
 -- 4. 攻擊前檢查 (Score Check)
 function _G.ItemFarm.do_attack(rid)
     if not check_run(rid) then return end
@@ -874,11 +1144,20 @@ function _G.ItemFarm.after_return(rid)
 end
 
 -- 5. 戰利品收集 (Looting)
-function _G.ItemFarm.loot()
+function _G.ItemFarm.loot(rid)
+    if not check_run(rid) then return end
     if not _G.ItemFarm.state.running then return end
     
-    _G.ItemFarm.state.stage = "looting"
     local j = _G.ItemFarm.job()
+    
+    -- [優化] 如果沒有要撿的東西也不需要 sac，直接跳到儲存階段
+    if (not j.loot_items or #j.loot_items == 0) and not j.sac_corpse then
+        _G.ItemFarm.echo("💨 無需撿取物品，直接前往儲存點...")
+        _G.ItemFarm.go_to_storage(rid)
+        return
+    end
+    
+    _G.ItemFarm.state.stage = "looting"
     _G.ItemFarm.echo("💰 收集戰利品 (MudLoot)...")
     
     MudLoot.process_loot({
@@ -990,13 +1269,21 @@ function _G.ItemFarm.check_mp(rid)
 end
 
 -- ===== Hook Registry =====
-MudUtils.register_hook("ItemFarm", function(line, clean_line)
+MudUtils.register_hook("ItemFarm", function(line, clean_line, is_echo)
+    if is_echo then return end
     _G.ItemFarm.on_server_message(line, clean_line)
 end)
 
 -- ===== 伺服器訊息 Hook 處理器 =====
 function _G.ItemFarm.on_server_message(line, clean_line)
+    -- _G.ItemFarm.echo_force("[HOOK_TRACE] stage=" .. tostring(_G.ItemFarm.state.stage) .. " running=" .. tostring(_G.ItemFarm.state.running))
     if not _G.ItemFarm.state.running then return end
+
+    local s = _G.ItemFarm.state
+    -- 移除引起遞迴的直接 echo_force，改用條件式 logging 或更安全的 debug 方式
+    -- if s.stage == "verifying_charm_mob" then
+    --     _G.ItemFarm.echo_force("[DEBUG_VCM] clean_line: " .. clean_line)
+    -- end
     
     -- MudNav/MudCombat/MudLoot 已透過 Hook Registry 自行接收訊息，無需手動委派
     
@@ -1062,12 +1349,23 @@ function _G.ItemFarm.on_server_message(line, clean_line)
         end
     end
 
-    -- 非預期戰鬥偵測
+    -- 非預期戰鬥偵測 & 魅惑失敗偵測
     if s.stage ~= "fighting" and s.stage ~= "emergency" then
         if string.find(clean_line, "伺機而動", 1, true) or 
            string.find(clean_line, "蓄勢待發", 1, true) or
-           string.find(clean_line, "身陷戰鬥中", 1, true) then
-            _G.ItemFarm.emergency_escape()
+           string.find(clean_line, "身陷戰鬥中", 1, true) or
+           string.find(clean_line, "不受你的言語所迷惑", 1, true) then
+            
+            if s.stage == "charming" or s.stage == "fleeing_for_charm" then
+                if s.stage == "charming" then
+                    _G.ItemFarm.handle_charm_failed(j, "combat")
+                elseif s.stage == "fleeing_for_charm" then
+                    mud.send("fl") -- 持續逃跑
+                end
+                return
+            else
+                _G.ItemFarm.emergency_escape()
+            end
             return
         end
     end
@@ -1075,13 +1373,33 @@ function _G.ItemFarm.on_server_message(line, clean_line)
     -- [優化 3: 階段精確分流]
     if s.stage == "fighting" then
         -- 戰鬥階段
-        if string.find(clean_line, "魂歸西天了", 1, true) and string.find(clean_line, j.target_mob, 1, true) then
+        if string.find(clean_line, "魂歸西天了", 1, true) and match_target(clean_line, j.target_mob) then
             _G.ItemFarm.echo("💀 目標已擊殺！")
             _G.ItemFarm.safe_timer(0.5, "_G.ItemFarm.loot")
-        elseif string.find(clean_line, j.target_mob, 1, true) and 
+        elseif match_target(clean_line, j.target_mob) and 
                (string.find(clean_line, "逃了", 1, true) or string.find(clean_line, "離開了", 1, true)) then
             _G.ItemFarm.handle_mob_fled(j)
         elseif string.find(clean_line, "目標不在", 1, true) or string.find(clean_line, "施法的目標不在", 1, true) then
+            _G.ItemFarm.handle_mob_missing(j)
+        end
+        return
+
+    elseif s.stage == "waiting_for_kill" then
+        -- 魅惑模式下等待目標死亡或掉落物品
+        if string.find(clean_line, "丟下了", 1, true) or 
+           (string.find(clean_line, "魂歸西天了", 1, true) and match_target(clean_line, j.target_mob)) then
+            _G.ItemFarm.echo("💀 目標已死亡或掉落物品！準備撿取...")
+            _G.ItemFarm.safe_timer(1.0, "_G.ItemFarm.loot")
+        end
+        return
+        
+    elseif s.stage == "charming" then
+        -- 判定魅惑成功
+        if string.find(clean_line, "開始跟隨你了", 1, true) then
+            _G.ItemFarm.echo("💖 魅惑成功！")
+            s.charm_retries = 0
+            _G.ItemFarm.safe_timer(0.5, "_G.ItemFarm.lead_to_kill_zone")
+        elseif string.find(clean_line, "沒有這個生物", 1, true) then
             _G.ItemFarm.handle_mob_missing(j)
         end
         return
@@ -1097,7 +1415,9 @@ function _G.ItemFarm.on_server_message(line, clean_line)
         if j.search_type == "quest" then
             if string.find(clean_line, "他正在這個世界中", 1, true) then found = true end
         elseif j.search_type == "locate" then
-            if string.find(clean_line, j.target_mob, 1, true) and string.find(clean_line, "攜帶著", 1, true) then found = true end
+            if string.find(clean_line, "攜帶著", 1, true) and match_target(clean_line, j.target_mob) then
+                found = true
+            end
         end
         if found then
             _G.ItemFarm.echo("🎯 [" .. j.name .. "] 目標存在！前往戰鬥...")
@@ -1107,20 +1427,55 @@ function _G.ItemFarm.on_server_message(line, clean_line)
         end
         return
 
-    elseif s.stage == "verifying_mob" then
+    elseif s.stage == "verifying_mob" or s.stage == "verifying_charm_mob" then
         -- 驗證存在
-        if string.find(clean_line, j.target_mob, 1, true) and
+        -- [修正] 忽略房間 ID 行，避免誤判
+        if string.find(clean_line, "^(ID: ", 1, true) then return end
+        
+        local match_target = false
+        if type(j.target_mob) == "table" then
+            match_target = false
+            for _, kw in ipairs(j.target_mob) do
+                if string.find(clean_line, kw, 1, true) then
+                    match_target = true
+                    break
+                end
+            end
+        else
+            match_target = string.find(clean_line, j.target_mob, 1, true)
+        end
+
+        if match_target and
            not string.find(clean_line, "屍體", 1, true) and
            not string.find(clean_line, "corpse", 1, true) then
             _G.ItemFarm.echo("✅ 目標在場！")
-            s.stage = "verified"
-            _G.ItemFarm.start_dispel_or_attack(s.run_id)
+            
+            if s.stage == "verifying_mob" then
+                s.stage = "verified"
+                _G.ItemFarm.start_dispel_or_attack(s.run_id)
+            elseif s.stage == "verifying_charm_mob" then
+                s.stage = "verified"
+                _G.ItemFarm.do_charm_and_lead(s.run_id)
+            end
         end
         return
 
     elseif s.stage == "checking_dispel" then
         -- 檢查 Dispel
-        if string.find(clean_line, j.target_mob, 1, true) and
+        local match_target = false
+        if type(j.target_mob) == "table" then
+            match_target = false
+            for _, kw in ipairs(j.target_mob) do
+                if string.find(clean_line, kw, 1, true) then
+                    match_target = true
+                    break
+                end
+            end
+        else
+            match_target = string.find(clean_line, j.target_mob, 1, true)
+        end
+
+        if match_target and
            not string.find(clean_line, "屍體", 1, true) and
            not string.find(clean_line, "corpse", 1, true) then
             local active_indicator = nil
@@ -1220,12 +1575,20 @@ function _G.ItemFarm.on_server_message(line, clean_line)
     end
 
     -- 剩餘少數特殊狀態
-    if s.stage == "emergency" then
+    if s.stage == "emergency" or s.stage == "fleeing_for_charm" then
         if string.find(clean_line, "你為了保命而不顧面子從戰鬥中逃了", 1, true) or
            string.find(clean_line, " recall", 1, true) then
             _G.ItemFarm.echo("✅ 成功逃離戰鬥！")
-            s.stage = "idle"
-            _G.ItemFarm.next_job()
+            
+            if s.stage == "fleeing_for_charm" then
+                s.stage = "retry_charming"
+                _G.ItemFarm.echo("🔄 準備重試魅惑，導航回目標點...")
+                -- 改用 go_and_fight 確保導航回正確位置
+                _G.ItemFarm.safe_timer(2.0, "_G.ItemFarm.go_and_fight")
+            else
+                s.stage = "idle"
+                _G.ItemFarm.next_job()
+            end
         elseif string.find(clean_line, "你逃跑失敗了", 1, true) then
             mud.send("fl")
         end
@@ -1338,5 +1701,7 @@ end
 
 -- ===== 初始化腳本 =====
 _G.ItemFarm.init()
+
+mud.echo("ItemFarm script loaded successfully.")
 
 return _G.ItemFarm

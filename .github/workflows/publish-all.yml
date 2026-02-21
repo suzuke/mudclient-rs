@@ -1,0 +1,219 @@
+# GitHub Action: Publish Extension (All Markets)
+# 自動發布 VS Code Extension 到所有市場
+#
+# 觸發時機：
+#   - 建立 GitHub Release
+#   - push tag（格式：v*，例如 v7.9.0）
+#   - 手動觸發（可選擇是否發布到 Marketplace）
+#
+# 發布目標：
+#   1. VS Code Marketplace（Microsoft）→ 需要 VSCE_PAT secret
+#   2. Open VSX Registry（Eclipse/Gitpod）→ 需要 OVSX_PAT secret
+#
+# 前置條件（必須先設定 GitHub Secrets）：
+#   - VSCE_PAT：VS Code Marketplace Personal Access Token
+#   - OVSX_PAT：Open VSX Registry Personal Access Token
+#
+# 包含步驟：
+#   1. 安全掃描（防止危險指令被發布）
+#   2. 版本號一致性驗證（tag vs package.json）
+#   3. Extension 編譯與健全性檢查
+#   4. WebUI 建置（注入到 extension/out/webview）
+#   5. 打包 VSIX
+#   6. 上傳 Artifact + 附加到 Release
+#   7. 發布到 VS Code Marketplace
+#   8. 發布到 Open VSX Registry
+#   9. 輸出發布狀態摘要
+
+name: Publish Extension (All Markets)
+
+on:
+  release:
+    types: [created]
+  push:
+    tags:
+      - 'v*'
+    paths-ignore:
+      - 'docs/**'
+      - '.agent/logs/**'
+      - '**.md'
+  workflow_dispatch:
+    inputs:
+      publish_market:
+        description: '是否發布到 Marketplace'
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # 安全掃描：僅掃描可執行程式碼（排除範本/UI 說明文字）
+      - name: Security Scan for Dangerous Commands
+        run: |
+          echo "🔍 執行安全掃描..."
+          # 僅掃描 .ts/.js/.sh 等可執行檔，排除範本、UI、文件與第三方目錄
+          # 使用 || true 捕捉 grep exit code 1 (未找到)
+          MATCHES=$(grep -r -E "rm -rf" . \
+            --include='*.ts' --include='*.js' --include='*.sh' \
+            --exclude-dir=.git --exclude-dir=node_modules \
+            --exclude-dir=.github --exclude-dir=.agent \
+            --exclude-dir=assets \
+            --exclude=pre-commit --exclude=project_context.json \
+            || true)
+          
+          if [ -n "$MATCHES" ]; then
+            echo "🚨 警告: 發現 'rm -rf' 指令！"
+            echo "$MATCHES"
+            echo "::error title=Security Scan Failed::發現潛在安全問題: rm -rf"
+            exit 1
+          else
+            echo "✅ 安全掃描通過！"
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: '**/package-lock.json'
+
+      - name: Cache WebUI dependencies
+        uses: actions/cache@v4
+        with:
+          path: webui/node_modules
+          key: ${{ runner.os }}-webui-${{ hashFiles('webui/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-webui-
+
+      # Sync Docs & Assets (Single Source of Truth)
+      - name: Sync Docs & Assets
+        run: |
+          echo "📂 Current Directory Layout:"
+          ls -la
+          
+          echo "📄 Syncing README & CHANGELOG..."
+          # 確保目標目錄存在
+          mkdir -p vscode-extension
+          
+          if [ -f "README.md" ]; then
+            cp -v README.md vscode-extension/
+          else
+            echo "❌ Error: README.md not found in root!"
+            exit 1
+          fi
+          
+          if [ -f "CHANGELOG.md" ]; then
+            cp -v CHANGELOG.md vscode-extension/
+          else
+             echo "⚠️ Warning: CHANGELOG.md not found!"
+          fi
+          
+          echo "🖼️ Syncing Images..."
+          mkdir -p vscode-extension/docs/images
+          if [ -d "docs/images" ]; then
+            cp -r docs/images/* vscode-extension/docs/images/
+          fi
+          
+          echo "✅ Sync Completed!"
+
+      - name: Get Version
+        id: get_version
+        run: |
+          VERSION=$(node -p "require('./vscode-extension/package.json').version")
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+      
+      - name: Verify Version Consistency
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG_VERSION=${GITHUB_REF#refs/tags/v}
+          PKG_VERSION=${{ steps.get_version.outputs.VERSION }}
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "❌ Version Mismatch! Tag: $TAG_VERSION, Package: $PKG_VERSION"
+            echo "Please ensure package.json version matches the git tag."
+            exit 1
+          fi
+          echo "✅ Version Verified: $PKG_VERSION"
+
+      # 1. Build Extension First (Ensure 'out' dir exists)
+      - name: Install, Compile & Smoke Check Extension
+        working-directory: ./vscode-extension
+        run: |
+          npm ci
+          npm run compile
+          npm run smoke:deps
+
+      # 2. Build WebUI (Injects into extension/out/webview)
+      - name: Install & Build WebUI
+        working-directory: ./webui
+        run: |
+          npm ci
+          npm run build
+
+      # 3. Package Extension
+      - name: Package Extension
+        working-directory: ./vscode-extension
+        run: |
+          # CLEANUP: Ensure no stale .vsix files exist from previous failed runs or caching
+          rm -f *.vsix
+          npm run package
+
+      # 4. Upload Artifacts & Release Assets
+      - name: Upload VSIX Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pixiu-agent-${{ steps.get_version.outputs.VERSION }}
+          path: ./vscode-extension/*.vsix
+          retention-days: 5
+
+      - name: Attach to Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: ./vscode-extension/*.vsix
+          generate_release_notes: true
+
+      # 5. Publish to VS Code Marketplace (Microsoft)
+      - name: Publish to VS Code Marketplace
+        id: publish_vscode
+        working-directory: ./vscode-extension
+        run: |
+          npx @vscode/vsce publish -p ${{ secrets.VSCE_PAT }} --packagePath *.vsix
+          echo "VSCODE_STATUS=✅ 發布成功" >> $GITHUB_ENV
+        continue-on-error: true
+      
+      # Handle failure for VS Code
+      - name: Check VS Code Status
+        if: steps.publish_vscode.outcome == 'failure'
+        run: echo "VSCODE_STATUS=❌ 發布失敗" >> $GITHUB_ENV
+
+      # 6. Publish to Open VSX (Eclipse)
+      - name: Publish to Open VSX
+        id: publish_openvsx
+        working-directory: ./vscode-extension
+        run: |
+          npx ovsx publish *.vsix -p ${{ secrets.OVSX_PAT }}
+          echo "OPENVSX_STATUS=✅ 發布成功" >> $GITHUB_ENV
+        continue-on-error: true
+
+      # Handle failure for Open VSX
+      - name: Check Open VSX Status
+        if: steps.publish_openvsx.outcome == 'failure'
+        run: echo "OPENVSX_STATUS=❌ 發布失敗" >> $GITHUB_ENV
+
+      # 7. Generate Summary
+      - name: Deployment Summary
+        if: always()
+        run: |
+          echo "## 🚀 發布狀態報告 (v${{ steps.get_version.outputs.VERSION }})" >> $GITHUB_STEP_SUMMARY
+          echo "| 發布平台 (Registry) | 狀態 (Status) |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------------------|---------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Microsoft Marketplace** | ${{ env.VSCODE_STATUS }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Open VSX Registry** | ${{ env.OPENVSX_STATUS }} |" >> $GITHUB_STEP_SUMMARY

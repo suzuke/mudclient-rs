@@ -23,31 +23,45 @@ const API_BASE = process.env.MUDCLIENT_API_URL || "http://127.0.0.1:9527";
 // HTTP Helper (session-aware)
 // ============================================================================
 function sessionQuery(session) {
-    return session ? `?session=${encodeURIComponent(session)}` : "";
+    return session ? `session=${encodeURIComponent(session)}` : "";
 }
-async function apiGet(path, session) {
-    const url = `${API_BASE}${path}${path.includes("?") ? "&" : "?"}${session ? `session=${encodeURIComponent(session)}` : ""}`;
-    const res = await fetch(url);
+async function fetchWithRetry(url, init) {
+    const res = await fetch(url, init);
+    if (res.status === 404) {
+        // 404 通常是 Session 重連窗口期的暫時性問題，等待後重試一次
+        await new Promise(r => setTimeout(r, 500));
+        const retry = await fetch(url, init);
+        if (!retry.ok)
+            throw new Error(`API error: ${retry.status} ${retry.statusText}`);
+        return retry;
+    }
     if (!res.ok)
         throw new Error(`API error: ${res.status} ${res.statusText}`);
+    return res;
+}
+function buildUrl(path, session) {
+    const qs = sessionQuery(session);
+    if (!qs)
+        return `${API_BASE}${path}`;
+    const sep = path.includes("?") ? "&" : "?";
+    return `${API_BASE}${path}${sep}${qs}`;
+}
+async function apiGet(path, session) {
+    const res = await fetchWithRetry(buildUrl(path, session));
     return res.json();
 }
 async function apiPost(path, body, session) {
-    const res = await fetch(`${API_BASE}${path}${sessionQuery(session)}`, {
+    const res = await fetchWithRetry(buildUrl(path, session), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
     });
-    if (!res.ok)
-        throw new Error(`API error: ${res.status} ${res.statusText}`);
     return res.json();
 }
 async function apiDelete(path, session) {
-    const res = await fetch(`${API_BASE}${path}${sessionQuery(session)}`, {
+    const res = await fetchWithRetry(buildUrl(path, session), {
         method: "DELETE",
     });
-    if (!res.ok)
-        throw new Error(`API error: ${res.status} ${res.statusText}`);
     return res.json();
 }
 // Common error handler
@@ -105,8 +119,7 @@ server.tool("read_messages", "讀取 MUD 伺服器最近的訊息。用於觀察
     session: sessionParam,
 }, async ({ count, session }) => {
     try {
-        const qs = `count=${count}${session ? `&session=${encodeURIComponent(session)}` : ""}`;
-        const data = await apiGet(`/api/messages?${qs}`);
+        const data = await apiGet(`/api/messages?count=${count}`, session);
         const text = data.messages.join("\n");
         return {
             content: [{

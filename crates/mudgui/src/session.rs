@@ -603,7 +603,7 @@ impl Session {
         // 這裡我們傳入預設的 strict ID，但 Lua 腳本可以自己呼叫 mud.get_current_room() 取得更多資訊
         // 或者 mud.get_current_room_id(false) 取得 lax ID
         // 觸發 Lua Hook: on_room_detected(id, name)
-        match self.script_engine.invoke_hook("on_room_detected", &id, &name) {
+        match self.script_engine.invoke_hook("on_room_detected", &id, &name, false) {
             Ok(Some(context)) => {
                 self.apply_script_context(context);
             }
@@ -741,8 +741,20 @@ impl Session {
         }
 
         // 2. 本地回顯
+        // [修正] 直接路由到視窗，不經過 handle_text，避免 handle_text → invoke_hook →
+        // mud.echo → apply_script_context → handle_text 的間接遞迴導致 stack overflow
         for echo in context.echos {
-            self.handle_text(&echo, true);
+            self.window_manager.route_message(
+                "main",
+                WindowMessage {
+                    content: echo.clone(),
+                    preserve_ansi: true,
+                    byte_widths: Vec::new(),
+                    repeat_count: 1,
+                },
+            );
+            // 日誌記錄 echo
+            let _ = self.logger.log(&echo);
         }
 
         // 3. 子視窗輸出
@@ -878,7 +890,7 @@ impl Session {
 
         // 0. 呼叫全域鉤子 (Global Hook)
         // 這允許 Lua 腳本直接處理每一行伺服器訊息與回顯，無需透過正則表達式觸發器
-        match self.script_engine.invoke_hook("on_server_message", text, &clean_text) {
+        match self.script_engine.invoke_hook("on_server_message", text, &clean_text, is_echo) {
             Ok(Some(context)) => {
                 if context.gag {
                     gagged = true;
@@ -1469,7 +1481,7 @@ impl Session {
             }
 
             // 觸發 Lua Hook: on_command(command)
-            if let Ok(Some(context)) = self.script_engine.invoke_hook("on_command", &input, &input) {
+            if let Ok(Some(context)) = self.script_engine.invoke_hook("on_command", &input, &input, false) {
                  self.apply_script_context(context);
             }
 

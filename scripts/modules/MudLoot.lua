@@ -180,7 +180,8 @@ MudLoot.config = {
 }
 
 -- ===== 註冊到 Hook Registry =====
-MudUtils.register_hook("MudLoot", function(line, clean_line)
+MudUtils.register_hook("MudLoot", function(line, clean_line, is_echo)
+    if is_echo then return end
     MudLoot.on_server_message(line, clean_line)
 end)
 

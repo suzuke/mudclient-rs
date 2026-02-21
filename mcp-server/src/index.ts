@@ -28,31 +28,47 @@ const API_BASE = process.env.MUDCLIENT_API_URL || "http://127.0.0.1:9527";
 // ============================================================================
 
 function sessionQuery(session?: string): string {
-    return session ? `?session=${encodeURIComponent(session)}` : "";
+    return session ? `session=${encodeURIComponent(session)}` : "";
+}
+
+async function fetchWithRetry(url: string, init?: RequestInit): Promise<Response> {
+    const res = await fetch(url, init);
+    if (res.status === 404) {
+        // 404 通常是 Session 重連窗口期的暫時性問題，等待後重試一次
+        await new Promise(r => setTimeout(r, 500));
+        const retry = await fetch(url, init);
+        if (!retry.ok) throw new Error(`API error: ${retry.status} ${retry.statusText}`);
+        return retry;
+    }
+    if (!res.ok) throw new Error(`API error: ${res.status} ${res.statusText}`);
+    return res;
+}
+
+function buildUrl(path: string, session?: string): string {
+    const qs = sessionQuery(session);
+    if (!qs) return `${API_BASE}${path}`;
+    const sep = path.includes("?") ? "&" : "?";
+    return `${API_BASE}${path}${sep}${qs}`;
 }
 
 async function apiGet(path: string, session?: string): Promise<unknown> {
-    const url = `${API_BASE}${path}${path.includes("?") ? "&" : "?"}${session ? `session=${encodeURIComponent(session)}` : ""}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`API error: ${res.status} ${res.statusText}`);
+    const res = await fetchWithRetry(buildUrl(path, session));
     return res.json();
 }
 
 async function apiPost(path: string, body: unknown, session?: string): Promise<unknown> {
-    const res = await fetch(`${API_BASE}${path}${sessionQuery(session)}`, {
+    const res = await fetchWithRetry(buildUrl(path, session), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(`API error: ${res.status} ${res.statusText}`);
     return res.json();
 }
 
 async function apiDelete(path: string, session?: string): Promise<unknown> {
-    const res = await fetch(`${API_BASE}${path}${sessionQuery(session)}`, {
+    const res = await fetchWithRetry(buildUrl(path, session), {
         method: "DELETE",
     });
-    if (!res.ok) throw new Error(`API error: ${res.status} ${res.statusText}`);
     return res.json();
 }
 
@@ -129,8 +145,7 @@ server.tool(
     },
     async ({ count, session }) => {
         try {
-            const qs = `count=${count}${session ? `&session=${encodeURIComponent(session)}` : ""}`;
-            const data = await apiGet(`/api/messages?${qs}`) as {
+            const data = await apiGet(`/api/messages?count=${count}`, session) as {
                 messages: string[];
                 total: number;
                 session_key: string;

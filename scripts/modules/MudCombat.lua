@@ -52,6 +52,18 @@ function MudCombat.reset()
     }
 end
 
+-- 輔助：匹配 target_name（支援 string 或 table）
+local function match_target_name(line, target_name)
+    if type(target_name) == "table" then
+        for _, kw in ipairs(target_name) do
+            if string.find(line, kw, 1, true) then return true end
+        end
+        return false
+    else
+        return string.find(line, target_name, 1, true) ~= nil
+    end
+end
+
 function MudCombat.safe_summon(target_name, summon_cmd, options, on_success, on_fail)
     local s = MudCombat.summon_state
     
@@ -146,7 +158,7 @@ function MudCombat.on_server_message(line)
     local s = MudCombat.summon_state
     if s.active then
         -- Success: "Papa 突然出現在你的眼前"
-        if string.find(line, s.target_name .. ".*突然出現在你的眼前") then
+        if match_target_name(line, s.target_name) and string.find(line, "突然出現在你的眼前", 1, true) then
             s.pending_verification = true
             local aid = s.attempt_id
             MudUtils.safe_timer(s.verify_delay, function()
@@ -165,7 +177,7 @@ function MudCombat.on_server_message(line)
         
         -- Flee: "Papa 往北邊離開了" 或 "Papa 離開了"
         -- 使用更寬鬆的匹配，只要包含名字且含「離開」關鍵字
-        if string.find(line, s.target_name, 1, true) and (string.find(line, "離開") or string.find(line, "消失")) then
+        if match_target_name(line, s.target_name) and (string.find(line, "離開") or string.find(line, "消失")) then
             if s.pending_verification then
                 if MudCombat.config.debug then mud.echo("[MudCombat] Target fled/vanished during verification!") end
                 s.pending_verification = false 
@@ -205,7 +217,8 @@ _G.MudCombat = MudCombat
 
 -- ===== 註冊到 Hook Registry =====
 if MudUtils and MudUtils.register_hook then
-    MudUtils.register_hook("MudCombat", function(line, clean_line)
+    MudUtils.register_hook("MudCombat", function(line, clean_line, is_echo)
+        if is_echo then return end
         MudCombat.on_server_message(clean_line or line)
     end)
 end
