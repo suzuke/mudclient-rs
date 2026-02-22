@@ -10,6 +10,8 @@ echo "🔨 Building release for ${TARGETS[*]}..."
 
 # ── Build both architectures ──
 for target in "${TARGETS[@]}"; do
+    echo "  → Installing target $target (if needed)..."
+    rustup target add "$target" || true
     echo "  → Building $target..."
     cargo build -p mudgui --release --target "$target"
 done

@@ -1,6 +1,7 @@
 # Build
 /target
 *.app
+*.dmg
 /dist
 
 # Logs
