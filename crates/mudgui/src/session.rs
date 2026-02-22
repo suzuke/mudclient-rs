@@ -713,8 +713,15 @@ impl Session {
                 // 2. macOS .app bundle: Contents/MacOS/mudgui → Contents/Resources/scripts/
                 if exe_dir.ends_with("Contents/MacOS") {
                     if let Some(contents_dir) = exe_dir.parent() {
-                        let res_scripts = contents_dir.join("Resources").join("scripts");
+                        let resources_dir = contents_dir.join("Resources");
+                        let res_scripts = resources_dir.join("scripts");
                         if res_scripts.exists() && res_scripts.is_dir() {
+                            // chdir 到 Resources，讓 Lua 相對路徑 (data/, logs/) 正確解析
+                            if let Err(e) = std::env::set_current_dir(&resources_dir) {
+                                tracing::warn!("無法切換工作目錄到 Resources: {}", e);
+                            } else {
+                                tracing::info!("工作目錄已切換至: {}", resources_dir.display());
+                            }
                             return std::fs::canonicalize(res_scripts).ok();
                         }
                     }

@@ -9,6 +9,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # ── Build each platform ──
   build:
     strategy:
       matrix:
@@ -17,6 +18,8 @@ jobs:
             target: x86_64-pc-windows-msvc
           - os: macos-latest
             target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
 
     runs-on: ${{ matrix.os }}
 
@@ -40,7 +43,7 @@ jobs:
       - name: Build
         run: cargo build -p mudgui --release --target ${{ matrix.target }}
 
-      # ── Windows: zip with scripts & docs ──
+      # ── Windows: zip with scripts, data & docs ──
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -48,6 +51,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist
           Copy-Item "target/${{ matrix.target }}/release/mudgui.exe" dist/
           Copy-Item -Recurse scripts dist/scripts
+          Copy-Item -Recurse data dist/data
           Copy-Item -Recurse docs dist/docs
           Compress-Archive -Path dist/* -DestinationPath mudgui-windows-x64.zip
 
@@ -58,36 +62,97 @@ jobs:
           name: mudgui-windows-x64
           path: mudgui-windows-x64.zip
 
-      # ── macOS: .app bundle ──
-      - name: Package (macOS .app)
+      # ── macOS: upload raw binary for universal merge ──
+      - name: Upload macOS binary
         if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mudgui-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/mudgui
+
+  # ── macOS: merge into Universal Binary + DMG ──
+  package-macos:
+    needs: build
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download arm64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: mudgui-aarch64-apple-darwin
+          path: bin-arm64
+
+      - name: Download x86_64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: mudgui-x86_64-apple-darwin
+          path: bin-x86_64
+
+      - name: Create Universal Binary
+        run: |
+          chmod +x bin-arm64/mudgui bin-x86_64/mudgui
+          lipo -create bin-arm64/mudgui bin-x86_64/mudgui -output mudgui-universal
+          file mudgui-universal
+
+      - name: Build .app bundle
         run: |
           APP="MudClient.app"
           mkdir -p "$APP/Contents/MacOS"
           mkdir -p "$APP/Contents/Resources"
 
-          # Copy executable
-          cp "target/${{ matrix.target }}/release/mudgui" "$APP/Contents/MacOS/"
+          cp mudgui-universal "$APP/Contents/MacOS/mudgui"
           chmod +x "$APP/Contents/MacOS/mudgui"
 
-          # Copy Info.plist
           cp packaging/macos/Info.plist "$APP/Contents/"
 
-          # Copy resources
           cp -r scripts "$APP/Contents/Resources/scripts"
+          cp -r data "$APP/Contents/Resources/data"
           cp -r docs "$APP/Contents/Resources/docs"
 
-          # Copy icon if exists
           if [ -f packaging/macos/AppIcon.icns ]; then
             cp packaging/macos/AppIcon.icns "$APP/Contents/Resources/"
           fi
 
-          # Create DMG-like zip
-          zip -r mudgui-macos-arm64.zip "$APP"
+      - name: Create DMG
+        run: |
+          DMG_TEMP="dmg_staging"
+          mkdir -p "$DMG_TEMP"
+          cp -r MudClient.app "$DMG_TEMP/"
+          ln -s /Applications "$DMG_TEMP/Applications"
 
-      - name: Upload artifact (macOS)
-        if: runner.os == 'macOS'
+          hdiutil create -volname "MudClient" \
+            -srcfolder "$DMG_TEMP" \
+            -ov -format UDZO \
+            MudClient-macos-universal.dmg
+
+          rm -rf "$DMG_TEMP"
+
+      - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mudgui-macos-arm64
-          path: mudgui-macos-arm64.zip
+          name: mudgui-macos-universal
+          path: MudClient-macos-universal.dmg
+
+  # ── Attach to GitHub Release ──
+  release:
+    needs: [build, package-macos]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Attach to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/mudgui-windows-x64/mudgui-windows-x64.zip
+            artifacts/mudgui-macos-universal/MudClient-macos-universal.dmg
+          generate_release_notes: true
