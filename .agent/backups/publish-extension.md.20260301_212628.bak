@@ -36,20 +36,19 @@ trigger: 任務涉及「發布 extension」、「readme 同步」、「圖片破
 - Marketplace 會讀取 `.vsix` 包內的圖片。
 - 離線安裝也能看到圖片。
 
-### 2. 發布前同步（手動或 CI）
+### 2. 建置腳本 (`build-extension.sh`)
 
-目前同步由 CI（`.github/workflows/publish-all.yml`）自動處理。若需手動同步：
+所有同步邏輯必須寫在 `scripts/build-extension.sh` 中：
 
 ```bash
-# 同步 README 與 CHANGELOG
-cp README.md vscode-extension/README.md
-cp CHANGELOG.md vscode-extension/CHANGELOG.md
+# 範例
+echo "📄 Syncing README..."
+cp "$ROOT_DIR/README.md" "$EXTENSION_DIR/README.md"
 
-# 同步文件資源
-cp -r docs/ vscode-extension/docs/
+echo "🖼️ Bundling docs..."
+rm -r "$EXTENSION_DIR/docs"
+cp -r "$ROOT_DIR/docs" "$EXTENSION_DIR/"
 ```
-
-> ⚠️ 若未來需要自動化，可建立 `scripts/build-extension.sh` 封裝以上步驟。
 
 ---
 
@@ -93,7 +92,7 @@ docs/
 ## 發布檢查清單
 
 - [ ] `ROOT/README.md` 引用圖片使用相對路徑 `docs/images/xxx.png`
-- [ ] 手動同步 README/CHANGELOG/docs（或確認 CI 會自動處理）
+- [ ] 執行 `sh scripts/build-extension.sh`
 - [ ] 檢查 `vscode-extension/docs/` 是否存在
 - [ ] 檢查 `vscode-extension/README.md` 是否更新
 - [ ] 若要預覽：在 VS Code 開啟 `vscode-extension/README.md` 按 `Ctrl+K V`

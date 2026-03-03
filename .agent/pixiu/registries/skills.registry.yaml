@@ -1,0 +1,170 @@
+version: 1
+skills:
+  - id: api-design
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/skills
+    spec: api-design.skill.md
+  - id: bdi-mental-states
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/skills
+    spec: bdi-mental-states.skill.md
+  - id: brainstorming
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/skills
+    spec: brainstorming.skill.md
+  - id: claude-api-cost
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/skills
+    spec: claude-api-cost.skill.md
+  - id: code-review
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/skills
+    spec: code-review.skill.md
+  - id: context-optimization
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/skills
+    spec: context-optimization.skill.md
+  - id: db-schema
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/skills
+    spec: db-schema.skill.md
+  - id: debugging
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/skills
+    spec: systematic-debugging.skill.md
+  - id: error-handling
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/skills
+    spec: error-handling.skill.md
+  - id: naming-convention
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/skills
+    spec: naming-convention.skill.md
+  - id: payment
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/skills
+    spec: payment.skill.md
+  - id: performance
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/skills
+    spec: performance.skill.md
+  - id: python-patterns
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/skills
+    spec: python-patterns.skill.md
+  - id: research
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/skills
+    spec: research.skill.md
+  - id: security
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/skills
+    spec: security.skill.md
+  - id: skill-acquisition
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/skills
+    spec: skill-acquisition.skill.md
+  - id: tdd-workflow
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/skills
+    spec: tdd-workflow.skill.md
+  - id: tech-stack
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/skills
+    spec: tech-stack.skill.md
+  - id: typescript-patterns
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/skills
+    spec: typescript-patterns.skill.md
+  - id: ui-design
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/skills
+    spec: ui-design.skill.md
+  - id: uxsoul-extractor
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/skills
+    spec: UxSoul-extractor.skill.md
+  - id: verification-before-completion
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/skills
+    spec: verification-before-completion.skill.md
+  - id: visualization
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/skills
+    spec: visualization.skill.md
+  - id: writing-plans
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/skills
+    spec: writing-plans.skill.md

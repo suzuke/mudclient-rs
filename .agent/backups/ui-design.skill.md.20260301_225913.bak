@@ -7,7 +7,7 @@ license: MIT
 compatibility: Pixiu Agent / Claude Code / Cursor
 metadata:
   author: pixiu
-  version: "2.0.0"
+  version: "1.0"
   category: frontend
 ---
 

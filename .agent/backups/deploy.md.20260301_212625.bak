@@ -22,7 +22,7 @@ trigger: 任務涉及「部署」、「回滾」、「rollback」、「release�
 
 更新位置：
 - `package.json` (version)
-- `CHANGELOG.md`
+- `docs/ChangeLog.md`
 - Git tag: `git tag -a v1.2.0 -m "Release 1.2.0"`
 
 ---
@@ -303,7 +303,7 @@ psql -U postgres -d mydb < backup_20240115_143000.sql
 ### 部署前
 - [ ] 所有測試通過
 - [ ] 版本號已更新
-- [ ] CHANGELOG.md 已更新
+- [ ] ChangeLog 已更新
 - [ ] .env.example 同步
 - [ ] 資料庫備份完成
 - [ ] 依賴套件無安全漏洞

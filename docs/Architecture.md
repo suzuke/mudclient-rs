@@ -76,20 +76,81 @@ graph TD
 
 | 領域 | 技術/套件 | 用途 |
 | :--- | :--- | :--- |
-| **語言** | Rust (2021) | 核心開發語言 |
-| **GUI** | egui, eframe | 跨平台圖形介面 |
-| **非同步** | tokio | 網路 I/O 與任務調度 |
-| **腳本** | mlua (Lua 5.4) | 使用者腳本擴充 |
+| **語言** | Rust (2021 Edition) | 核心開發語言 |
+| **GUI** | egui 0.30, eframe | 跨平台圖形介面 (Immediate Mode) |
+| **非同步** | tokio 1.43 | 網路 I/O 與任務調度 |
+| **HTTP** | axum 0.8 | 內建 REST API Server |
+| **腳本** | mlua (Lua 5.4, vendored) | 使用者腳本擴充 |
 | **編碼** | encoding_rs | Big5/GBK 支援 |
 | **序列化** | serde, serde_json | 設定檔與資料儲存 |
 | **正則** | regex | 觸發器匹配 |
+| **雜湊** | sha2 | 房間 ID 雜湊 |
+| **MCP** | @modelcontextprotocol/sdk (TS) | AI Agent 控制介面 |
+
+### 3. `mcp-server` (AI 控制介面)
+獨立的 Node.js/TypeScript 應用程式，透過 MCP 協定讓 AI Agent（如 Claude、Gemini）操控 MUD 客戶端。
+
+*   **協定**: Model Context Protocol (stdio 模式)。
+*   **後端通訊**: 呼叫 `mudgui` 內建的 Axum REST API。
+*   **核心功能**:
+    *   `send_command` — 送出遊戲指令。
+    *   `read_messages` / `clear_messages` — 讀取/清除訊息緩衝區。
+    *   `execute_lua` / `evaluate_lua` — 遠端執行 Lua 程式碼。
+    *   `get_room_info` / `get_status` — 查詢遊戲狀態。
+    *   `list_sessions` — 多連線 session 管理。
+
+### 4. `scripts/` (Lua 腳本庫)
+遊戲自動化腳本集合，分為獨立腳本與共用模組。
+
+*   **共用模組** (`scripts/modules/`):
+    *   `MudNav` — 路徑導航與位置追蹤。
+    *   `MudCombat` — 戰鬥邏輯與技能施放。
+    *   `MudLoot` — 物品拾取與背包管理。
+    *   `MudMapper` — 房間記錄與地圖建構。
+    *   `MudExplorer` — 自動探索。
+    *   `MudUtils` — 通用工具函式。
+*   **任務腳本**: `ikkoku_quest`, `poker_quest`, `smurf_quest`, `itemfarm` 等。
+*   **輔助腳本**: `autocast`, `benumb`, `practice`, `memcalc`, `skillplanner` 等。
 
 ## 📂 檔案系統
 
-*   `.agent/`: Agent 相關配置與記憶 (Workflow, Rules, Knowledge)。
+*   `.agent/`: AI Agent 配置 (Rules, Skills, Workflows, Hooks)。
 *   `assets/`: 字型、圖示等靜態資源。
-*   `crates/`: Rust 原始碼 (Workspace)。
+*   `crates/`: Rust 原始碼 (Workspace: `mudcore` + `mudgui`)。
+*   `data/`: 靜態資料檔 (地圖、設定)。
 *   `docs/`: 專案文件。
-*   `scripts/`: 預設 Lua 腳本庫。
+*   `mcp-server/`: MCP Server (TypeScript)。
+*   `packaging/`: 打包腳本 (DMG 建置等)。
+*   `scripts/`: Lua 腳本庫與共用模組。
 *   `logs/`: 執行日誌與遊戲紀錄。
 *   `target/`: 編譯產出。
+*   `tests/`: 整合測試。
+
+## 🔧 開發指引
+
+```bash
+# 編譯 (Debug)
+cargo build -p mudgui
+
+# 編譯 (Release)
+cargo build -p mudgui --release
+
+# 執行測試
+cargo test --workspace
+
+# MCP Server 開發
+cd mcp-server && npm install && npm run build
+```
+
+## 📚 相關文件
+
+| 文件 | 說明 |
+| :--- | :--- |
+| [API.md](API.md) | Lua 腳本 API 參考 |
+| [ScriptGuide.md](ScriptGuide.md) | 腳本開發入門教學 |
+| [MCP_Usage.md](MCP_Usage.md) | MCP Server 使用指南 |
+| [MCP_Agent_Playbook.md](MCP_Agent_Playbook.md) | AI Agent 操控 Playbook |
+| [Navigation.md](Navigation.md) | 導航系統說明 |
+| [Deployment.md](Deployment.md) | 部署與打包流程 |
+| [Env.md](Env.md) | 環境變數設定 |
+| [RoadMap.md](RoadMap.md) | 開發路線圖 |

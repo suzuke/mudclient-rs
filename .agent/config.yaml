@@ -4,6 +4,9 @@
 # 版本
 version: 1.0.0
 
+# Schema 結構版本（Pixiu 自動管理，用於遷移偵測）
+schemaVersion: 2
+
 # ===== Skill Aliases =====
 # 讓 pixiu install 支援簡短名稱
 # 使用方式：pixiu install stripe

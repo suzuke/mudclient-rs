@@ -150,6 +150,103 @@ impl Profile {
 }
 
 // ============================================================================
+// 九宮格 Numpad 設定
+// ============================================================================
+
+/// 九宮格快捷鍵設定（可自訂每個按鍵對應的指令）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NumpadConfig {
+    /// 是否啟用九宮格行走模式
+    #[serde(default)]
+    pub enabled: bool,
+    /// Numpad 7 指令
+    #[serde(default = "default_numpad_7")]
+    pub key_7: String,
+    /// Numpad 8 指令
+    #[serde(default = "default_numpad_8")]
+    pub key_8: String,
+    /// Numpad 9 指令
+    #[serde(default = "default_numpad_9")]
+    pub key_9: String,
+    /// Numpad 4 指令
+    #[serde(default = "default_numpad_4")]
+    pub key_4: String,
+    /// Numpad 5 指令
+    #[serde(default = "default_numpad_5")]
+    pub key_5: String,
+    /// Numpad 6 指令
+    #[serde(default = "default_numpad_6")]
+    pub key_6: String,
+    /// Numpad 1 指令
+    #[serde(default = "default_numpad_1")]
+    pub key_1: String,
+    /// Numpad 2 指令
+    #[serde(default = "default_numpad_2")]
+    pub key_2: String,
+    /// Numpad 3 指令
+    #[serde(default = "default_numpad_3")]
+    pub key_3: String,
+    /// Numpad 0 指令
+    #[serde(default = "default_numpad_0")]
+    pub key_0: String,
+    /// Numpad . 指令
+    #[serde(default = "default_numpad_dot")]
+    pub key_dot: String,
+}
+
+fn default_numpad_7() -> String { "northwest".to_string() }
+fn default_numpad_8() -> String { "north".to_string() }
+fn default_numpad_9() -> String { "northeast".to_string() }
+fn default_numpad_4() -> String { "west".to_string() }
+fn default_numpad_5() -> String { "look".to_string() }
+fn default_numpad_6() -> String { "east".to_string() }
+fn default_numpad_1() -> String { "southwest".to_string() }
+fn default_numpad_2() -> String { "south".to_string() }
+fn default_numpad_3() -> String { "southeast".to_string() }
+fn default_numpad_0() -> String { "down".to_string() }
+fn default_numpad_dot() -> String { "up".to_string() }
+
+impl Default for NumpadConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            key_7: default_numpad_7(),
+            key_8: default_numpad_8(),
+            key_9: default_numpad_9(),
+            key_4: default_numpad_4(),
+            key_5: default_numpad_5(),
+            key_6: default_numpad_6(),
+            key_1: default_numpad_1(),
+            key_2: default_numpad_2(),
+            key_3: default_numpad_3(),
+            key_0: default_numpad_0(),
+            key_dot: default_numpad_dot(),
+        }
+    }
+}
+
+impl NumpadConfig {
+    /// 根據數字索引取得對應的指令（0-9 對應數字鍵，10 對應小數點鍵）
+    pub fn command_for_index(&self, index: u8) -> Option<&str> {
+        let cmd = match index {
+            0 => &self.key_0,
+            1 => &self.key_1,
+            2 => &self.key_2,
+            3 => &self.key_3,
+            4 => &self.key_4,
+            5 => &self.key_5,
+            6 => &self.key_6,
+            7 => &self.key_7,
+            8 => &self.key_8,
+            9 => &self.key_9,
+            10 => &self.key_dot,
+            _ => return None,
+        };
+        if cmd.is_empty() { None } else { Some(cmd) }
+    }
+}
+
+// ============================================================================
 // 新架構：GlobalConfig
 // ============================================================================
 
@@ -206,6 +303,9 @@ pub struct GlobalConfig {
     /// UI 設定
     #[serde(default)]
     pub ui: UiConfig,
+    /// 九宮格快捷鍵設定
+    #[serde(default)]
+    pub numpad: NumpadConfig,
     /// 設定檔版本（用於未來遷移）
     #[serde(default = "default_config_version")]
     pub config_version: u32,
@@ -222,6 +322,7 @@ impl Default for GlobalConfig {
             global_triggers: Vec::new(),
             auto_connect_profiles: Vec::new(),
             ui: UiConfig::default(),
+            numpad: NumpadConfig::default(),
             config_version: default_config_version(),
         }
     }

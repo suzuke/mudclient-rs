@@ -11,8 +11,10 @@
 *   **🌏 完美中文支援**: 內建 Big5 編碼處理，修正 CJK 字元對齊問題 (`1:2` 寬度比例)。
 *   **🔌 強大腳本引擎**: 完整整合 **Lua 5.4**，支援觸發器 (Triggers)、別名 (Aliases)、計時器 (Timers)。
 *   **🎨 現代化介面**: 支援 256 色與 TrueColor，可自訂分頁、側邊欄工具與主題。
-*   **🤖 自動化助手**: 內建路徑記錄 (`#path`)、自動地圖 (開發中) 與多種任務腳本。
+*   **🤖 自動化助手**: 內建路徑記錄 (`#path`)、模組化任務腳本 (MudNav, MudCombat 等)。
 *   **📜 完整紀錄**: 支援 HTML 格式日誌，保留顏色與格式，方便回顧。
+*   **🧠 AI 整合**: 內建 [MCP Server](docs/MCP_Usage.md)，讓 AI Agent 透過標準協定操控 MUD。
+*   **🔗 多連線管理**: Multi-Session 支援，同時管理多個 MUD 連線。
 
 ## 📥 安裝與執行
 
@@ -45,12 +47,43 @@
 *   `#path start/stop/back`: 路徑記錄與回溯。
 *   `/lua <代碼>`: 執行 Lua 代碼。
 
+### Lua 腳本模組
+內建 `scripts/modules/` 提供可重用的遊戲邏輯模組：
+*   **MudNav** — 路徑導航與位置追蹤
+*   **MudCombat** — 戰鬥邏輯與技能施放
+*   **MudLoot** — 物品拾取與背包管理
+*   **MudMapper** — 房間記錄與地圖建構
+
 ### 文件索引
-*   **[API 文件 (Lua Scripting)](docs/API.md)**: 詳細的腳本開發指南。
+*   **[API 文件 (Lua Scripting)](docs/API.md)**: 詳細的腳本 API 參考。
+*   **[腳本開發指南 (Script Guide)](docs/ScriptGuide.md)**: 從零開始寫腳本。
 *   **[系統架構 (Architecture)](docs/Architecture.md)**: 了解內部運作原理。
 *   **[開發路線圖 (Roadmap)](docs/RoadMap.md)**: 專案未來規劃。
 *   **[環境變數 (Env)](docs/Env.md)**: 進階設定選項。
-*   **[MCP Server 使用指南](docs/MCP_Usage.md)**: 外部控制 API 說明。
+*   **[MCP Server 使用指南](docs/MCP_Usage.md)**: AI Agent 控制 API 說明。
+
+## 🖥️ 系統需求
+
+| 平台 | 最低版本 |
+| :--- | :--- |
+| macOS | 11.0 (Big Sur) 以上 |
+| Windows | 10 (64-bit) 以上 |
+| Rust (編譯用) | 1.75+ (2021 Edition) |
+
+## 🛠️ 開發者快速開始
+
+```bash
+# 複製並編譯
+git clone https://github.com/suzuke/mudclient-rs.git
+cd mudclient-rs
+cargo build -p mudgui
+
+# 執行測試
+cargo test --workspace
+
+# 啟動 MCP Server (需 Node.js)
+cd mcp-server && npm install && npm run build
+```
 
 ## 🤝 貢獻
 歡迎提交 Pull Request 或 Issue。請參考 [CONTRIBUTING.md](CONTRIBUTING.md) (如有) 了解詳情。

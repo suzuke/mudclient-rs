@@ -94,6 +94,9 @@ pub struct MudApp {
 
     /// API 狀態管理器（每個 Session 獨立的 API 狀態）
     api_state_mgr: ApiStateManager,
+
+    /// 九宮格行走模式攔截到的待發送指令
+    pending_numpad_commands: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,6 +200,8 @@ impl MudApp {
             active_guide_name: None,
 
             api_state_mgr,
+
+            pending_numpad_commands: Vec::new(),
         }
     }
 
@@ -301,6 +306,11 @@ impl MudApp {
                      tracing::info!("Saved profile: {}", profile_name);
                  }
              }
+        }
+
+        // 儲存所有 Session 的指令字典
+        for session in self.session_manager.sessions() {
+            session.command_dict.save(std::path::Path::new("data/command_dict.json"));
         }
         
         // 儲存全域設定
@@ -788,7 +798,7 @@ impl MudApp {
     }
 
     /// 繪製訊息顯示區（支援 ANSI 顏色）
-    fn render_message_area(ui: &mut egui::Ui, session: &mut crate::session::Session, active_window_id: &str) {
+    fn render_message_area(ui: &mut egui::Ui, session: &mut crate::session::Session, active_window_id: &str, font_size: f32) {
         let available_height = ui.available_height() - 40.0; // 保留輸入區空間
 
         // 檢查是否需要強制捲到底部
@@ -804,7 +814,7 @@ impl MudApp {
             .max_height(available_height)
             .stick_to_bottom(true)
             .show(ui, |ui| {
-                let font_size = 14.0;
+                // font_size 由呼叫端傳入（來自 global_config.ui.font_size）
                 let font_id = FontId::monospace(font_size);
                 let bold_font_id = FontId::new(font_size, egui::FontFamily::Name("cjk_bold".into()));
                 
@@ -1689,7 +1699,7 @@ impl MudApp {
 
                         if in_code_block {
                              // 程式碼區塊樣式
-                             ui.label(egui::RichText::new(line).font(egui::FontId::monospace(13.0)).color(egui::Color32::LIGHT_GREEN));
+                             ui.label(egui::RichText::new(line).font(egui::FontId::monospace(self.global_config.ui.font_size - 1.0)).color(egui::Color32::LIGHT_GREEN));
                         } else if line.starts_with("# ") {
                             ui.heading(&line[2..]);
                             ui.add_space(5.0);
@@ -1721,7 +1731,7 @@ impl MudApp {
                      egui::TextEdit::multiline(&mut session.notes)
                          .desired_width(f32::INFINITY)
                          .desired_rows(20)
-                         .font(egui::FontId::monospace(14.0)) // 使用等寬字型方便對齊資料
+                         .font(egui::FontId::monospace(self.global_config.ui.font_size)) // 使用等寬字型方便對齊資料
                  );
              });
          } else {
@@ -1732,7 +1742,7 @@ impl MudApp {
     }
 
     /// 繪製輸入區
-    fn render_input_area(ui: &mut egui::Ui, session: &mut crate::session::Session, any_popup_open: bool) {
+    fn render_input_area(ui: &mut egui::Ui, session: &mut crate::session::Session, any_popup_open: bool, font_size: f32) {
         ui.horizontal(|ui| {
             // 先攔截 Tab 鍵，避免 egui 預設的焦點切換行為
             // 必須在 widget 渲染之前消耗，否則 egui 會先處理焦點切換
@@ -1741,7 +1751,7 @@ impl MudApp {
             let response = ui.add(
                 TextEdit::singleline(&mut session.input)
                     .desired_width(ui.available_width())
-                    .font(FontId::monospace(14.0))
+                    .font(FontId::monospace(font_size))
                     .hint_text("輸入指令...")
                     .lock_focus(true), // 防止 Tab 鍵切換焦點
             );
@@ -1921,8 +1931,11 @@ impl MudApp {
             .collect();
             
         word_matches.sort_by(|(a_word, a_meta), (b_word, b_meta)| {
-            b_meta.is_mob.cmp(&a_meta.is_mob)
-                .then_with(|| b_meta.last_seen.cmp(&a_meta.last_seen))
+            // 1. 最近出現的優先
+            // 2. 同時間：MobId > RoomDescription > ScreenText
+            // 3. 同時間同類別：較短的優先
+            b_meta.last_seen.cmp(&a_meta.last_seen)
+                .then_with(|| a_meta.source.priority().cmp(&b_meta.source.priority()))
                 .then_with(|| a_word.len().cmp(&b_word.len()))
         });
         
@@ -1938,6 +1951,15 @@ impl MudApp {
             
             if !matches.contains(&full_match) {
                 matches.push(full_match);
+            }
+        }
+
+        // 3. 指令字典補齊（僅當輸入是命令的首個單字時）
+        if base_input.is_none() && dot_prefix.is_none() {
+            for cmd in session.command_dict.matches(&search_key) {
+                if !matches.contains(&cmd) {
+                    matches.push(cmd);
+                }
             }
         }
 
@@ -2011,6 +2033,22 @@ impl MudApp {
                 // Cmd+T 開啟連線管理
                 if i.key_pressed(egui::Key::T) {
                     self.show_profile_window = true;
+                }
+
+                // Cmd+= 放大字型
+                if i.key_pressed(egui::Key::Equals) {
+                    self.global_config.ui.font_size = (self.global_config.ui.font_size + 1.0).min(24.0);
+                    self.save_config();
+                }
+                // Cmd+- 縮小字型
+                if i.key_pressed(egui::Key::Minus) {
+                    self.global_config.ui.font_size = (self.global_config.ui.font_size - 1.0).max(10.0);
+                    self.save_config();
+                }
+                // Cmd+0 重置字型大小
+                if i.key_pressed(egui::Key::Num0) {
+                    self.global_config.ui.font_size = 14.0;
+                    self.save_config();
                 }
             }
         });
@@ -3083,11 +3121,118 @@ impl MudApp {
                     SettingsTab::General => {
                         ui.heading("一般設定");
                         ui.add_space(10.0);
-                        
+
+                        // === 字型大小設定 ===
+                        ui.horizontal(|ui| {
+                            ui.label("字型大小:");
+                            let slider = egui::Slider::new(&mut self.global_config.ui.font_size, 10.0..=24.0)
+                                .step_by(1.0)
+                                .suffix(" px");
+                            if ui.add(slider).changed() {
+                                needs_save = true;
+                            }
+                            if ui.button("重置").clicked() {
+                                self.global_config.ui.font_size = 14.0;
+                                needs_save = true;
+                            }
+                        });
+                        ui.label(
+                            RichText::new("💡 也可使用 ⌘+/⌘- 快速調整，⌘0 重置")
+                                .small()
+                                .color(Color32::GRAY)
+                        );
+                        ui.add_space(5.0);
+
                         ui.checkbox(&mut session.auto_scroll, "自動捲動畫面");
                         ui.add_space(5.0);
-                        ui.label(format!("當前補齊字典大小: {} 個單字", session.screen_words.len()));
-                        ui.label("更多設定即將推出...");
+                        ui.label(format!("畫面單字字典: {} 個單字", session.screen_words.len()));
+                        ui.label(format!("指令字典: {} 個指令", session.command_dict.len()));
+
+                        ui.add_space(15.0);
+                        ui.separator();
+                        ui.add_space(5.0);
+
+                        // === 九宮格快捷鍵設定 ===
+                        ui.heading("九宮格快捷鍵");
+                        ui.add_space(5.0);
+
+                        let mut numpad_changed = false;
+                        if ui.checkbox(&mut self.global_config.numpad.enabled, "啟用九宮格行走模式").changed() {
+                            numpad_changed = true;
+                        }
+                        ui.label(
+                            RichText::new("⚠ 開啟後，數字鍵將直接發送指令而非輸入文字")
+                                .small()
+                                .color(Color32::YELLOW)
+                        );
+                        ui.add_space(8.0);
+
+                        // 九宮格排列的指令編輯
+                        egui::Grid::new("numpad_grid")
+                            .num_columns(3)
+                            .spacing([8.0, 4.0])
+                            .show(ui, |ui| {
+                                // Row 1: 7 8 9
+                                ui.horizontal(|ui| {
+                                    ui.label("7:");
+                                    if ui.add(TextEdit::singleline(&mut self.global_config.numpad.key_7).desired_width(80.0)).changed() { numpad_changed = true; }
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("8:");
+                                    if ui.add(TextEdit::singleline(&mut self.global_config.numpad.key_8).desired_width(80.0)).changed() { numpad_changed = true; }
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("9:");
+                                    if ui.add(TextEdit::singleline(&mut self.global_config.numpad.key_9).desired_width(80.0)).changed() { numpad_changed = true; }
+                                });
+                                ui.end_row();
+
+                                // Row 2: 4 5 6
+                                ui.horizontal(|ui| {
+                                    ui.label("4:");
+                                    if ui.add(TextEdit::singleline(&mut self.global_config.numpad.key_4).desired_width(80.0)).changed() { numpad_changed = true; }
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("5:");
+                                    if ui.add(TextEdit::singleline(&mut self.global_config.numpad.key_5).desired_width(80.0)).changed() { numpad_changed = true; }
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("6:");
+                                    if ui.add(TextEdit::singleline(&mut self.global_config.numpad.key_6).desired_width(80.0)).changed() { numpad_changed = true; }
+                                });
+                                ui.end_row();
+
+                                // Row 3: 1 2 3
+                                ui.horizontal(|ui| {
+                                    ui.label("1:");
+                                    if ui.add(TextEdit::singleline(&mut self.global_config.numpad.key_1).desired_width(80.0)).changed() { numpad_changed = true; }
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("2:");
+                                    if ui.add(TextEdit::singleline(&mut self.global_config.numpad.key_2).desired_width(80.0)).changed() { numpad_changed = true; }
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("3:");
+                                    if ui.add(TextEdit::singleline(&mut self.global_config.numpad.key_3).desired_width(80.0)).changed() { numpad_changed = true; }
+                                });
+                                ui.end_row();
+
+                                // Row 4: 0 . (empty)
+                                ui.horizontal(|ui| {
+                                    ui.label("0:");
+                                    if ui.add(TextEdit::singleline(&mut self.global_config.numpad.key_0).desired_width(80.0)).changed() { numpad_changed = true; }
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label(".:");
+                                    if ui.add(TextEdit::singleline(&mut self.global_config.numpad.key_dot).desired_width(80.0)).changed() { numpad_changed = true; }
+                                });
+                                ui.label(""); // placeholder
+                                ui.end_row();
+                            });
+
+                        if numpad_changed {
+                            needs_save = true;
+                        }
                     }
                 }
                 
@@ -3108,7 +3253,89 @@ impl MudApp {
 }
 
 impl eframe::App for MudApp {
+    /// 攔截原始輸入：九宮格行走模式
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if !self.global_config.numpad.enabled {
+            return;
+        }
+
+        // 收集要攔截的方向指令，同時標記要移除的事件索引
+        let mut commands_to_send: Vec<String> = Vec::new();
+        let mut keys_to_remove: Vec<egui::Key> = Vec::new();
+        let mut texts_to_remove: Vec<String> = Vec::new();
+
+        for event in raw_input.events.iter() {
+            if let egui::Event::Key { key, pressed: true, modifiers, .. } = event {
+                // 只攔截無修飾鍵的按鍵（避免干擾 Cmd+1~9 分頁切換等）
+                if modifiers.alt || modifiers.command || modifiers.mac_cmd || modifiers.ctrl {
+                    continue;
+                }
+                // Key → numpad index (0-9 for digits, 10 for period)
+                let index = match key {
+                    egui::Key::Num0 => Some(0u8),
+                    egui::Key::Num1 => Some(1),
+                    egui::Key::Num2 => Some(2),
+                    egui::Key::Num3 => Some(3),
+                    egui::Key::Num4 => Some(4),
+                    egui::Key::Num5 => Some(5),
+                    egui::Key::Num6 => Some(6),
+                    egui::Key::Num7 => Some(7),
+                    egui::Key::Num8 => Some(8),
+                    egui::Key::Num9 => Some(9),
+                    egui::Key::Period => Some(10),
+                    _ => None,
+                };
+                if let Some(idx) = index {
+                    if let Some(cmd) = self.global_config.numpad.command_for_index(idx) {
+                        commands_to_send.push(cmd.to_string());
+                        keys_to_remove.push(*key);
+                        // 數字鍵同時會產生 Text 事件，需要一併移除
+                        let text_char = if idx <= 9 {
+                            std::char::from_digit(idx as u32, 10).map(|c| c.to_string())
+                        } else {
+                            Some(".".to_string())
+                        };
+                        if let Some(tc) = text_char {
+                            texts_to_remove.push(tc);
+                        }
+                    }
+                }
+            }
+        }
+
+        if !commands_to_send.is_empty() {
+            // 移除被九宮格攔截的 Key 和 Text 事件
+            raw_input.events.retain(|event| {
+                match event {
+                    egui::Event::Key { key, pressed: true, modifiers, .. } => {
+                        if modifiers.alt || modifiers.command || modifiers.mac_cmd || modifiers.ctrl {
+                            true // 有修飾鍵的按鍵不移除
+                        } else {
+                            !keys_to_remove.contains(key)
+                        }
+                    }
+                    egui::Event::Text(text) => {
+                        !texts_to_remove.contains(text)
+                    }
+                    _ => true,
+                }
+            });
+
+            self.pending_numpad_commands.extend(commands_to_send);
+        }
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // === 0. 處理九宮格行走指令 ===
+        if !self.pending_numpad_commands.is_empty() {
+            let commands: Vec<String> = self.pending_numpad_commands.drain(..).collect();
+            if let Some(session) = self.session_manager.active_session_mut() {
+                for cmd in commands {
+                    Self::send_direction_for_session(session, &cmd);
+                }
+            }
+        }
+
         // === 1. 背景邏輯處理 ===
         
         // 檢查自動重連
@@ -3281,7 +3508,20 @@ impl eframe::App for MudApp {
                 if ui.button("F1 說明").clicked() {}
                 if ui.button("F2 別名").clicked() { pending_action = Some(PendingAction::ToggleSettings); }
                 if ui.button("F3 觸發").clicked() { pending_action = Some(PendingAction::ToggleSettings); }
-                
+
+                ui.separator();
+
+                // 九宮格行走模式切換
+                let numpad_label = if self.global_config.numpad.enabled {
+                    RichText::new("🎮 九宮格 ON").color(Color32::GREEN)
+                } else {
+                    RichText::new("🎮 九宮格").color(Color32::GRAY)
+                };
+                if ui.button(numpad_label).on_hover_text("切換九宮格行走模式").clicked() {
+                    self.global_config.numpad.enabled = !self.global_config.numpad.enabled;
+                    let _ = self.global_config.save();
+                }
+
                 ui.separator();
                 // 分頁列
                 if self.session_manager.len() > 0 {
@@ -3325,7 +3565,7 @@ impl eframe::App for MudApp {
             egui::TopBottomPanel::bottom("input_panel").show(ctx, |ui| {
                 if let Some(session) = self.session_manager.get_mut(id) {
                     ui.add_space(5.0);
-                    Self::render_input_area(ui, session, any_popup_open);
+                    Self::render_input_area(ui, session, any_popup_open, self.global_config.ui.font_size);
                     ui.add_space(5.0);
                 }
             });
@@ -3333,7 +3573,7 @@ impl eframe::App for MudApp {
             // === 中央：訊息區 ===
             egui::CentralPanel::default().show(ctx, |ui| {
                 if let Some(session) = self.session_manager.get_mut(id) {
-                    Self::render_message_area(ui, session, &active_window_id);
+                    Self::render_message_area(ui, session, &active_window_id, self.global_config.ui.font_size);
                 }
             });
 

@@ -31,8 +31,8 @@ description: 初始化專案文檔結構
     * 路徑: `docs/Env.md`
     * 內容: 環境變數詳細說明。
 
-8. **建立 CHANGELOG.md**
-    * 路徑: `CHANGELOG.md`（根目錄）
+8. **建立 ChangeLog.md**
+    * 路徑: `docs/ChangeLog.md`
     * 內容: 版本變更記錄 (格式參照 `commit.md` 規則)。
 
 9. **建立 TestAccounts.md**

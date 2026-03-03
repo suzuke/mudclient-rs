@@ -1,0 +1,114 @@
+version: 1
+workflows:
+  - id: adr
+    version: 1.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/workflows
+    spec: adr.md
+  - id: changelog
+    version: 1.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/workflows
+    spec: changelog.md
+  - id: chrome-extension
+    version: 1.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/workflows
+    spec: chrome-extension.md
+  - id: commit
+    version: 1.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/workflows
+    spec: commit.md
+  - id: db-migrate
+    version: 1.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/workflows
+    spec: db-migrate.md
+  - id: deploy
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/workflows
+    spec: deploy.md
+  - id: index-refresh
+    version: 0.1.0
+    risk: low
+    source: embedded
+    base_root: <embedded>
+    base_path: ''
+    spec: <embedded>
+  - id: init-docs
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/workflows
+    spec: init-docs.md
+  - id: pr_review
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/workflows
+    spec: pr_review.md
+  - id: publish-extension
+    version: 1.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/workflows
+    spec: publish-extension.md
+  - id: regression-guard
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/workflows
+    spec: regression-guard.md
+  - id: release
+    version: 1.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/workflows
+    spec: release.md
+  - id: skill-acquisition
+    version: 1.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/workflows
+    spec: skill-acquisition.md
+  - id: testing
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/workflows
+    spec: testing.md
+  - id: ux-audit
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/workflows
+    spec: ux-audit.md
+  - id: UxSoul-scan
+    version: 0.0.0
+    risk: medium
+    source: repo
+    base_root: /Users/suzuke/Documents/Hack/mudclient-rs
+    base_path: .agent/workflows
+    spec: UxSoul-scan.md

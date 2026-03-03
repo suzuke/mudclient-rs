@@ -1,78 +1,6 @@
 [
   {
-    "timestamp": 1772349162123,
-    "issues": [],
-    "summary": {
-      "totalIssues": 0,
-      "todoCount": 0,
-      "durationMs": 89
-    }
-  },
-  {
-    "timestamp": 1772349161485,
-    "issues": [],
-    "summary": {
-      "totalIssues": 0,
-      "todoCount": 0,
-      "durationMs": 170
-    }
-  },
-  {
-    "timestamp": 1771749155916,
-    "issues": [],
-    "summary": {
-      "totalIssues": 0,
-      "todoCount": 0,
-      "durationMs": 69
-    }
-  },
-  {
-    "timestamp": 1771749155334,
-    "issues": [],
-    "summary": {
-      "totalIssues": 0,
-      "todoCount": 0,
-      "durationMs": 196
-    }
-  },
-  {
-    "timestamp": 1771652593172,
-    "issues": [],
-    "summary": {
-      "totalIssues": 0,
-      "todoCount": 0,
-      "durationMs": 180
-    }
-  },
-  {
-    "timestamp": 1771580656705,
-    "issues": [],
-    "summary": {
-      "totalIssues": 0,
-      "todoCount": 0,
-      "durationMs": 170
-    }
-  },
-  {
-    "timestamp": 1771548297404,
-    "issues": [],
-    "summary": {
-      "totalIssues": 0,
-      "todoCount": 0,
-      "durationMs": 99
-    }
-  },
-  {
-    "timestamp": 1771381029204,
-    "issues": [],
-    "summary": {
-      "totalIssues": 0,
-      "todoCount": 0,
-      "durationMs": 209
-    }
-  },
-  {
-    "timestamp": 1771318593323,
+    "timestamp": 1772411314233,
     "issues": [],
     "summary": {
       "totalIssues": 0,
@@ -81,12 +9,75 @@
     }
   },
   {
-    "timestamp": 1771318184414,
+    "timestamp": 1772411312752,
     "issues": [],
     "summary": {
       "totalIssues": 0,
       "todoCount": 0,
-      "durationMs": 154
+      "durationMs": 200
+    }
+  },
+  {
+    "timestamp": 1772377062023,
+    "issues": [],
+    "summary": {
+      "totalIssues": 0,
+      "todoCount": 0,
+      "durationMs": 317
+    }
+  },
+  {
+    "timestamp": 1772371556637,
+    "issues": [],
+    "summary": {
+      "totalIssues": 0,
+      "todoCount": 0,
+      "durationMs": 344
+    }
+  },
+  {
+    "timestamp": 1772371525767,
+    "issues": [],
+    "summary": {
+      "totalIssues": 0,
+      "todoCount": 0,
+      "durationMs": 76
+    }
+  },
+  {
+    "timestamp": 1772371525370,
+    "issues": [],
+    "summary": {
+      "totalIssues": 0,
+      "todoCount": 0,
+      "durationMs": 272
+    }
+  },
+  {
+    "timestamp": 1772371458185,
+    "issues": [],
+    "summary": {
+      "totalIssues": 0,
+      "todoCount": 0,
+      "durationMs": 403
+    }
+  },
+  {
+    "timestamp": 1772371367054,
+    "issues": [],
+    "summary": {
+      "totalIssues": 0,
+      "todoCount": 0,
+      "durationMs": 121
+    }
+  },
+  {
+    "timestamp": 1772371366243,
+    "issues": [],
+    "summary": {
+      "totalIssues": 0,
+      "todoCount": 0,
+      "durationMs": 152
     }
   }
 ]

@@ -7,6 +7,7 @@
 //!
 //! SessionManager 管理所有活躍的 Session，並提供分頁切換功能。
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Instant;
 use mudcore::{
@@ -26,6 +27,8 @@ use lazy_static::lazy_static;
 lazy_static! {
     static ref ANSI_STRIP_RE: regex::Regex = regex::Regex::new(r"\x1b\[[0-9;]*[mK]").unwrap();
     static ref MOB_BRACKET_RE: regex::Regex = regex::Regex::new(r"\(([^)]+)\)").unwrap();
+    /// Prompt 偵測：必須含有「數字/數字」樣式（如 hp2779/2779）
+    static ref PROMPT_STAT_RE: regex::Regex = regex::Regex::new(r"\d+/\d+").unwrap();
 }
 
 // ============================================================================
@@ -208,6 +211,9 @@ pub struct Session {
     
     /// 畫面單字字典（用於智慧補齊）
     pub screen_words: HashMap<String, WordMetadata>,
+
+    /// MUD 指令字典（自動學習）
+    pub command_dict: CommandDictionary,
     
     /// 是否正在接收房間敘述
     #[allow(dead_code)]
@@ -255,13 +261,140 @@ pub struct Session {
     pub api_state: SharedApiState,
 }
 
+/// 單字來源類型
+#[derive(Debug, Clone, PartialEq)]
+pub enum WordSource {
+    /// 括號內或斜線後的 Mob/NPC/玩家 ID
+    MobId,
+    /// 房間敘述中的英文單字
+    RoomDescription,
+    /// 一般畫面單字
+    ScreenText,
+}
+
+impl WordSource {
+    /// 排序優先級（數字越小越優先）
+    pub fn priority(&self) -> u8 {
+        match self {
+            WordSource::MobId => 0,
+            WordSource::RoomDescription => 1,
+            WordSource::ScreenText => 2,
+        }
+    }
+}
+
 /// 畫面單字的中繼資料
 #[derive(Debug, Clone)]
 pub struct WordMetadata {
     /// 最後一次出現的時間
     pub last_seen: Instant,
-    /// 是否為 Mob/NPC 名稱
-    pub is_mob: bool,
+    /// 單字來源分類
+    pub source: WordSource,
+}
+
+/// MUD 指令字典（自動學習 + 內建種子）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandDictionary {
+    /// 指令 -> 使用次數
+    commands: HashMap<String, u32>,
+}
+
+impl CommandDictionary {
+    /// 建立新字典並填入內建種子指令
+    pub fn new() -> Self {
+        let mut dict = Self {
+            commands: HashMap::new(),
+        };
+        dict.load_seeds();
+        dict
+    }
+
+    /// 內建種子指令（初始使用次數 = 0，作為基底候選）
+    fn load_seeds(&mut self) {
+        let seeds = [
+            // 基本動作
+            "look", "inventory", "score", "who", "say", "tell", "chat", "shout", "whisper",
+            // 移動
+            "north", "south", "east", "west", "up", "down",
+            "northeast", "northwest", "southeast", "southwest",
+            "enter", "leave", "recall", "follow",
+            // 戰鬥
+            "kill", "attack", "cast", "flee", "wimpy",
+            // 物品
+            "get", "drop", "put", "give", "wear", "remove", "wield", "unwield", "eat", "drink",
+            // 資訊
+            "help", "stat", "skills", "spells", "affects", "equipment", "examine",
+            // 社交
+            "bow", "smile", "laugh", "nod", "wave", "emote",
+        ];
+        for seed in seeds {
+            self.commands.entry(seed.to_string()).or_insert(0);
+        }
+    }
+
+    /// 記錄使用者輸入的指令（取第一個單字）
+    pub fn record(&mut self, input: &str) {
+        let cmd = input.split_whitespace().next().unwrap_or("").to_lowercase();
+        if cmd.is_empty() || cmd.len() < 2 {
+            return;
+        }
+        // 排除純數字和特殊字元開頭
+        if cmd.chars().all(|c| c.is_ascii_digit()) {
+            return;
+        }
+        let counter = self.commands.entry(cmd).or_insert(0);
+        *counter = counter.saturating_add(1);
+    }
+
+    /// 回傳符合前綴的指令，依使用次數降序排列
+    pub fn matches(&self, prefix: &str) -> Vec<String> {
+        let prefix_lower = prefix.to_lowercase();
+        let mut results: Vec<_> = self.commands.iter()
+            .filter(|(cmd, _)| cmd.starts_with(&prefix_lower))
+            .collect();
+        // 依使用次數降序，同次數按字母排序
+        results.sort_by(|(a_cmd, a_count), (b_cmd, b_count)| {
+            b_count.cmp(a_count)
+                .then_with(|| a_cmd.cmp(b_cmd))
+        });
+        results.into_iter().map(|(cmd, _)| cmd.clone()).collect()
+    }
+
+    /// 從 JSON 檔案載入
+    pub fn load(path: &std::path::Path) -> Self {
+        if path.exists() {
+            if let Ok(content) = std::fs::read_to_string(path) {
+                if let Ok(mut dict) = serde_json::from_str::<CommandDictionary>(&content) {
+                    // 確保種子指令存在（新版可能新增了種子）
+                    dict.load_seeds();
+                    return dict;
+                }
+            }
+        }
+        Self::new()
+    }
+
+    /// 儲存到 JSON 檔案
+    pub fn save(&self, path: &std::path::Path) {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match serde_json::to_string_pretty(self) {
+            Ok(content) => {
+                if let Err(e) = std::fs::write(path, content) {
+                    tracing::error!("Failed to save command dictionary: {}", e);
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to serialize command dictionary: {}", e);
+            }
+        }
+    }
+
+    /// 字典中的指令數量
+    pub fn len(&self) -> usize {
+        self.commands.len()
+    }
 }
 
 impl Session {
@@ -338,6 +471,7 @@ impl Session {
             tab_completed: false,
             last_completed_input: None,
             screen_words: HashMap::new(),
+            command_dict: CommandDictionary::load(std::path::Path::new("data/command_dict.json")),
             in_room_description: false,
             auto_scroll: true,
             scroll_to_bottom_on_next_frame: false,
@@ -883,7 +1017,7 @@ impl Session {
         // [穩定化] 先更新 Server Buffer 與 Room ID，確保 Lua Hook 能取得最新 Room ID
         if !is_echo && !text.trim().is_empty() && !text.starts_with(">>>") {
             let clean_lower_pre = clean_text.to_lowercase();
-            let is_prompt_pre = clean_lower_pre.starts_with('(') && clean_lower_pre.contains('/') && clean_lower_pre.contains(')');
+            let is_prompt_pre = clean_lower_pre.trim().starts_with('(') && clean_lower_pre.contains(')') && PROMPT_STAT_RE.is_match(&clean_lower_pre);
             if !is_prompt_pre {
                 if self.server_buffer.len() >= 20 {
                     self.server_buffer.pop_front();
@@ -980,10 +1114,11 @@ impl Session {
         // clean_text 已經在開頭計算過了
 
         let clean_lower = clean_text.to_lowercase();
-        // 優化提示字元偵測：不分大小寫
-        // 1. 標準 Prompt: (hp.../...)
-        // 2. 純數值 Prompt: (123/123 456/456 ...)
-        let is_prompt = clean_lower.starts_with('(') && clean_lower.contains('/') && clean_lower.contains(')');
+        // 優化提示字元偵測：不分大小寫，先 trim 避免前導空白/CR 干擾
+        // 必須同時滿足：1) 以 ( 開頭 2) 含 ) 3) 含有「數字/數字」樣式
+        // 這樣可以正確區分 prompt 與物品行如 (閃爍) .../Silver Bow
+        let trimmed_lower = clean_lower.trim();
+        let is_prompt = trimmed_lower.starts_with('(') && trimmed_lower.contains(')') && PROMPT_STAT_RE.is_match(trimmed_lower);
 
         // 如果是房間敘述，且非出口行、非 Prompt、非 Echo，則進行標點轉換
         let is_exit_line = clean_text.contains("[出口:");
@@ -1078,42 +1213,63 @@ impl Session {
         // 只要包含斜線且周圍有文字，很可能是 "中文名稱/English ID" 的格式
         let is_slash_line = clean_text.contains('/') && clean_text.len() > 5;
 
-        // 如果符合任一條件，提取單字
-        if has_mob_brackets || self.in_room_description || is_exit_line || is_slash_line {
+        // 從所有非 prompt、非 echo 的伺服器訊息中提取英文單字
+        if !is_prompt && !is_echo {
             let now = Instant::now();
             
-            // 1. 提取括號內的內容 (優先級高)
-            for cap in MOB_BRACKET_RE.captures_iter(&clean_text) {
-                let content = &cap[1];
-                for word in content.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-') {
-                    if word.len() >= 2 && word.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
-                        self.screen_words.insert(word.to_string(), WordMetadata {
-                            last_seen: now,
-                            is_mob: true,
-                        });
+            // 1. 特殊提取：括號內的內容 → MobId（優先級最高）
+            if has_mob_brackets {
+                for cap in MOB_BRACKET_RE.captures_iter(&clean_text) {
+                    let content = &cap[1];
+                    for word in content.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-') {
+                        if word.len() >= 2
+                            && word.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+                            && !word.chars().all(|c| c.is_ascii_digit())
+                            && !is_stat_word(word)
+                        {
+                            self.screen_words.insert(word.to_string(), WordMetadata {
+                                last_seen: now,
+                                source: WordSource::MobId,
+                            });
+                        }
                     }
                 }
             }
 
-            // 2. 提取斜線後的內容 (針對 "中文/ID" 格式)
-            if let Some(slash_idx) = clean_text.rfind('/') {
-                let after_slash = &clean_text[slash_idx+1..];
-                for word in after_slash.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-') {
-                    if word.len() >= 2 && word.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
-                        self.screen_words.insert(word.to_string(), WordMetadata {
-                            last_seen: now,
-                            is_mob: true, // 假設斜線後通常是 ID
-                        });
+            // 2. 特殊提取：斜線後的內容 → MobId（針對 "中文/ID" 格式）
+            if is_slash_line {
+                if let Some(slash_idx) = clean_text.rfind('/') {
+                    let after_slash = &clean_text[slash_idx+1..];
+                    for word in after_slash.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-') {
+                        if word.len() >= 2
+                            && word.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+                            && !word.chars().all(|c| c.is_ascii_digit())
+                            && !is_stat_word(word)
+                        {
+                            self.screen_words.insert(word.to_string(), WordMetadata {
+                                last_seen: now,
+                                source: WordSource::MobId,
+                            });
+                        }
                     }
                 }
             }
 
-            // 3. 提取整行所有英文單字 (通用兜底)
+            // 3. 通用提取：整行所有英文單字
+            let source = if self.in_room_description {
+                WordSource::RoomDescription
+            } else {
+                WordSource::ScreenText
+            };
             for word in clean_text.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-') {
-                if word.len() >= 2 && word.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+                if word.len() >= 2
+                    && word.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+                    && !word.chars().all(|c| c.is_ascii_digit())
+                    && !is_stat_word(word)
+                {
                     let entry = self.screen_words.entry(word.to_string()).or_insert(WordMetadata {
                         last_seen: now,
-                        is_mob: false,
+                        source: source.clone(),
                     });
                     entry.last_seen = now;
                 }
@@ -1453,6 +1609,11 @@ impl Session {
             }
         }
 
+        // 記錄使用者指令到字典（排除客戶端指令）
+        if !input.starts_with('#') && !input.starts_with('/') {
+            self.command_dict.record(&input);
+        }
+
         // 標準指令處理 (本地回顯 + 發送)
         // 改進回顯格式：緊隨 Prompt 且使用明顯前綴，並透過 handle_text 觸發狀態機
         self.handle_text(&format!("> {}\n", input), true);
@@ -1718,6 +1879,21 @@ fn clean_pattern_string(pattern: &str) -> String {
     s.to_string()
 }
 
+/// 判斷單字是否為 Prompt 中的 stat 縮寫+數字模式
+/// 例如: "hp2779", "ma67", "v1364", "p311"
+/// 規則: 1~3 個字母開頭 + 純數字結尾
+fn is_stat_word(word: &str) -> bool {
+    if word.len() < 2 {
+        return false;
+    }
+    let letter_count = word.chars().take_while(|c| c.is_ascii_alphabetic()).count();
+    if letter_count == 0 || letter_count > 3 {
+        return false; // 沒有字母前綴，或前綴超過 3 字母（可能是正常單字如 "guard2"）
+    }
+    let rest = &word[letter_count..];
+    !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())
+}
+
 // ============================================================================
 // 測試
 // ============================================================================
@@ -1787,5 +1963,100 @@ mod tests {
         // 驗證兩個 session 有獨立的 API state
         let sessions = api_mgr.list_sessions();
         assert_eq!(sessions.len(), 2);
+    }
+
+    #[test]
+    fn test_command_dictionary_record_and_match() {
+        let mut dict = CommandDictionary::new();
+        
+        // 記錄一些指令
+        dict.record("kill warrior");
+        dict.record("kill goblin");
+        dict.record("kill warrior");
+        dict.record("kick someone");
+        
+        // 查詢 "ki" 前綴
+        let results = dict.matches("ki");
+        assert!(results.contains(&"kill".to_string()));
+        assert!(results.contains(&"kick".to_string()));
+        // kill 使用次數 = 2，應排在 kick (1) 前面
+        assert_eq!(results[0], "kill");
+    }
+
+    #[test]
+    fn test_command_dictionary_seeds() {
+        let dict = CommandDictionary::new();
+        
+        // 種子指令應存在
+        let results = dict.matches("loo");
+        assert!(results.contains(&"look".to_string()));
+        
+        let results = dict.matches("ki");
+        assert!(results.contains(&"kill".to_string()));
+        
+        let results = dict.matches("inv");
+        assert!(results.contains(&"inventory".to_string()));
+    }
+
+    #[test]
+    fn test_command_dictionary_excludes_pure_digits() {
+        let mut dict = CommandDictionary::new();
+        dict.record("123");
+        dict.record("n");  // 太短，長度 < 2
+        
+        // 純數字和太短的不該被記錄
+        assert!(dict.matches("123").is_empty());
+        assert!(dict.matches("n").iter().all(|c| c != "n"));
+    }
+
+    #[test]
+    fn test_command_dictionary_persistence() {
+        let tmp_path = std::path::Path::new("/tmp/test_cmd_dict.json");
+        
+        // 建立並記錄
+        let mut dict = CommandDictionary::new();
+        dict.record("mycommand arg1");
+        dict.record("mycommand arg2");
+        dict.save(tmp_path);
+        
+        // 重新載入
+        let loaded = CommandDictionary::load(tmp_path);
+        let results = loaded.matches("myc");
+        assert!(results.contains(&"mycommand".to_string()));
+        
+        // 清理
+        let _ = std::fs::remove_file(tmp_path);
+    }
+
+    #[test]
+    fn test_word_source_priority() {
+        assert!(WordSource::MobId.priority() < WordSource::RoomDescription.priority());
+        assert!(WordSource::RoomDescription.priority() < WordSource::ScreenText.priority());
+    }
+
+    #[test]
+    fn test_word_metadata_with_source() {
+        let meta = WordMetadata {
+            last_seen: Instant::now(),
+            source: WordSource::MobId,
+        };
+        assert_eq!(meta.source, WordSource::MobId);
+    }
+
+    #[test]
+    fn test_is_stat_word() {
+        // Prompt stat 樣式（應排除）
+        assert!(is_stat_word("hp2779"));
+        assert!(is_stat_word("ma67"));
+        assert!(is_stat_word("v1364"));
+        assert!(is_stat_word("p311"));
+        assert!(is_stat_word("sp50"));
+        
+        // 正常 MUD 單字（不應排除）
+        assert!(!is_stat_word("warrior"));      // 純字母
+        assert!(!is_stat_word("guard2"));        // 4 字母前綴 > 3
+        assert!(!is_stat_word("necklace"));      // 純字母
+        assert!(!is_stat_word("12345"));         // 純數字（由其他過濾處理）
+        assert!(!is_stat_word("a"));             // 太短
     }
 }

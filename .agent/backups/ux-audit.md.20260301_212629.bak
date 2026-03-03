@@ -20,8 +20,9 @@ description: 如何進行 UX 審計與文件更新
 ## 3. 更新文件 (Update Documentation)
 - **若修正現有行為**：直接修改 `docs/UX-Flows.md` 對應段落。
 - **若新增功能**：
-  1. 在 `docs/UX-Flows.md` 中新增對應區塊。
-  2. 填寫新功能的觸發條件與互動邏輯。
+  1. 複製 `.agent/templates/UX-FLOW.md` 內容。
+  2. 填寫新功能的觸發與邏輯。
+  3. 將其 append 到 `docs/UX-Flows.md` 的適當區塊。
 
 ## 4. 交付檢查 (Delivery Check)
 在 Pull Request 或 Commit Message 中標註：

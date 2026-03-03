@@ -1,0 +1,13 @@
+[
+  {
+    "timestamp": 1772371594303,
+    "mode": "quick",
+    "budget": 2000,
+    "finalEstimatedTokens": 800,
+    "rawEstimatedTokens": 1990,
+    "savedTokens": 1190,
+    "savedPercent": 59.8,
+    "truncated": false,
+    "criticalTrim": false
+  }
+]

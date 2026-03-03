@@ -146,6 +146,9 @@ jobs:
           output-file: 'CHANGELOG.md'
 ```
 
+---
+
+## 範例 CHANGELOG.md
 
 ```markdown
 # Changelog

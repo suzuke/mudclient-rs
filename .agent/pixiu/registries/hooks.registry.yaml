@@ -1,0 +1,5 @@
+version: 1
+hooks:
+  - event: onRepoOpen
+    workflow_id: index-refresh
+    debounce_ms: 1500
