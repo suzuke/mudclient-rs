@@ -44,6 +44,7 @@ pub struct MudApp {
     // === 別名編輯狀態 ===
     show_alias_window: bool,
     editing_alias_name: Option<String>,
+    alias_edit_name: String,
     alias_edit_pattern: String,
     alias_edit_replacement: String,
     alias_edit_category: String,
@@ -58,7 +59,12 @@ pub struct MudApp {
     trigger_edit_action: String,
     trigger_edit_category: String,
     trigger_edit_is_script: bool,
+    trigger_edit_pattern_type: String,
     trigger_search_text: String,
+
+    // === 刪除確認狀態 ===
+    pending_alias_delete: Option<String>,
+    pending_trigger_delete: Option<String>,
 
     // === 路徑編輯狀態 ===
     show_path_window: bool,
@@ -94,6 +100,9 @@ pub struct MudApp {
 
     /// API 狀態管理器（每個 Session 獨立的 API 狀態）
     api_state_mgr: ApiStateManager,
+
+    /// 地圖渲染器
+    map_renderer: crate::mapper::MapRenderer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,6 +127,7 @@ enum SidePanelTab {
     Tools,
     Guide,
     Notes,
+    Map,
 }
 
 /// 發送給網路執行緒的命令
@@ -157,6 +167,7 @@ impl MudApp {
             active_window_id: "main".to_string(),
             show_alias_window: false,
             editing_alias_name: None,
+            alias_edit_name: String::new(),
             alias_edit_pattern: String::new(),
             alias_edit_replacement: String::new(),
             alias_edit_category: String::new(),
@@ -168,6 +179,9 @@ impl MudApp {
             trigger_edit_action: String::new(),
             trigger_edit_category: String::new(),
             trigger_edit_is_script: false,
+            trigger_edit_pattern_type: "auto".to_string(),
+            pending_alias_delete: None,
+            pending_trigger_delete: None,
             
             // 路徑狀態
             show_path_window: false,
@@ -197,6 +211,8 @@ impl MudApp {
             active_guide_name: None,
 
             api_state_mgr,
+
+            map_renderer: crate::mapper::MapRenderer::default(),
         }
     }
 
@@ -262,6 +278,12 @@ impl MudApp {
                      });
 
                      if !is_global_identical {
+                         let pattern_type = match &t.pattern {
+                             TriggerPattern::Contains(_) => Some("contains".to_string()),
+                             TriggerPattern::StartsWith(_) => Some("startswith".to_string()),
+                             TriggerPattern::EndsWith(_) => Some("endswith".to_string()),
+                             TriggerPattern::Regex(_) => Some("regex".to_string()),
+                         };
                          new_triggers.push(crate::config::TriggerConfig {
                              name: t.name.clone(),
                              pattern: pat_str,
@@ -269,6 +291,7 @@ impl MudApp {
                              category: t.category.clone(),
                              is_script,
                              enabled: t.enabled,
+                             pattern_type,
                          });
                      }
                  }
@@ -369,14 +392,20 @@ impl MudApp {
     }
 
     /// 從 Profile 設定建立 Trigger
-    fn create_trigger_from_profile_config(config: &TriggerConfig) -> Option<Trigger> {        
-        // 建立 Pattern
-        let pattern = TriggerPattern::Regex(config.pattern.clone());
-        
+    fn create_trigger_from_profile_config(config: &TriggerConfig) -> Option<Trigger> {
+        // 根據 pattern_type 決定匹配類型
+        let pattern = match config.pattern_type.as_deref() {
+            Some("contains") => TriggerPattern::Contains(config.pattern.clone()),
+            Some("startswith") => TriggerPattern::StartsWith(config.pattern.clone()),
+            Some("endswith") => TriggerPattern::EndsWith(config.pattern.clone()),
+            // 預設 Regex（向後相容）
+            _ => TriggerPattern::Regex(config.pattern.clone()),
+        };
+
         // 建立 Trigger
         let mut trigger = Trigger::new(config.name.clone(), pattern);
         trigger.enabled = config.enabled;
-        
+
         // 根據 is_script 判斷 action 類型
         let action = if config.is_script {
             TriggerAction::ExecuteScript(config.action.clone())
@@ -384,7 +413,7 @@ impl MudApp {
             TriggerAction::SendCommand(config.action.clone())
         };
         trigger.actions.push(action);
-        
+
         Some(trigger)
     }
 
@@ -717,7 +746,7 @@ impl MudApp {
                                     session.connected_at = None;
                                     if session.auto_reconnect {
                                         use std::time::Duration;
-                                        session.reconnect_delay_until = Some(Instant::now() + Duration::from_secs(3));
+                                        session.reconnect_delay_until = Some(Instant::now() + Duration::from_secs(self.global_config.ui.reconnect_delay_secs));
                                         session.status = SessionStatus::Reconnecting;
                                         if let Ok(mut api) = session.api_state.lock() {
                                             api.connection_status = "reconnecting".to_string();
@@ -1153,6 +1182,7 @@ impl MudApp {
         session_opt: Option<&mut crate::session::Session>,
         global_config_opt: Option<&mut GlobalConfig>,
         editing_alias_name: &mut Option<String>,
+        alias_edit_name: &mut String,
         alias_edit_pattern: &mut String,
         alias_edit_replacement: &mut String,
         alias_edit_category: &mut String,
@@ -1162,11 +1192,18 @@ impl MudApp {
     ) {
         egui::Window::new(if editing_alias_name.as_ref().map_or(true, |n| n.is_empty()) { "➕ 新增別名" } else { "✏️ 編輯別名" })
             .collapsible(false)
-            .resizable(false)
+            .resizable(true)
+            .default_width(450.0)
+            .min_width(350.0)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
+                    ui.label("名稱:");
+                    ui.add(TextEdit::singleline(alias_edit_name).desired_width(f32::INFINITY));
+                });
+
+                ui.horizontal(|ui| {
                     ui.label("觸發詞:");
-                    ui.text_edit_singleline(alias_edit_pattern);
+                    ui.add(TextEdit::singleline(alias_edit_pattern).desired_width(f32::INFINITY));
                 });
 
                 ui.horizontal(|ui| {
@@ -1181,9 +1218,9 @@ impl MudApp {
                 ui.horizontal(|ui| {
                     ui.label(if *alias_edit_is_script { "Lua 腳本:" } else { "替換為:" });
                     if *alias_edit_is_script {
-                        ui.text_edit_multiline(alias_edit_replacement);
+                        ui.add(TextEdit::multiline(alias_edit_replacement).desired_rows(8).desired_width(f32::INFINITY));
                     } else {
-                        ui.text_edit_singleline(alias_edit_replacement);
+                        ui.add(TextEdit::singleline(alias_edit_replacement).desired_width(f32::INFINITY));
                     }
                 });
 
@@ -1233,6 +1270,13 @@ impl MudApp {
                 ui.horizontal(|ui| {
                     if ui.button("💾 儲存").clicked() {
                         if !alias_edit_pattern.is_empty() {
+                            // 名稱空白時 fallback 用 pattern
+                            let final_name = if alias_edit_name.is_empty() {
+                                alias_edit_pattern.clone()
+                            } else {
+                                alias_edit_name.clone()
+                            };
+
                             if let Some(session) = session_opt {
                                 // 如果是編輯模式，先刪除舊的
                                 if let Some(ref old_name) = editing_alias_name {
@@ -1242,7 +1286,7 @@ impl MudApp {
                                 }
                                 // 新增別名
                                 let mut alias = Alias::new(
-                                    alias_edit_pattern.clone(),
+                                    final_name,
                                     alias_edit_pattern.clone(),
                                     alias_edit_replacement.clone(),
                                 );
@@ -1254,21 +1298,15 @@ impl MudApp {
                                 *needs_save_flag = true;
                             } else if let Some(global) = global_config_opt {
                                 // Global Config Logic
-                                let name = if let Some(ref old_name) = editing_alias_name {
+                                if let Some(ref old_name) = editing_alias_name {
                                     if !old_name.is_empty() {
-                                        // Remove old
                                         global.global_aliases.retain(|a| &a.name != old_name);
-                                        old_name.clone()
-                                    } else {
-                                        alias_edit_pattern.clone()
                                     }
-                                } else {
-                                    alias_edit_pattern.clone()
-                                };
-                                
+                                }
+
                                 // Push new
                                 global.global_aliases.push(crate::config::AliasConfig {
-                                    name,
+                                    name: final_name,
                                     pattern: alias_edit_pattern.clone(),
                                     replacement: alias_edit_replacement.clone(),
                                     category: if alias_edit_category.is_empty() { None } else { Some(alias_edit_category.clone()) },
@@ -1299,25 +1337,48 @@ impl MudApp {
         trigger_edit_action: &mut String,
         trigger_edit_category: &mut String,
         trigger_edit_is_script: &mut bool,
+        trigger_edit_pattern_type: &mut String,
         show_trigger_window: &mut bool,
         needs_save_flag: &mut bool,
     ) {
         egui::Window::new(if editing_trigger_name.as_ref().map_or(true, |n| n.is_empty()) { "➕ 新增觸發器" } else { "✏️ 編輯觸發器" })
             .collapsible(false)
-            .resizable(false)
+            .resizable(true)
+            .default_width(450.0)
+            .min_width(350.0)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label("名稱:");
-                    ui.text_edit_singleline(trigger_edit_name);
+                    ui.add(TextEdit::singleline(trigger_edit_name).desired_width(f32::INFINITY));
                 });
 
                 ui.horizontal(|ui| {
                     ui.label("匹配文字:");
-                    ui.text_edit_singleline(trigger_edit_pattern);
+                    ui.add(TextEdit::singleline(trigger_edit_pattern).desired_width(f32::INFINITY));
+                });
+
+                // 匹配類型選擇
+                ui.horizontal(|ui| {
+                    ui.label("匹配類型:");
+                    egui::ComboBox::from_id_salt("trigger_pattern_type")
+                        .selected_text(match trigger_edit_pattern_type.as_str() {
+                            "contains" => "包含 (Contains)",
+                            "startswith" => "開頭 (StartsWith)",
+                            "endswith" => "結尾 (EndsWith)",
+                            "regex" => "正則 (Regex)",
+                            _ => "自動偵測 (Auto)",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(trigger_edit_pattern_type, "auto".to_string(), "自動偵測 (Auto)");
+                            ui.selectable_value(trigger_edit_pattern_type, "contains".to_string(), "包含 (Contains)");
+                            ui.selectable_value(trigger_edit_pattern_type, "startswith".to_string(), "開頭 (StartsWith)");
+                            ui.selectable_value(trigger_edit_pattern_type, "endswith".to_string(), "結尾 (EndsWith)");
+                            ui.selectable_value(trigger_edit_pattern_type, "regex".to_string(), "正則 (Regex)");
+                        });
                 });
 
                 ui.add_space(5.0);
-                
+
                 // 1. Lua 選項上移
                 ui.horizontal(|ui| {
                     ui.checkbox(trigger_edit_is_script, "使用 Lua 腳本模式");
@@ -1332,9 +1393,9 @@ impl MudApp {
                 ui.horizontal(|ui| {
                     ui.label("執行內容:");
                     if *trigger_edit_is_script {
-                        ui.text_edit_multiline(trigger_edit_action);
+                        ui.add(TextEdit::multiline(trigger_edit_action).desired_rows(8).desired_width(f32::INFINITY));
                     } else {
-                        ui.text_edit_singleline(trigger_edit_action);
+                        ui.add(TextEdit::singleline(trigger_edit_action).desired_width(f32::INFINITY));
                     }
                 });
 
@@ -1389,6 +1450,35 @@ impl MudApp {
                 ui.horizontal(|ui| {
                     if ui.button("💾 儲存").clicked() {
                         if !trigger_edit_name.is_empty() && !trigger_edit_pattern.is_empty() {
+                            // 根據匹配類型建立 Pattern
+                            let pattern = match trigger_edit_pattern_type.as_str() {
+                                "contains" => TriggerPattern::Contains(trigger_edit_pattern.clone()),
+                                "startswith" => TriggerPattern::StartsWith(trigger_edit_pattern.clone()),
+                                "endswith" => TriggerPattern::EndsWith(trigger_edit_pattern.clone()),
+                                "regex" => TriggerPattern::Regex(trigger_edit_pattern.clone()),
+                                _ => {
+                                    // auto: 自動偵測
+                                    if trigger_edit_pattern.contains("(.+)")
+                                        || trigger_edit_pattern.contains("(.*)")
+                                        || trigger_edit_pattern.contains("\\d")
+                                        || trigger_edit_pattern.contains("[")
+                                        || trigger_edit_pattern.contains("$")
+                                        || trigger_edit_pattern.contains("^")
+                                        || trigger_edit_pattern.contains("|")
+                                        || trigger_edit_pattern.contains("?")
+                                    {
+                                        TriggerPattern::Regex(trigger_edit_pattern.clone())
+                                    } else {
+                                        TriggerPattern::Contains(trigger_edit_pattern.clone())
+                                    }
+                                }
+                            };
+                            let config_pattern_type = if trigger_edit_pattern_type == "auto" {
+                                None
+                            } else {
+                                Some(trigger_edit_pattern_type.clone())
+                            };
+
                             if let Some(session) = session_opt {
                                 // 如果是編輯模式，先刪除舊的
                                 if let Some(ref old_name) = editing_trigger_name {
@@ -1396,20 +1486,6 @@ impl MudApp {
                                         session.trigger_manager.remove(old_name);
                                     }
                                 }
-                                // 新增觸發器
-                                let pattern = if trigger_edit_pattern.contains("(.+)")
-                                    || trigger_edit_pattern.contains("(.*)")
-                                    || trigger_edit_pattern.contains("\\d")
-                                    || trigger_edit_pattern.contains("[")
-                                    || trigger_edit_pattern.contains("$")
-                                    || trigger_edit_pattern.contains("^")
-                                    || trigger_edit_pattern.contains("|")
-                                    || trigger_edit_pattern.contains("?")
-                                {
-                                    TriggerPattern::Regex(trigger_edit_pattern.clone())
-                                } else {
-                                    TriggerPattern::Contains(trigger_edit_pattern.clone())
-                                };
                                 let mut trigger = Trigger::new(
                                     trigger_edit_name.clone(),
                                     pattern,
@@ -1428,24 +1504,20 @@ impl MudApp {
                                 *needs_save_flag = true;
                             } else if let Some(global) = global_config_opt {
                                 // Global Config Logic
-                                let name = if let Some(ref old_name) = editing_trigger_name {
+                                if let Some(ref old_name) = editing_trigger_name {
                                     if !old_name.is_empty() {
                                         global.global_triggers.retain(|t| &t.name != old_name);
-                                        old_name.clone()
-                                    } else {
-                                        trigger_edit_name.clone()
                                     }
-                                } else {
-                                    trigger_edit_name.clone()
-                                };
-                                
+                                }
+
                                 global.global_triggers.push(crate::config::TriggerConfig {
-                                    name,
+                                    name: trigger_edit_name.clone(),
                                     pattern: trigger_edit_pattern.clone(),
                                     action: trigger_edit_action.clone(),
                                     category: if trigger_edit_category.is_empty() { None } else { Some(trigger_edit_category.clone()) },
                                     is_script: *trigger_edit_is_script,
                                     enabled: true,
+                                    pattern_type: config_pattern_type,
                                 });
                                 *needs_save_flag = true;
                             }
@@ -1569,6 +1641,7 @@ impl MudApp {
                     ui.selectable_value(&mut self.side_panel_tab, SidePanelTab::Tools, "🛠️ 工具");
                     ui.selectable_value(&mut self.side_panel_tab, SidePanelTab::Guide, "📖 攻略");
                     ui.selectable_value(&mut self.side_panel_tab, SidePanelTab::Notes, "📝 筆記");
+                    ui.selectable_value(&mut self.side_panel_tab, SidePanelTab::Map, "🗺️ 地圖");
                 });
                 ui.separator();
 
@@ -1582,6 +1655,9 @@ impl MudApp {
                     }
                     SidePanelTab::Notes => {
                         self.render_notes_tab(ui);
+                    }
+                    SidePanelTab::Map => {
+                        self.render_map_tab(ui);
                     }
                 }
             });
@@ -1734,6 +1810,42 @@ impl MudApp {
                  ui.label("請先連線以使用筆記功能");
              });
          }
+    }
+
+    /// 繪製地圖分頁
+    fn render_map_tab(&mut self, ui: &mut egui::Ui) {
+        // 自動載入地圖資料
+        if self.map_renderer.data.is_none() {
+            let path = std::path::Path::new("data/mapper_data.json");
+            if path.exists() {
+                if let Err(e) = self.map_renderer.load_from_file(path) {
+                    tracing::warn!("自動載入地圖失敗: {}", e);
+                }
+            }
+        }
+
+        // 從 active session 同步當前房間
+        let current_room_id = self.session_manager.active_session()
+            .and_then(|s| s.current_room.as_ref())
+            .map(|room| room.hash(true));
+        self.map_renderer.set_current_room(current_room_id);
+
+        // 渲染地圖，處理動作
+        if let Some(action) = self.map_renderer.render(ui) {
+            if let Some(session) = self.session_manager.active_session() {
+                if let Some(tx) = &session.command_tx {
+                    let cmd = match action {
+                        crate::mapper::MapAction::StartMapper => {
+                            r#"/lua require("modules.MudMapper"); mapper.start()"#.to_string()
+                        }
+                        crate::mapper::MapAction::Navigate(target) => {
+                            format!(r#"/lua if mapper then mapper.go("{}") else mud.echo("{{R請先啟動 MudMapper{{x}}") end"#, target)
+                        }
+                    };
+                    let _ = tx.try_send(crate::session::Command::Send(cmd));
+                }
+            }
+        }
     }
 
     /// 繪製輸入區
@@ -2052,7 +2164,7 @@ impl MudApp {
                 ui.horizontal(|ui| {
                     ui.heading("Profile 列表");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("➕ 新增 Profile").clicked() {
+                        if ui.button("➕ 新增").clicked() {
                             self.editing_profile_original_name = None;
                             self.profile_edit_name = String::new();
                             self.profile_edit_display_name = String::new();
@@ -2061,6 +2173,40 @@ impl MudApp {
                             self.profile_edit_username = String::new();
                             self.profile_edit_password = String::new();
                             self.show_profile_edit_window = true;
+                        }
+                        // 匯入 Profile
+                        if ui.button("📥 匯入").clicked() {
+                            let import_path = "profiles_export.json";
+                            match std::fs::read_to_string(import_path) {
+                                Ok(content) => {
+                                    if let Ok(profiles) = serde_json::from_str::<Vec<crate::config::Profile>>(&content) {
+                                        let mut imported = 0;
+                                        for profile in profiles {
+                                            if !self.profile_manager.exists(&profile.name) {
+                                                if self.profile_manager.save(profile).is_ok() {
+                                                    imported += 1;
+                                                }
+                                            }
+                                        }
+                                        tracing::info!("匯入了 {} 個 Profile", imported);
+                                    }
+                                }
+                                Err(_) => {
+                                    tracing::warn!("找不到 {}", import_path);
+                                }
+                            }
+                        }
+                        // 匯出所有 Profile
+                        if ui.button("📤 匯出").clicked() {
+                            let profiles: Vec<_> = self.profile_manager.list().to_vec();
+                            if let Ok(json) = serde_json::to_string_pretty(&profiles) {
+                                let export_path = "profiles_export.json";
+                                if let Err(e) = std::fs::write(export_path, &json) {
+                                    tracing::error!("匯出失敗: {}", e);
+                                } else {
+                                    tracing::info!("已匯出至 {}", export_path);
+                                }
+                            }
                         }
                     });
                 });
@@ -2074,21 +2220,39 @@ impl MudApp {
                     ui.label("尚無任何 Profile。");
                     ui.add_space(10.0);
                 } else {
-                    egui::ScrollArea::vertical().max_height(ui.available_height()).show(ui, |ui| {
+                    egui::ScrollArea::vertical().max_height(ui.available_height() - 80.0).show(ui, |ui| {
+                        let mut pending_disconnect_id = None;
                         for (name, display_name, host, port, username) in &profiles {
+                            // 檢查連線狀態
+                            let connected_session = self.session_manager.sessions().iter().find(|s| {
+                                &s.profile_name == name && matches!(s.status, crate::session::ConnectionStatus::Connected(_))
+                            });
+                            let is_connected = connected_session.is_some();
+                            let is_reconnecting = self.session_manager.sessions().iter().any(|s| {
+                                &s.profile_name == name && matches!(s.status, crate::session::ConnectionStatus::Reconnecting)
+                            });
+                            let status_icon = if is_connected { "🟢" } else if is_reconnecting { "🟡" } else { "⚪" };
+
                             ui.group(|ui| {
                                 ui.horizontal(|ui| {
                                     ui.vertical(|ui| {
-                                        ui.label(RichText::new(display_name).strong());
+                                        ui.label(RichText::new(format!("{} {}", status_icon, display_name)).strong());
                                         let user_info = if let Some(u) = username { format!(" | User: {}", u) } else { String::new() };
                                         ui.label(format!("{}:{}{}", host, port, user_info));
                                     });
-                                    
+
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        // 連線按鈕
-                                        if ui.button("🔌 連線").clicked() {
-                                            self.pending_connect_profile = Some(name.clone());
-                                            self.show_profile_window = false;
+                                        if is_connected {
+                                            if ui.button("🔌 斷開").clicked() {
+                                                if let Some(s) = connected_session {
+                                                    pending_disconnect_id = Some(s.id);
+                                                }
+                                            }
+                                        } else {
+                                            if ui.button("🔌 連線").clicked() {
+                                                self.pending_connect_profile = Some(name.clone());
+                                                self.show_profile_window = false;
+                                            }
                                         }
                                         
                                         // 更多操作選單
@@ -2108,7 +2272,13 @@ impl MudApp {
                                             }
                                             
                                             if ui.button("📋 複製").clicked() {
-                                                let new_name = format!("{}_copy", name);
+                                                // 自動產生不重複的名稱
+                                                let mut new_name = format!("{}_copy", name);
+                                                let mut counter = 2;
+                                                while self.profile_manager.exists(&new_name) {
+                                                    new_name = format!("{}_copy{}", name, counter);
+                                                    counter += 1;
+                                                }
                                                 if let Err(e) = self.profile_manager.duplicate(name, &new_name) {
                                                     tracing::error!("Failed to duplicate profile: {}", e);
                                                 }
@@ -2126,6 +2296,15 @@ impl MudApp {
                                 });
                             });
                         }
+                        // 處理斷線請求
+                        if let Some(id) = pending_disconnect_id {
+                            if let Some(session) = self.session_manager.get_mut(id) {
+                                if let Some(tx) = &session.command_tx {
+                                    let _ = tx.try_send(crate::session::Command::Disconnect);
+                                }
+                                session.auto_reconnect = false;
+                            }
+                        }
                     });
                 }
 
@@ -2135,7 +2314,7 @@ impl MudApp {
                 // 活躍連線列表
                 ui.heading("活躍連線");
                 ui.separator();
-                
+
                 let session_count = self.session_manager.len();
                 if session_count == 0 {
                     ui.label("目前無活躍連線。");
@@ -2165,11 +2344,7 @@ impl MudApp {
             .show(ctx, |ui| {
                 egui::Grid::new("profile_edit_grid_conn").num_columns(2).spacing([10.0, 10.0]).show(ui, |ui| {
                     ui.label("識別名稱 (ID):");
-                    if self.editing_profile_original_name.is_some() {
-                        ui.label(RichText::new(&self.profile_edit_name).code()); // ID 不可修改
-                    } else {
-                        ui.text_edit_singleline(&mut self.profile_edit_name);
-                    }
+                    ui.text_edit_singleline(&mut self.profile_edit_name);
                     ui.end_row();
 
                     ui.label("顯示名稱:");
@@ -2199,6 +2374,13 @@ impl MudApp {
                     ui.end_row();
                 });
 
+                if !self.profile_edit_password.is_empty() {
+                    ui.colored_label(
+                        Color32::from_rgb(255, 180, 50),
+                        "⚠ 密碼以明文儲存於設定檔中"
+                    );
+                }
+
                 ui.add_space(20.0);
                 
                 ui.horizontal(|ui| {
@@ -2226,11 +2408,25 @@ impl MudApp {
                             profile.username = if self.profile_edit_username.is_empty() { None } else { Some(self.profile_edit_username.clone()) };
                             profile.password = if self.profile_edit_password.is_empty() { None } else { Some(self.profile_edit_password.clone()) };
                             
+                            // 如果 ID 被修改，刪除舊 Profile 並更新關聯的 Session
+                            if let Some(ref original_name) = self.editing_profile_original_name {
+                                if original_name != &profile.name {
+                                    // 刪除舊檔案
+                                    let _ = self.profile_manager.delete(original_name);
+                                    // 更新已連線 Session 的 profile_name
+                                    for session in self.session_manager.sessions_mut() {
+                                        if session.profile_name == *original_name {
+                                            session.profile_name = profile.name.clone();
+                                        }
+                                    }
+                                }
+                            }
+
                             // 儲存
                             if let Err(e) = self.profile_manager.save(profile) {
                                 tracing::error!("Failed to save profile: {}", e);
                             }
-                            
+
                             self.show_profile_edit_window = false;
                         }
                     }
@@ -2304,9 +2500,11 @@ impl MudApp {
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if ui.button("➕ 新增別名").clicked() {
                                     self.editing_alias_name = Some(String::new());
+                                    self.alias_edit_name = String::new();
                                     self.alias_edit_pattern = String::new();
                                     self.alias_edit_replacement = String::new();
                                     self.alias_edit_category = String::new();
+                                    self.alias_edit_is_script = false;
                                     self.show_alias_window = true;
                                 }
                             });
@@ -2386,8 +2584,10 @@ impl MudApp {
                             MoveToProfile(String),
                             RevertToGlobal(String),
                             CopyToGlobal(String),
+                            Clone(String),
                         }
                         let mut op_action: Option<AliasOp> = None;
+                        let mut set_pending_delete: Option<Option<String>> = None;
 
                         // 表格繪製
                         TableBuilder::new(ui)
@@ -2396,15 +2596,13 @@ impl MudApp {
                             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                             .column(Column::auto()) // Enabled
                             .column(Column::auto()) // Source Icon
-                            .column(Column::auto().at_least(60.0)) // Category
-                            .column(Column::initial(100.0).resizable(true)) // Name
-                            .column(Column::initial(150.0).resizable(true)) // Pattern
+                            .column(Column::initial(120.0).resizable(true)) // Name
+                            .column(Column::initial(180.0).resizable(true)) // Pattern
                             .column(Column::remainder()) // Replacement
                             .column(Column::auto()) // Actions
                             .header(20.0, |mut header| {
                                 header.col(|ui| { ui.strong("啟用"); });
                                 header.col(|ui| { ui.strong("來源"); });
-                                header.col(|ui| { ui.strong("分類"); });
                                 header.col(|ui| { ui.strong("名稱"); });
                                 header.col(|ui| { ui.strong("指令"); });
                                 header.col(|ui| { ui.strong("內容"); });
@@ -2414,7 +2612,7 @@ impl MudApp {
                                 for (category, items) in grouped_aliases {
                                      let category_id_str = category.clone().unwrap_or_else(|| "default".to_string());
                                      let is_expanded_id = body.ui_mut().make_persistent_id(format!("alias_cat_{}", category_id_str));
-                                     let is_expanded = body.ui_mut().data(|d| d.get_temp::<bool>(is_expanded_id).unwrap_or(true));
+                                     let is_expanded = body.ui_mut().data(|d| d.get_temp::<bool>(is_expanded_id).unwrap_or(false));
 
                                      // Group Header Row
                                      body.row(24.0, |mut row| {
@@ -2441,12 +2639,18 @@ impl MudApp {
                                          });
                                          row.col(|_| {});
                                          row.col(|_| {});
-                                         row.col(|_| {});
                                      });
 
                                     if is_expanded {
                                         for (name, pattern, replacement, cat, enabled, is_script, source) in items {
                                             body.row(24.0, |mut row| {
+                                                // 停用項目文字變暗
+                                                let text_color = if enabled {
+                                                    Color32::WHITE
+                                                } else {
+                                                    Color32::from_gray(100)
+                                                };
+
                                                 // 1. 啟用
                                                 row.col(|ui| {
                                                     let mut is_enabled = enabled;
@@ -2464,22 +2668,19 @@ impl MudApp {
                                                     }
                                                 });
 
-                                                // 3. 分類
-                                                row.col(|_ui| {
-                                                    // ui.label(cat.as_deref().unwrap_or("-")); // Optional
-                                                });
-
-                                                // 4. 名稱
+                                                // 3. 名稱
                                                 row.col(|ui| {
-                                                    ui.label(&name);
+                                                    let rt = RichText::new(&name).color(text_color);
+                                                    ui.label(rt);
                                                 });
 
-                                                // 5. 指令 (Pattern)
+                                                // 4. 指令 (Pattern)
                                                 row.col(|ui| {
-                                                    ui.label(&pattern).on_hover_text(&pattern);
+                                                    let rt = RichText::new(&pattern).color(text_color);
+                                                    ui.label(rt).on_hover_text(&pattern);
                                                 });
 
-                                                // 6. 內容 (Replacement)
+                                                // 5. 內容 (Replacement)
                                                 row.col(|ui| {
                                                     let display_text = if is_script {
                                                         let first_line = replacement.lines().next().unwrap_or("");
@@ -2492,10 +2693,12 @@ impl MudApp {
                                                     } else {
                                                         replacement.clone()
                                                     };
-                                                    ui.label(display_text).on_hover_text(&replacement);
+                                                    let mut rt = RichText::new(&display_text).color(text_color);
+                                                    if is_script { rt = rt.italics(); }
+                                                    ui.label(rt).on_hover_text(&replacement);
                                                 });
 
-                                                // 7. 操作
+                                                // 6. 操作
                                                 row.col(|ui| {
                                                      ui.horizontal(|ui| {
                                                         ui.spacing_mut().item_spacing.x = 8.0;
@@ -2506,6 +2709,11 @@ impl MudApp {
                                                         if self.settings_scope == SettingsScope::Profile {
                                                             ui.menu_button(" ⋮ ", |ui| {
                                                                 ui.set_min_width(120.0);
+                                                                if ui.button("📋 複製").clicked() {
+                                                                    op_action = Some(AliasOp::Clone(name.clone()));
+                                                                    ui.close_menu();
+                                                                }
+                                                                ui.separator();
                                                                 match source {
                                                                     AliasSource::Profile => {
                                                                         if ui.button("🌍 移至全域").clicked() {
@@ -2541,8 +2749,17 @@ impl MudApp {
                                                             });
                                                         }
 
-                                                        if ui.button("🗑️").on_hover_text("刪除").clicked() {
-                                                            to_delete = Some(name.clone());
+                                                        // 兩段式刪除確認
+                                                        if self.pending_alias_delete.as_deref() == Some(&name) {
+                                                            if ui.button(RichText::new("確認").color(Color32::RED)).clicked() {
+                                                                to_delete = Some(name.clone());
+                                                                set_pending_delete = Some(None);
+                                                            }
+                                                            if ui.button(RichText::new("取消").color(Color32::GRAY)).clicked() {
+                                                                set_pending_delete = Some(None);
+                                                            }
+                                                        } else if ui.button("🗑️").on_hover_text("刪除").clicked() {
+                                                            set_pending_delete = Some(Some(name.clone()));
                                                         }
                                                      });
                                                 });
@@ -2551,6 +2768,11 @@ impl MudApp {
                                     }
                                 }
                             });
+
+                        // Apply pending delete state
+                        if let Some(new_val) = set_pending_delete {
+                            self.pending_alias_delete = new_val;
+                        }
                         
                         // 處理操作
                         if let Some((cat, enabled)) = to_toggle_category {
@@ -2597,7 +2819,8 @@ impl MudApp {
                         }
 
                         if let Some((name, pattern, replacement, category, is_script)) = to_edit {
-                            self.editing_alias_name = Some(name);
+                            self.editing_alias_name = Some(name.clone());
+                            self.alias_edit_name = name;
                             self.alias_edit_pattern = pattern;
                             self.alias_edit_replacement = replacement;
                             self.alias_edit_category = category;
@@ -2608,6 +2831,17 @@ impl MudApp {
                         // 處理範圍操作
                         if let Some(op) = op_action {
                             match op {
+                                AliasOp::Clone(name) => {
+                                    if let Some(a) = session.alias_manager.aliases.get(&name) {
+                                        let copy_name = format!("{}_copy", a.name);
+                                        let mut new_alias = Alias::new(&copy_name, &a.pattern, &a.replacement);
+                                        new_alias.is_script = a.is_script;
+                                        new_alias.enabled = a.enabled;
+                                        new_alias.category = a.category.clone();
+                                        session.alias_manager.add(new_alias);
+                                        needs_save = true;
+                                    }
+                                },
                                 AliasOp::MoveToGlobal(name) | AliasOp::CopyToGlobal(name) => {
                                     if let Some(a) = session.alias_manager.aliases.get(&name) {
                                         let new_config = crate::config::AliasConfig {
@@ -2663,6 +2897,8 @@ impl MudApp {
                                     self.trigger_edit_pattern = String::new();
                                     self.trigger_edit_action = String::new();
                                     self.trigger_edit_category = String::new();
+                                    self.trigger_edit_is_script = false;
+                                    self.trigger_edit_pattern_type = "auto".to_string();
                                     self.show_trigger_window = true;
                                 }
                             });
@@ -2677,17 +2913,17 @@ impl MudApp {
                             Override, // 本地設定 (覆蓋全域)
                         }
 
-                        // 收集 Trigger 列表
-                        let mut trigger_list: Vec<(String, String, String, Option<String>, bool, bool, String, TriggerSource)> = match self.settings_scope {
+                        // 收集 Trigger 列表 (name, pattern_text, clean_pattern, category, enabled, is_script, action_str, source, pattern_type)
+                        let mut trigger_list: Vec<(String, String, String, Option<String>, bool, bool, String, TriggerSource, String)> = match self.settings_scope {
                             SettingsScope::Profile => {
                                 session.trigger_manager.order.iter()
                                     .filter_map(|name| {
                                         session.trigger_manager.triggers.get(name).map(|t| {
-                                            let pattern_text = match &t.pattern {
-                                                TriggerPattern::Contains(s) => format!("包含: {}", s),
-                                                TriggerPattern::StartsWith(s) => format!("開頭: {}", s),
-                                                TriggerPattern::EndsWith(s) => format!("結尾: {}", s),
-                                                TriggerPattern::Regex(s) => format!("正則: {}", s),
+                                            let (pattern_text, pattern_type_str) = match &t.pattern {
+                                                TriggerPattern::Contains(s) => (format!("包含: {}", s), "contains"),
+                                                TriggerPattern::StartsWith(s) => (format!("開頭: {}", s), "startswith"),
+                                                TriggerPattern::EndsWith(s) => (format!("結尾: {}", s), "endswith"),
+                                                TriggerPattern::Regex(s) => (format!("正則: {}", s), "regex"),
                                             };
                                             let clean_pattern = match &t.pattern {
                                                 TriggerPattern::Contains(s) | TriggerPattern::StartsWith(s) |
@@ -2700,7 +2936,7 @@ impl MudApp {
                                                     _ => None,
                                                 }
                                             }).unwrap_or_default();
-                                            
+
                                             // 判斷來源
                                             let source = if let Some(global_t) = self.global_config.global_triggers.iter().find(|gt| gt.name == t.name) {
                                                 let global_is_match = clean_pattern_string(&global_t.pattern) == clean_pattern &&
@@ -2708,7 +2944,7 @@ impl MudApp {
                                                                     global_t.is_script == is_script &&
                                                                     global_t.enabled == t.enabled &&
                                                                     global_t.category == t.category;
-                                                                    
+
                                                 if global_is_match {
                                                     TriggerSource::Global
                                                 } else {
@@ -2718,7 +2954,7 @@ impl MudApp {
                                                 TriggerSource::Profile
                                             };
 
-                                            (t.name.clone(), pattern_text, clean_pattern, t.category.clone(), t.enabled, is_script, action_str, source)
+                                            (t.name.clone(), pattern_text, clean_pattern, t.category.clone(), t.enabled, is_script, action_str, source, pattern_type_str.to_string())
                                         })
                                     })
                                     .collect()
@@ -2726,7 +2962,8 @@ impl MudApp {
                             SettingsScope::Global => {
                                 self.global_config.global_triggers.iter().map(|t| {
                                     let pattern_text = format!("(Global) {}", t.pattern);
-                                    (t.name.clone(), pattern_text, t.pattern.clone(), t.category.clone(), t.enabled, t.is_script, t.action.clone(), TriggerSource::Global)
+                                    let pt = t.pattern_type.clone().unwrap_or_else(|| "auto".to_string());
+                                    (t.name.clone(), pattern_text, t.pattern.clone(), t.category.clone(), t.enabled, t.is_script, t.action.clone(), TriggerSource::Global, pt)
                                 }).collect()
                             }
                         };
@@ -2734,21 +2971,21 @@ impl MudApp {
                         // 搜尋過濾
                         let search = self.trigger_search_text.to_lowercase();
                         if !search.is_empty() {
-                            trigger_list.retain(|(name, p_text, _, cat, _, _, _, _)| {
-                                name.to_lowercase().contains(&search) || 
+                            trigger_list.retain(|(name, p_text, _, cat, _, _, _, _, _)| {
+                                name.to_lowercase().contains(&search) ||
                                 p_text.to_lowercase().contains(&search) ||
                                 cat.as_deref().unwrap_or("").to_lowercase().contains(&search)
                             });
                         }
-                        
+
                         // Grouping Logic
-                        let mut grouped_triggers: std::collections::BTreeMap<Option<String>, Vec<(String, String, String, Option<String>, bool, bool, String, TriggerSource)>> = std::collections::BTreeMap::new();
+                        let mut grouped_triggers: std::collections::BTreeMap<Option<String>, Vec<(String, String, String, Option<String>, bool, bool, String, TriggerSource, String)>> = std::collections::BTreeMap::new();
                         for item in trigger_list {
                             grouped_triggers.entry(item.3.clone()).or_default().push(item);
                         }
 
                         let mut to_delete: Option<String> = None;
-                        let mut to_edit: Option<(String, String, String, bool, String)> = None;
+                        let mut to_edit: Option<(String, String, String, bool, String, String)> = None;
                         let mut to_toggle_name: Option<(String, bool)> = None;
                         let mut to_toggle_category: Option<(Option<String>, bool)> = None;
                         
@@ -2758,8 +2995,10 @@ impl MudApp {
                             MoveToProfile(String),
                             RevertToGlobal(String),
                             CopyToGlobal(String),
+                            Clone(String),
                         }
                         let mut op_action: Option<TriggerOp> = None;
+                        let mut set_pending_delete: Option<Option<String>> = None;
 
                         // 表格繪製
                         TableBuilder::new(ui)
@@ -2768,14 +3007,12 @@ impl MudApp {
                             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                             .column(Column::auto()) // Enabled / Toggle
                             .column(Column::auto()) // Source Icon
-                            .column(Column::auto().at_least(60.0)) // Category
-                            .column(Column::initial(120.0).resizable(true)) // Name
+                            .column(Column::initial(150.0).resizable(true)) // Name
                             .column(Column::remainder()) // Pattern
                             .column(Column::auto()) // Actions
                             .header(20.0, |mut header| {
                                 header.col(|ui| { ui.strong("啟用"); });
                                 header.col(|ui| { ui.strong("來源"); });
-                                header.col(|ui| { ui.strong("分類"); });
                                 header.col(|ui| { ui.strong("名稱"); });
                                 header.col(|ui| { ui.strong("觸發內容"); });
                                 header.col(|ui| { ui.strong("操作"); });
@@ -2784,7 +3021,7 @@ impl MudApp {
                                 for (category, items) in grouped_triggers {
                                     let category_id_str = category.clone().unwrap_or_else(|| "default".to_string());
                                     let is_expanded_id = body.ui_mut().make_persistent_id(format!("trig_cat_{}", category_id_str));
-                                    let is_expanded = body.ui_mut().data(|d| d.get_temp::<bool>(is_expanded_id).unwrap_or(true));
+                                    let is_expanded = body.ui_mut().data(|d| d.get_temp::<bool>(is_expanded_id).unwrap_or(false));
 
                                     // Group Header Row
                                     body.row(24.0, |mut row| {
@@ -2809,13 +3046,19 @@ impl MudApp {
                                                 }
                                             }
                                         });
-                                        row.col(|_| {}); // Pattern placeholder 
                                         row.col(|_| {}); // Action placeholder
                                     });
 
                                     if is_expanded {
-                                        for (name, pattern_text, clean_pattern, cat, enabled, is_script, action_str, source) in items {
+                                        for (name, pattern_text, clean_pattern, cat, enabled, is_script, action_str, source, pattern_type) in items {
                                             body.row(24.0, |mut row| {
+                                                // 停用項目文字變暗
+                                                let text_color = if enabled {
+                                                    Color32::WHITE
+                                                } else {
+                                                    Color32::from_gray(100)
+                                                };
+
                                                 // 1. 啟用
                                                 row.col(|ui| {
                                                     let mut is_enabled = enabled;
@@ -2833,33 +3076,36 @@ impl MudApp {
                                                     }
                                                 });
 
-                                                // 3. 分類 (Empty in row, shown in header)
-                                                row.col(|_ui| {
-                                                    // ui.label(cat.as_deref().unwrap_or("-")); // Optional: Leave empty to reduce clutter
-                                                });
-
-                                                // 4. 名稱
+                                                // 3. 名稱
                                                 row.col(|ui| {
-                                                    ui.label(&name);
+                                                    let rt = RichText::new(&name).color(text_color);
+                                                    ui.label(rt);
                                                 });
 
-                                                // 5. 觸發內容
+                                                // 4. 觸發內容
                                                 row.col(|ui| {
-                                                    ui.label(&pattern_text).on_hover_text(&pattern_text);
+                                                    let mut rt = RichText::new(&pattern_text).color(text_color);
+                                                    if is_script { rt = rt.italics(); }
+                                                    ui.label(rt).on_hover_text(&pattern_text);
                                                 });
 
-                                                // 6. 操作
+                                                // 5. 操作
                                                 row.col(|ui| {
                                                     ui.horizontal(|ui| {
-                                                        ui.spacing_mut().item_spacing.x = 8.0; 
-                                                        
+                                                        ui.spacing_mut().item_spacing.x = 8.0;
+
                                                         if ui.button("✏️").on_hover_text("編輯").clicked() {
-                                                            to_edit = Some((name.clone(), clean_pattern.clone(), action_str.clone(), is_script, cat.clone().unwrap_or_default()));
+                                                            to_edit = Some((name.clone(), clean_pattern.clone(), action_str.clone(), is_script, cat.clone().unwrap_or_default(), pattern_type.clone()));
                                                         }
 
                                                         if self.settings_scope == SettingsScope::Profile {
                                                             ui.menu_button(" ⋮ ", |ui| {
                                                                 ui.set_min_width(120.0);
+                                                                if ui.button("📋 複製").clicked() {
+                                                                    op_action = Some(TriggerOp::Clone(name.clone()));
+                                                                    ui.close_menu();
+                                                                }
+                                                                ui.separator();
                                                                 match source {
                                                                     TriggerSource::Profile => {
                                                                         if ui.button("🌍 移至全域").clicked() {
@@ -2877,7 +3123,7 @@ impl MudApp {
                                                                             ui.close_menu();
                                                                         }
                                                                         if ui.button("✏️ 覆蓋 (Override)").clicked() {
-                                                                            to_edit = Some((name.clone(), clean_pattern.clone(), action_str.clone(), is_script, cat.clone().unwrap_or_default()));
+                                                                            to_edit = Some((name.clone(), clean_pattern.clone(), action_str.clone(), is_script, cat.clone().unwrap_or_default(), pattern_type.clone()));
                                                                             ui.close_menu();
                                                                         }
                                                                     },
@@ -2894,9 +3140,18 @@ impl MudApp {
                                                                 }
                                                             });
                                                         }
-                                                        
-                                                        if ui.button("🗑️").on_hover_text("刪除").clicked() {
-                                                            to_delete = Some(name.clone());
+
+                                                        // 兩段式刪除確認
+                                                        if self.pending_trigger_delete.as_deref() == Some(&name) {
+                                                            if ui.button(RichText::new("確認").color(Color32::RED)).clicked() {
+                                                                to_delete = Some(name.clone());
+                                                                set_pending_delete = Some(None);
+                                                            }
+                                                            if ui.button(RichText::new("取消").color(Color32::GRAY)).clicked() {
+                                                                set_pending_delete = Some(None);
+                                                            }
+                                                        } else if ui.button("🗑️").on_hover_text("刪除").clicked() {
+                                                            set_pending_delete = Some(Some(name.clone()));
                                                         }
                                                     });
                                                 });
@@ -2905,6 +3160,11 @@ impl MudApp {
                                     }
                                 }
                             });
+
+                        // Apply pending delete state
+                        if let Some(new_val) = set_pending_delete {
+                            self.pending_trigger_delete = new_val;
+                        }
                         
                         // 處理操作
                         if let Some((cat, enabled)) = to_toggle_category {
@@ -2948,19 +3208,33 @@ impl MudApp {
                             needs_save = true;
                         }
 
-                        if let Some((name, pattern, action, is_script, category)) = to_edit {
+                        if let Some((name, pattern, action, is_script, category, pattern_type)) = to_edit {
                             self.editing_trigger_name = Some(name.clone());
                             self.trigger_edit_name = name;
                             self.trigger_edit_pattern = pattern;
                             self.trigger_edit_action = action;
                             self.trigger_edit_category = category;
                             self.trigger_edit_is_script = is_script;
+                            self.trigger_edit_pattern_type = pattern_type;
                             self.show_trigger_window = true;
                         }
 
                         // 處理範圍操作
                         if let Some(op) = op_action {
                             match op {
+                                TriggerOp::Clone(name) => {
+                                    if let Some(t) = session.trigger_manager.get(&name) {
+                                        let copy_name = format!("{}_copy", t.name);
+                                        let mut new_trigger = Trigger::new(&copy_name, t.pattern.clone());
+                                        for action in &t.actions {
+                                            new_trigger.actions.push(action.clone());
+                                        }
+                                        new_trigger.enabled = t.enabled;
+                                        new_trigger.category = t.category.clone();
+                                        session.trigger_manager.add(new_trigger);
+                                        needs_save = true;
+                                    }
+                                },
                                 TriggerOp::MoveToGlobal(name) | TriggerOp::CopyToGlobal(name) => {
                                     if let Some(t) = session.trigger_manager.get(&name) {
                                         let (action_str, is_script) = t.actions.iter().find_map(|a| {
@@ -2970,17 +3244,25 @@ impl MudApp {
                                                 _ => None,
                                             }
                                         }).unwrap_or_default();
-                                        
+
+                                        let pattern_type = match &t.pattern {
+                                            TriggerPattern::Contains(_) => Some("contains".to_string()),
+                                            TriggerPattern::StartsWith(_) => Some("startswith".to_string()),
+                                            TriggerPattern::EndsWith(_) => Some("endswith".to_string()),
+                                            TriggerPattern::Regex(_) => Some("regex".to_string()),
+                                        };
+
                                         let new_config = crate::config::TriggerConfig {
                                             name: t.name.clone(),
                                             pattern: match &t.pattern {
-                                                TriggerPattern::Contains(s) | TriggerPattern::StartsWith(s) | 
+                                                TriggerPattern::Contains(s) | TriggerPattern::StartsWith(s) |
                                                 TriggerPattern::EndsWith(s) | TriggerPattern::Regex(s) => s.clone(),
                                             },
                                             action: action_str,
                                             category: t.category.clone(),
                                             is_script,
                                             enabled: t.enabled,
+                                            pattern_type,
                                         };
 
                                         if let Some(existing) = self.global_config.global_triggers.iter_mut().find(|gt| gt.name == name) {
@@ -3132,6 +3414,18 @@ impl MudApp {
 
                         ui.checkbox(&mut session.auto_scroll, "自動捲動畫面");
                         ui.add_space(5.0);
+
+                        // === 自動重連延遲 ===
+                        ui.horizontal(|ui| {
+                            ui.label("重連延遲:");
+                            let slider = egui::Slider::new(&mut self.global_config.ui.reconnect_delay_secs, 1..=60)
+                                .suffix(" 秒");
+                            if ui.add(slider).changed() {
+                                needs_save = true;
+                            }
+                        });
+                        ui.add_space(5.0);
+
                         ui.label(format!("畫面單字字典: {} 個單字", session.screen_words.len()));
                         ui.label(format!("指令字典: {} 個指令", session.command_dict.len()));
 
@@ -3357,9 +3651,10 @@ impl eframe::App for MudApp {
         if self.show_alias_window {
             Self::render_alias_edit(
                 ctx,
-                session_opt, // 不能同時借用 self.session_manager 與 self.global_config (如果是 Global mode, session_opt 是 None, 安全)
+                session_opt,
                 global_opt,
                 &mut self.editing_alias_name,
+                &mut self.alias_edit_name,
                 &mut self.alias_edit_pattern,
                 &mut self.alias_edit_replacement,
                 &mut self.alias_edit_category,
@@ -3391,6 +3686,7 @@ impl eframe::App for MudApp {
                 &mut self.trigger_edit_action,
                 &mut self.trigger_edit_category,
                 &mut self.trigger_edit_is_script,
+                &mut self.trigger_edit_pattern_type,
                 &mut self.show_trigger_window,
                 &mut needs_save,
             );

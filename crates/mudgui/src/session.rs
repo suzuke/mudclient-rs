@@ -497,19 +497,28 @@ impl Session {
     pub fn create_trigger_from_config(config: &TriggerConfig) -> Option<Trigger> {
         let clean_pattern = clean_pattern_string(&config.pattern);
 
-        // 自動偵測正則表達式模式
-        let pattern = if clean_pattern.contains("(.+)")
-            || clean_pattern.contains("(.*)")
-            || clean_pattern.contains("\\d")
-            || clean_pattern.contains("[")
-            || clean_pattern.contains("$")
-            || clean_pattern.contains("^")
-            || clean_pattern.contains("|")
-            || clean_pattern.contains("?")
-        {
-            TriggerPattern::Regex(clean_pattern)
-        } else {
-            TriggerPattern::Contains(clean_pattern)
+        // 根據 pattern_type 決定匹配類型，None 時 fallback 到自動偵測
+        let pattern = match config.pattern_type.as_deref() {
+            Some("contains") => TriggerPattern::Contains(clean_pattern),
+            Some("startswith") => TriggerPattern::StartsWith(clean_pattern),
+            Some("endswith") => TriggerPattern::EndsWith(clean_pattern),
+            Some("regex") => TriggerPattern::Regex(clean_pattern),
+            _ => {
+                // auto: 自動偵測正則表達式模式
+                if clean_pattern.contains("(.+)")
+                    || clean_pattern.contains("(.*)")
+                    || clean_pattern.contains("\\d")
+                    || clean_pattern.contains("[")
+                    || clean_pattern.contains("$")
+                    || clean_pattern.contains("^")
+                    || clean_pattern.contains("|")
+                    || clean_pattern.contains("?")
+                {
+                    TriggerPattern::Regex(clean_pattern)
+                } else {
+                    TriggerPattern::Contains(clean_pattern)
+                }
+            }
         };
 
         let mut trigger = Trigger::new(&config.name, pattern);

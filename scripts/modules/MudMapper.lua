@@ -182,42 +182,128 @@ function MudMapper.on_room(id, name)
     end
 end
 
--- ===== 存檔/讀檔 (簡單 JSON) =====
-function MudMapper.save()
-    if not mud or not mud.start_log then return end -- 檢查環境
-    
-    -- 由於 Lua 沒有內建 JSON，我們手刻一個簡單的序列化 (僅支援 table, string, number)
-    -- 或者使用簡單的 Lua table dump
-    
-    local function serialize(o)
-        if type(o) == "number" then
-            return tostring(o)
-        elseif type(o) == "string" then
-            return string.format("%q", o)
-        elseif type(o) == "table" then
-            local s = "{"
-            for k,v in pairs(o) do
+-- ===== JSON 編碼/解碼 =====
+
+local function json_encode(o)
+    if o == nil then return "null"
+    elseif type(o) == "boolean" then return tostring(o)
+    elseif type(o) == "number" then
+        if o ~= o or o == math.huge or o == -math.huge then return "null" end
+        if o == math.floor(o) then return string.format("%d", o) end
+        return tostring(o)
+    elseif type(o) == "string" then
+        return '"' .. o:gsub('\\', '\\\\'):gsub('"', '\\"')
+                       :gsub('\n', '\\n'):gsub('\r', '\\r'):gsub('\t', '\\t') .. '"'
+    elseif type(o) == "table" then
+        -- 判斷 array vs object：所有 key 為連續整數 → array，否則 object
+        local is_array, max_idx = true, 0
+        for k in pairs(o) do
+            if type(k) ~= "number" or k ~= math.floor(k) or k < 1 then
+                is_array = false; break
+            end
+            if k > max_idx then max_idx = k end
+        end
+        if is_array and max_idx > 0 then
+            for i = 1, max_idx do if o[i] == nil then is_array = false; break end end
+        end
+        if is_array then
+            local items = {}
+            for i = 1, max_idx do items[#items + 1] = json_encode(o[i]) end
+            return "[" .. table.concat(items, ",") .. "]"
+        else
+            local items = {}
+            for k, v in pairs(o) do
                 if type(k) == "string" then
-                    s = s .. "[" .. string.format("%q", k) .. "]=" .. serialize(v) .. ","
-                elseif type(k) == "number" then
-                    s = s .. "[" .. k .. "]=" .. serialize(v) .. ","
+                    items[#items + 1] = json_encode(k) .. ":" .. json_encode(v)
                 end
             end
-            return s .. "}"
-        else
-            return "nil"
+            return "{" .. table.concat(items, ",") .. "}"
         end
     end
-    
-    -- 我們將資料存為 Lua code，讀取時直接 loadstring
-    -- 為了避免檔案過大，只存 rooms 和 moves
+    return "null"
+end
+
+local function json_decode(s)
+    local pos = 1
+    local function skip_ws() pos = s:match("^%s*()", pos) end
+
+    local function parse_string()
+        pos = pos + 1
+        local parts = {}
+        while pos <= #s do
+            local c = s:sub(pos, pos)
+            if c == '"' then pos = pos + 1; return table.concat(parts) end
+            if c == '\\' then
+                pos = pos + 1; c = s:sub(pos, pos)
+                if c == 'n' then parts[#parts+1] = '\n'
+                elseif c == 'r' then parts[#parts+1] = '\r'
+                elseif c == 't' then parts[#parts+1] = '\t'
+                else parts[#parts+1] = c end
+            else parts[#parts+1] = c end
+            pos = pos + 1
+        end
+    end
+
+    local function parse_number()
+        local start = pos
+        if s:sub(pos, pos) == '-' then pos = pos + 1 end
+        while s:sub(pos, pos):match("[%d%.eE%+%-]") do pos = pos + 1 end
+        return tonumber(s:sub(start, pos - 1))
+    end
+
+    local parse_value
+    local function parse_object()
+        pos = pos + 1; skip_ws()
+        local obj = {}
+        if s:sub(pos, pos) == '}' then pos = pos + 1; return obj end
+        while true do
+            skip_ws(); local key = parse_string()
+            skip_ws(); pos = pos + 1  -- skip :
+            skip_ws(); obj[key] = parse_value()
+            skip_ws()
+            if s:sub(pos, pos) == ',' then pos = pos + 1
+            else pos = pos + 1; return obj end  -- skip }
+        end
+    end
+
+    local function parse_array()
+        pos = pos + 1; skip_ws()
+        local arr = {}
+        if s:sub(pos, pos) == ']' then pos = pos + 1; return arr end
+        while true do
+            skip_ws(); arr[#arr + 1] = parse_value()
+            skip_ws()
+            if s:sub(pos, pos) == ',' then pos = pos + 1
+            else pos = pos + 1; return arr end  -- skip ]
+        end
+    end
+
+    parse_value = function()
+        skip_ws()
+        local c = s:sub(pos, pos)
+        if c == '"' then return parse_string()
+        elseif c == '{' then return parse_object()
+        elseif c == '[' then return parse_array()
+        elseif c == 't' then pos = pos + 4; return true
+        elseif c == 'f' then pos = pos + 5; return false
+        elseif c == 'n' then pos = pos + 4; return nil
+        else return parse_number() end
+    end
+
+    return parse_value()
+end
+
+-- ===== 存檔/讀檔 =====
+
+function MudMapper.save()
+    if not mud or not mud.start_log then return end
+
     local data = {
         rooms = MudMapper.state.rooms,
         moves = MudMapper.state.moves
     }
-    
-    local content = "return " .. serialize(data)
-    
+
+    local content = json_encode(data)
     local f = io.open(MudMapper.SAVE_FILE, "w")
     if f then
         f:write(content)
@@ -233,20 +319,25 @@ function MudMapper.load()
     if f then
         local content = f:read("*a")
         f:close()
-        
-        local func, err = load(content)
-        if func then
-            local status, data = pcall(func)
-            if status and data then
-                MudMapper.state.rooms = data.rooms or {}
-                MudMapper.state.moves = data.moves or {}
-                mud.echo(string.format("{w[Map] 已載入地圖資料 (房間數: %d){x}", 
-                    (function() local c=0; for _ in pairs(data.rooms) do c=c+1 end return c end)()))
-            else
-                mud.echo("{R[Map] 讀檔失敗: 格式錯誤{x}")
-            end
+
+        local ok, data
+        local trimmed = content:match("^%s*(.)")
+        if trimmed == "{" then
+            -- JSON 格式 (新)
+            ok, data = pcall(json_decode, content)
+        elseif trimmed == "r" then
+            -- Lua table 格式 (舊，向後相容)
+            local func, err = load(content)
+            if func then ok, data = pcall(func) end
+        end
+
+        if ok and data then
+            MudMapper.state.rooms = data.rooms or {}
+            MudMapper.state.moves = data.moves or {}
+            mud.echo(string.format("{w[Map] 已載入地圖資料 (房間數: %d){x}",
+                (function() local c=0; for _ in pairs(data.rooms) do c=c+1 end return c end)()))
         else
-            mud.echo("{R[Map] 讀檔失敗: " .. tostring(err) .. "{x}")
+            mud.echo("{R[Map] 讀檔失敗: 格式錯誤{x}")
         end
     end
 end

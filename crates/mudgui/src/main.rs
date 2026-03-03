@@ -4,6 +4,7 @@ mod ansi;
 mod api;
 mod app;
 mod config;
+mod mapper;
 mod session;
  
 use app::MudApp;

@@ -44,6 +44,19 @@ fi
 
 echo "✅ Built: $APP"
 
+# ── Optional: Code Sign (if Developer ID identity is available) ──
+if security find-identity -v -p codesigning 2>/dev/null | grep -q "Developer ID Application"; then
+    IDENTITY=$(security find-identity -v -p codesigning | grep "Developer ID Application" | head -1 | awk -F'"' '{print $2}')
+    echo "🔏 Signing with: $IDENTITY"
+    codesign --force --options runtime --deep \
+        --entitlements packaging/macos/entitlements.plist \
+        --sign "$IDENTITY" --timestamp "$APP"
+    codesign --verify --verbose "$APP"
+    echo "✅ Code signed"
+else
+    echo "⚠ No Developer ID identity found. Skipping code signing."
+fi
+
 # ── Create DMG ──
 echo "📦 Creating DMG..."
 DMG_TEMP="dmg_staging"

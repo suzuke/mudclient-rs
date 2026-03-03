@@ -43,7 +43,7 @@ jobs:
       - name: Build
         run: cargo build -p mudgui --release --target ${{ matrix.target }}
 
-      # ── Windows: zip with scripts, data & docs ──
+      # ── Windows: sign exe, then zip with scripts, data & docs ──
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -53,6 +53,38 @@ jobs:
           Copy-Item -Recurse scripts dist/scripts
           Copy-Item -Recurse data dist/data
           Copy-Item -Recurse docs dist/docs
+
+      - name: Sign Executable (Windows)
+        if: runner.os == 'Windows' && env.WINDOWS_CERTIFICATE_P12 != ''
+        env:
+          WINDOWS_CERTIFICATE_P12: ${{ secrets.WINDOWS_CERTIFICATE_P12 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        shell: pwsh
+        run: |
+          $certBytes = [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_P12)
+          $certPath = "$env:RUNNER_TEMP\certificate.pfx"
+          [IO.File]::WriteAllBytes($certPath, $certBytes)
+
+          # Find signtool.exe
+          $signtool = Get-ChildItem -Path "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter "signtool.exe" |
+            Where-Object { $_.FullName -match "x64" } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
+
+          & $signtool sign `
+            /f $certPath `
+            /p $env:WINDOWS_CERTIFICATE_PASSWORD `
+            /tr http://timestamp.digicert.com `
+            /td sha256 `
+            /fd sha256 `
+            dist/mudgui.exe
+
+          Remove-Item $certPath
+
+      - name: Create ZIP (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
           Compress-Archive -Path dist/* -DestinationPath mudgui-windows-x64.zip
 
       - name: Upload artifact (Windows)
@@ -70,7 +102,7 @@ jobs:
           name: mudgui-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/mudgui
 
-  # ── macOS: merge into Universal Binary + DMG ──
+  # ── macOS: merge into Universal Binary + sign + notarize + DMG ──
   package-macos:
     needs: build
     runs-on: macos-latest
@@ -115,6 +147,42 @@ jobs:
             cp packaging/macos/AppIcon.icns "$APP/Contents/Resources/"
           fi
 
+      - name: Import Apple Certificate
+        if: env.APPLE_CERTIFICATE_P12 != ''
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+
+          echo -n "$APPLE_CERTIFICATE_P12" | base64 --decode -o $CERTIFICATE_PATH
+
+          security create-keychain -p "$MACOS_KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$MACOS_KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          security import $CERTIFICATE_PATH -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple: \
+            -k "$MACOS_KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH
+
+      - name: Codesign .app bundle
+        if: env.APPLE_CERTIFICATE_P12 != ''
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          IDENTITY="Developer ID Application ($APPLE_TEAM_ID)"
+          codesign --force --options runtime --deep \
+            --entitlements packaging/macos/entitlements.plist \
+            --sign "$IDENTITY" \
+            --timestamp \
+            MudClient.app
+          codesign --verify --verbose MudClient.app
+
       - name: Create DMG
         run: |
           DMG_TEMP="dmg_staging"
@@ -128,6 +196,27 @@ jobs:
             MudClient-macos-universal.dmg
 
           rm -rf "$DMG_TEMP"
+
+      - name: Notarize DMG
+        if: env.APPLE_CERTIFICATE_P12 != ''
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcrun notarytool submit MudClient-macos-universal.dmg \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 30m
+
+          xcrun stapler staple MudClient-macos-universal.dmg
+
+      - name: Cleanup Keychain
+        if: always()
+        run: |
+          security delete-keychain $RUNNER_TEMP/app-signing.keychain-db 2>/dev/null || true
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4

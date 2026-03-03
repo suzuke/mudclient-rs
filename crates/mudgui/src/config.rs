@@ -40,6 +40,9 @@ pub struct TriggerConfig {
     pub is_script: bool,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// 匹配類型: "auto", "contains", "startswith", "endswith", "regex"
+    #[serde(default)]
+    pub pattern_type: Option<String>,
 }
 
 /// 路徑設定（可序列化版本）
@@ -265,6 +268,9 @@ pub struct UiConfig {
     /// 自動重連
     #[serde(default = "default_true")]
     pub auto_reconnect: bool,
+    /// 自動重連延遲（秒）
+    #[serde(default = "default_reconnect_delay")]
+    pub reconnect_delay_secs: u64,
 }
 
 fn default_window_width() -> f32 {
@@ -276,6 +282,9 @@ fn default_window_height() -> f32 {
 fn default_font_size() -> f32 {
     14.0
 }
+fn default_reconnect_delay() -> u64 {
+    3
+}
 
 impl Default for UiConfig {
     fn default() -> Self {
@@ -284,6 +293,7 @@ impl Default for UiConfig {
             window_height: default_window_height(),
             font_size: default_font_size(),
             auto_reconnect: true,
+            reconnect_delay_secs: default_reconnect_delay(),
         }
     }
 }
