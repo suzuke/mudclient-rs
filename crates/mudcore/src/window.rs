@@ -160,12 +160,14 @@ impl WindowManager {
 
     /// 獲取主視窗
     pub fn main_window(&self) -> &SubWindow {
-        self.windows.get(&self.main_window_id).unwrap()
+        self.windows.get(&self.main_window_id)
+            .expect("主視窗不存在，WindowManager 初始化異常")
     }
 
     /// 獲取可變主視窗
     pub fn main_window_mut(&mut self) -> &mut SubWindow {
-        self.windows.get_mut(&self.main_window_id).unwrap()
+        self.windows.get_mut(&self.main_window_id)
+            .expect("主視窗不存在，WindowManager 初始化異常")
     }
 
     /// 獲取所有視窗（按順序）

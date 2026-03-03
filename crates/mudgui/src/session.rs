@@ -44,7 +44,6 @@ const PROMPT_BOUNDARY: &str = "\x01PROMPT\x01";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SessionId(u64);
 
-#[allow(dead_code)]
 impl SessionId {
     /// 產生新的 SessionId
     pub fn new() -> Self {
@@ -221,7 +220,6 @@ pub struct Session {
     pub command_dict: CommandDictionary,
     
     /// 是否正在接收房間敘述
-    #[allow(dead_code)]
     pub in_room_description: bool,
     
     /// 是否自動滾動到底部
@@ -238,16 +236,10 @@ pub struct Session {
     pub reconnect_delay_until: Option<Instant>,
 
     /// 最後活動時間
-    #[allow(dead_code)]
     pub last_active: Instant,
 
     /// 活躍的計時器
     pub active_timers: Vec<ActiveTimer>,
-
-    // === 多視窗預留 ===
-    /// 當 Session 被拆分為獨立視窗時的視窗 ID
-    #[allow(dead_code)]
-    pub detached_window_id: Option<u64>,
 
     // === 防呆機制 ===
     /// 上一次發送的指令
@@ -484,7 +476,6 @@ impl Session {
             reconnect_delay_until: None,
             last_active: Instant::now(),
             active_timers: Vec::new(),
-            detached_window_id: None,
             last_sent_command: None,
             repeat_command_count: 0,
             line_buffer: std::collections::VecDeque::with_capacity(20),
@@ -784,10 +775,13 @@ impl Session {
         }
         let description = desc_lines.join("\n");
         
-        // 建立 Room 物件
-        let room = Room::new(&name, &description, exits.clone());
+        // 更新 API 共享狀態的房間資訊（先取用 exits，避免多次 clone）
+        let api_exits = exits.clone();
+
+        // 建立 Room 物件（消耗 exits）
+        let room = Room::new(&name, &description, exits);
         let id = room.hash(true); // 預設使用 Strict 模式記錄 Log
-        
+
         // 總是更新，確保 Look 能觸發
         // 只有 ID 改變時才寫入 Log，避免刷屏
         let id_changed = if let Some(old_room) = &self.current_room {
@@ -799,15 +793,14 @@ impl Session {
         if id_changed {
             tracing::info!("Room Detected: {} (ID: {})", name, id);
         }
-        
-        self.current_room = Some(room.clone());
-        self.script_engine.set_current_room(Some(room));
 
-        // 更新 API 共享狀態的房間資訊
+        self.script_engine.set_current_room(Some(room.clone()));
+        self.current_room = Some(room);
+
         if let Ok(mut api) = self.api_state.lock() {
             api.current_room = Some(crate::api::RoomInfo {
                 name: name.clone(),
-                exits: exits.clone(),
+                exits: api_exits,
                 room_id: Some(id.clone()),
                 description: description.clone(),
             });
@@ -842,14 +835,15 @@ impl Session {
         let now = Instant::now();
         let mut expired = Vec::new();
 
-        self.active_timers.retain(|timer| {
-            if now >= timer.expires_at {
-                expired.push(timer.lua_code.clone());
-                false
+        let mut i = 0;
+        while i < self.active_timers.len() {
+            if now >= self.active_timers[i].expires_at {
+                let timer = self.active_timers.swap_remove(i);
+                expired.push(timer.lua_code); // move 而非 clone
             } else {
-                true
+                i += 1;
             }
-        });
+        }
 
         for code in expired {
             match self.script_engine.execute_inline(&code, "TIMER_EXPIRED", &[], false) {
@@ -1778,17 +1772,6 @@ impl Session {
         format!("{} {}", status_icon, self.display_name)
     }
 
-    /// 是否已連線
-    #[allow(dead_code)]
-    pub fn is_connected(&self) -> bool {
-        matches!(self.status, ConnectionStatus::Connected(_))
-    }
-
-    /// 是否正在連線
-    #[allow(dead_code)]
-    pub fn is_connecting(&self) -> bool {
-        matches!(self.status, ConnectionStatus::Connecting | ConnectionStatus::Reconnecting)
-    }
 }
 
 // ============================================================================
@@ -1812,7 +1795,6 @@ pub struct SessionManager {
     global_triggers: Vec<TriggerConfig>,
 }
 
-#[allow(dead_code)]
 impl SessionManager {
     /// 建立新的 SessionManager
     pub fn new() -> Self {
@@ -1822,16 +1804,6 @@ impl SessionManager {
             global_aliases: Vec::new(),
             global_triggers: Vec::new(),
         }
-    }
-
-    /// 設定全域別名/觸發器
-    pub fn set_global_config(
-        &mut self,
-        aliases: Vec<AliasConfig>,
-        triggers: Vec<TriggerConfig>,
-    ) {
-        self.global_aliases = aliases;
-        self.global_triggers = triggers;
     }
 
     /// 從 Profile 建立並新增 Session
@@ -1941,15 +1913,6 @@ impl SessionManager {
         self.sessions.len()
     }
 
-    /// 是否為空
-    pub fn is_empty(&self) -> bool {
-        self.sessions.is_empty()
-    }
-
-    /// 依索引取得 Session（可變）
-    pub fn get_by_index_mut(&mut self, index: usize) -> Option<&mut Session> {
-        self.sessions.get_mut(index)
-    }
 }
 
 impl Default for SessionManager {

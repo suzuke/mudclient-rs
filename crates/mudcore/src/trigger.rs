@@ -169,11 +169,11 @@ impl TriggerManager {
 
     /// 添加觸發器
     pub fn add(&mut self, trigger: Trigger) {
-        let name = trigger.name.clone();
-        self.triggers.insert(name.clone(), trigger);
-        if !self.order.contains(&name) {
-            self.order.push(name);
+        if !self.order.contains(&trigger.name) {
+            self.order.push(trigger.name.clone());
         }
+        let key = trigger.name.clone();
+        self.triggers.insert(key, trigger);
     }
 
     /// 移除觸發器

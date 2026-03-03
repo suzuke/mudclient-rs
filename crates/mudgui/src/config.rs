@@ -100,8 +100,8 @@ pub struct Profile {
     /// 登入帳號
     #[serde(default)]
     pub username: Option<String>,
-    /// 登入密碼 (注意：目前為明文儲存)
-    #[serde(default)]
+    /// 登入密碼（運行時使用，不序列化到磁碟，改由 OS keychain 儲存）
+    #[serde(skip)]
     pub password: Option<String>,
 
     /// 建立時間 (Unix timestamp)
@@ -131,9 +131,9 @@ impl Default for Profile {
     }
 }
 
-#[allow(dead_code)]
 impl Profile {
-    /// 建立新 Profile
+    /// 建立新 Profile（測試用）
+    #[cfg(test)]
     pub fn new(name: &str, display_name: &str) -> Self {
         Self {
             name: name.to_string(),
@@ -142,7 +142,8 @@ impl Profile {
         }
     }
 
-    /// 設定連線資訊
+    /// 設定連線資訊（測試用）
+    #[cfg(test)]
     pub fn with_connection(mut self, host: &str, port: &str) -> Self {
         self.connection = ConnectionConfig {
             host: host.to_string(),
@@ -378,7 +379,6 @@ pub struct ProfileManager {
     profiles: HashMap<String, Profile>,
 }
 
-#[allow(dead_code)]
 impl ProfileManager {
     /// 建立新的 ProfileManager 並載入所有 Profile
     pub fn new() -> Self {
@@ -406,7 +406,9 @@ impl ProfileManager {
                 let path = entry.path();
                 if path.extension().map_or(false, |ext| ext == "json") {
                     if let Ok(content) = fs::read_to_string(&path) {
-                        if let Ok(profile) = serde_json::from_str::<Profile>(&content) {
+                        if let Ok(mut profile) = serde_json::from_str::<Profile>(&content) {
+                            // 從 OS keychain 載入密碼
+                            profile.password = load_password(&profile.name);
                             self.profiles.insert(profile.name.clone(), profile);
                         }
                     }
@@ -418,13 +420,6 @@ impl ProfileManager {
     /// 取得 Profile 列表
     pub fn list(&self) -> Vec<&Profile> {
         self.profiles.values().collect()
-    }
-
-    /// 取得 Profile 名稱列表（排序）
-    pub fn names(&self) -> Vec<String> {
-        let mut names: Vec<_> = self.profiles.keys().cloned().collect();
-        names.sort();
-        names
     }
 
     /// 取得單一 Profile
@@ -442,6 +437,15 @@ impl ProfileManager {
         let dir = Self::profiles_dir();
         ensure_parent_dir(&dir.join("_"))?;
 
+        // 密碼存入 OS keychain（不寫入 JSON）
+        if let Some(ref pw) = profile.password {
+            if let Err(e) = save_password(&profile.name, pw) {
+                tracing::warn!("密碼儲存到 keychain 失敗: {e}");
+            }
+        } else {
+            delete_password(&profile.name);
+        }
+
         let path = dir.join(format!("{}.json", profile.name));
         let content = serde_json::to_string_pretty(&profile)?;
         fs::write(&path, content)?;
@@ -452,6 +456,7 @@ impl ProfileManager {
 
     /// 刪除 Profile
     pub fn delete(&mut self, name: &str) -> Result<(), std::io::Error> {
+        delete_password(name);
         let path = Self::profiles_dir().join(format!("{}.json", name));
         if path.exists() {
             fs::remove_file(&path)?;
@@ -478,15 +483,6 @@ impl ProfileManager {
         self.profiles.contains_key(name)
     }
 
-    /// Profile 數量
-    pub fn len(&self) -> usize {
-        self.profiles.len()
-    }
-
-    /// 是否為空
-    pub fn is_empty(&self) -> bool {
-        self.profiles.is_empty()
-    }
 }
 
 impl Default for ProfileManager {
@@ -496,168 +492,29 @@ impl Default for ProfileManager {
 }
 
 // ============================================================================
-// 舊版相容：AppConfig（保留以支援遷移）
+// 密碼安全儲存 (OS Keychain)
 // ============================================================================
 
-/// 舊版應用程式設定（用於遷移）
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[allow(dead_code)]
-pub struct LegacyAppConfig {
-    pub connection: ConnectionConfig,
-    pub aliases: Vec<AliasConfig>,
-    pub triggers: Vec<TriggerConfig>,
+const KEYRING_SERVICE: &str = "mudclient-rs";
+
+/// 將密碼儲存到 OS keychain
+pub fn save_password(profile_name: &str, password: &str) -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, profile_name)
+        .map_err(|e| format!("keyring 初始化失敗: {e}"))?;
+    entry.set_password(password)
+        .map_err(|e| format!("儲存密碼失敗: {e}"))
 }
 
-/// 向後相容的類型別名（app.rs 目前仍使用此結構）
-/// TODO: 在 Session 系統完成後移除
-#[allow(dead_code)]
-pub type AppConfig = LegacyAppConfig;
-
-#[allow(dead_code)]
-impl LegacyAppConfig {
-    /// 設定檔路徑（與舊版相容）
-    pub fn config_path() -> PathBuf {
-        config_dir().join("config.json")
-    }
-
-    /// 舊版設定檔路徑（別名）
-    pub fn legacy_config_path() -> PathBuf {
-        Self::config_path()
-    }
-
-    /// 檢查是否存在舊版設定
-    pub fn exists() -> bool {
-        Self::legacy_config_path().exists()
-    }
-
-    /// 載入設定（與舊版 AppConfig::load() 相容）
-    pub fn load() -> Self {
-        let path = Self::config_path();
-        if path.exists() {
-            if let Ok(content) = fs::read_to_string(&path) {
-                if let Ok(config) = serde_json::from_str(&content) {
-                    return config;
-                }
-            }
-        }
-        Self::default()
-    }
-
-    /// 載入設定（回傳 Option）
-    pub fn try_load() -> Option<Self> {
-        let path = Self::config_path();
-        if path.exists() {
-            if let Ok(content) = fs::read_to_string(&path) {
-                if let Ok(config) = serde_json::from_str(&content) {
-                    return Some(config);
-                }
-            }
-        }
-        None
-    }
-
-    /// 儲存設定到檔案（與舊版 AppConfig::save() 相容）
-    pub fn save(&self) -> Result<(), std::io::Error> {
-        let path = Self::config_path();
-        ensure_parent_dir(&path)?;
-        let content = serde_json::to_string_pretty(self)?;
-        fs::write(&path, content)?;
-        Ok(())
-    }
+/// 從 OS keychain 讀取密碼
+pub fn load_password(profile_name: &str) -> Option<String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, profile_name).ok()?;
+    entry.get_password().ok()
 }
 
-// ============================================================================
-// 遷移邏輯
-// ============================================================================
-
-/// 遷移結果
-#[derive(Debug)]
-#[allow(dead_code)]
-pub struct MigrationResult {
-    pub migrated: bool,
-    pub profile_name: Option<String>,
-    pub backup_path: Option<PathBuf>,
-}
-
-/// 執行設定遷移
-#[allow(dead_code)]
-pub fn migrate_legacy_config() -> MigrationResult {
-    // 檢查是否需要遷移
-    if !LegacyAppConfig::exists() {
-        return MigrationResult {
-            migrated: false,
-            profile_name: None,
-            backup_path: None,
-        };
-    }
-
-    // 檢查是否已經遷移過
-    let global_config_path = GlobalConfig::config_path();
-    if global_config_path.exists() {
-        return MigrationResult {
-            migrated: false,
-            profile_name: None,
-            backup_path: None,
-        };
-    }
-
-    tracing::info!("偵測到舊版設定檔，開始遷移...");
-
-    // 載入舊版設定
-    let legacy = match LegacyAppConfig::try_load() {
-        Some(c) => c,
-        None => {
-            return MigrationResult {
-                migrated: false,
-                profile_name: None,
-                backup_path: None,
-            }
-        }
-    };
-
-    // 備份舊版設定
-    let legacy_path = LegacyAppConfig::legacy_config_path();
-    let backup_path = config_dir().join("config.json.backup");
-    if let Err(e) = fs::copy(&legacy_path, &backup_path) {
-        tracing::warn!("備份舊版設定失敗: {}", e);
-    }
-
-    // 建立新的全域設定
-    let global_config = GlobalConfig {
-        auto_connect_profiles: vec!["default".to_string()],
-        ..Default::default()
-    };
-    if let Err(e) = global_config.save() {
-        tracing::error!("儲存全域設定失敗: {}", e);
-    }
-
-    // 將舊版設定轉換為 Profile
-    let profile = Profile {
-        name: "default".to_string(),
-        display_name: "預設".to_string(),
-        connection: legacy.connection,
-        aliases: legacy.aliases,
-        triggers: legacy.triggers,
-        paths: Vec::new(),
-        script_paths: Vec::new(),
-        notes: String::new(),
-        username: None,
-        password: None,
-        created_at: current_timestamp(),
-        last_connected: None,
-    };
-
-    let mut manager = ProfileManager::new();
-    if let Err(e) = manager.save(profile) {
-        tracing::error!("儲存 Profile 失敗: {}", e);
-    }
-
-    tracing::info!("設定遷移完成！舊版設定已備份至 {:?}", backup_path);
-
-    MigrationResult {
-        migrated: true,
-        profile_name: Some("default".to_string()),
-        backup_path: Some(backup_path),
+/// 從 OS keychain 刪除密碼
+pub fn delete_password(profile_name: &str) {
+    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, profile_name) {
+        let _ = entry.delete_credential();
     }
 }
 

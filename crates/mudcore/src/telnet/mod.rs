@@ -6,4 +6,7 @@ mod client;
 mod protocol;
 
 pub use client::TelnetClient;
-pub use protocol::{TelnetCommand, TelnetOption};
+pub use protocol::{
+    GmcpMessage, TelnetCommand, TelnetEvent, TelnetOption,
+    IAC, generate_refusal, parse_telnet_data,
+};

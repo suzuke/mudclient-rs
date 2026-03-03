@@ -21,7 +21,6 @@ pub struct Alias {
     /// 是否為 Lua 腳本
     pub is_script: bool,
     /// 編譯後的正則表達式（內部使用）
-    #[allow(dead_code)]
     compiled_regex: Option<Regex>,
 }
 
@@ -167,8 +166,8 @@ impl AliasManager {
 
     /// 添加別名
     pub fn add(&mut self, alias: Alias) {
-        let name = alias.name.clone();
-        self.aliases.insert(name.clone(), alias);
+        let key = alias.name.clone();
+        self.aliases.insert(key, alias);
         self.rebuild_sorted_list();
     }
 

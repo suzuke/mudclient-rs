@@ -129,7 +129,7 @@ impl ApiStateManager {
 
     /// 註冊一個新的 Session，回傳其專屬的 SharedApiState
     pub fn register_session(&self, session_key: &str, display_name: &str) -> SharedApiState {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().expect("API state manager lock poisoned");
         if let Some(existing) = inner.states.get(session_key) {
             return existing.clone();
         }
@@ -149,7 +149,7 @@ impl ApiStateManager {
 
     /// 設定當前活動的 Session
     pub fn set_active(&self, session_key: &str) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().expect("API state manager lock poisoned");
         if inner.states.contains_key(session_key) {
             inner.active_key = Some(session_key.to_string());
         }
@@ -157,14 +157,14 @@ impl ApiStateManager {
 
     /// 取得指定 Session 的 ApiState（透過 key）
     pub fn get(&self, session_key: &str) -> Option<SharedApiState> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().expect("API state manager lock poisoned");
         inner.states.get(session_key).cloned()
     }
 
     /// 取得當前活動 Session 的 ApiState
     /// 若 active_key 指向的 Session 已不存在，自動 fallback 到第一個可用的 Session
     pub fn get_active(&self) -> Option<SharedApiState> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().expect("API state manager lock poisoned");
         // 先嘗試用 active_key
         if let Some(key) = &inner.active_key {
             if let Some(state) = inner.states.get(key) {
@@ -185,7 +185,7 @@ impl ApiStateManager {
 
     /// 列出所有 Session 資訊
     pub fn list_sessions(&self) -> Vec<SessionInfo> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().expect("API state manager lock poisoned");
         inner.order.iter().filter_map(|key| {
             let state = inner.states.get(key)?;
             let s = state.lock().ok()?;
@@ -200,7 +200,7 @@ impl ApiStateManager {
 
     /// 取得所有 session key → SharedApiState 的映射（用於遍歷 drain）
     pub fn all_states(&self) -> Vec<(String, SharedApiState)> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().expect("API state manager lock poisoned");
         inner.order.iter().filter_map(|key| {
             inner.states.get(key).map(|s| (key.clone(), s.clone()))
         }).collect()
@@ -299,7 +299,7 @@ async fn get_status(
 ) -> Result<Json<StatusResponse>, StatusCode> {
     let state = mgr.resolve(params.session.as_deref())
         .ok_or(StatusCode::NOT_FOUND)?;
-    let s = state.lock().unwrap();
+    let s = state.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let connected = s.connection_status.contains("connected")
         || s.connection_status.contains("Connected");
     Ok(Json(StatusResponse {
@@ -317,7 +317,7 @@ async fn get_messages(
 ) -> Result<Json<MessagesResponse>, StatusCode> {
     let state = mgr.resolve(params.session.as_deref())
         .ok_or(StatusCode::NOT_FOUND)?;
-    let s = state.lock().unwrap();
+    let s = state.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let count = params.count.unwrap_or(50).min(s.recent_messages.len());
     let start = s.recent_messages.len().saturating_sub(count);
     let messages: Vec<String> = s.recent_messages.iter().skip(start).cloned().collect();
@@ -335,7 +335,7 @@ async fn delete_messages(
 ) -> Result<(StatusCode, Json<OkResponse>), StatusCode> {
     let state = mgr.resolve(params.session.as_deref())
         .ok_or(StatusCode::NOT_FOUND)?;
-    let mut s = state.lock().unwrap();
+    let mut s = state.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let num_cleared = s.recent_messages.len();
     s.recent_messages.clear();
     Ok((
@@ -353,7 +353,7 @@ async fn get_room(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let state = mgr.resolve(params.session.as_deref())
         .ok_or(StatusCode::NOT_FOUND)?;
-    let s = state.lock().unwrap();
+    let s = state.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     match &s.current_room {
         Some(room) => Ok(Json(serde_json::json!({
             "found": true,
@@ -377,7 +377,7 @@ async fn send_command(
 ) -> Result<(StatusCode, Json<OkResponse>), StatusCode> {
     let state = mgr.resolve(params.session.as_deref())
         .ok_or(StatusCode::NOT_FOUND)?;
-    let mut s = state.lock().unwrap();
+    let mut s = state.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     s.pending_commands.push_back(payload.command.clone());
     Ok((
         StatusCode::OK,
@@ -395,7 +395,7 @@ async fn execute_lua(
 ) -> Result<(StatusCode, Json<OkResponse>), StatusCode> {
     let state = mgr.resolve(params.session.as_deref())
         .ok_or(StatusCode::NOT_FOUND)?;
-    let mut s = state.lock().unwrap();
+    let mut s = state.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     s.pending_lua.push_back(payload.code.clone());
     Ok((
         StatusCode::OK,
@@ -415,7 +415,7 @@ async fn evaluate_lua(
         .ok_or(StatusCode::NOT_FOUND)?;
     let (tx, rx) = tokio::sync::oneshot::channel();
     {
-        let mut s = state.lock().unwrap();
+        let mut s = state.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         s.pending_eval_lua.push_back((payload.code.clone(), tx));
     }
 

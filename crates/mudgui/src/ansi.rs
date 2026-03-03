@@ -154,8 +154,8 @@ impl AnsiState {
     // 已廢棄：亮度補償已移至渲染器統一處理
 }
 
-/// 解析 ANSI 轉義碼，返回帶顏色的文字片段
-#[allow(dead_code)]
+/// 解析 ANSI 轉義碼，返回帶顏色的文字片段（測試用便捷包裝）
+#[cfg(test)]
 pub fn parse_ansi(input: &str) -> Vec<AnsiSpan> {
     parse_ansi_with_widths(input, None)
 }
@@ -195,12 +195,16 @@ pub fn parse_ansi_with_widths(input: &str, byte_widths: Option<&[u8]>) -> Vec<An
                     while let Some(&ch) = chars.peek() {
                         let b = ch as u8;
                         if (0x40..=0x7E).contains(&b) {
-                            cmd = chars.next().unwrap();
-                            width_idx += 1;
+                            if let Some(c) = chars.next() {
+                                cmd = c;
+                                width_idx += 1;
+                            }
                             break;
                         }
-                        sequence_content.push(chars.next().unwrap());
-                        width_idx += 1;
+                        if let Some(c) = chars.next() {
+                            sequence_content.push(c);
+                            width_idx += 1;
+                        }
                     }
 
                     if cmd == 'm' {
@@ -249,8 +253,10 @@ pub fn parse_ansi_with_widths(input: &str, byte_widths: Option<&[u8]>) -> Vec<An
                 Some(&'(') | Some(&')') => {
                     chars.next(); // 消耗 '(' 或 ')'
                     width_idx += 1;
-                    chars.next(); // 消耗字集識別碼
-                    width_idx += 1;
+                    if chars.peek().is_some() {
+                        chars.next(); // 消耗字集識別碼
+                        width_idx += 1;
+                    }
                 }
                 _ => {}
             }
@@ -293,7 +299,9 @@ pub fn strip_ansi(input: &str) -> String {
                 }
                 Some(&'(') | Some(&')') => {
                     chars.next(); // 消耗 '(' 或 ')'
-                    chars.next(); // 消耗字集識別碼
+                    if chars.peek().is_some() {
+                        chars.next(); // 消耗字集識別碼
+                    }
                 }
                 _ => {
                     // 其他 ESC 序列，跳過 ESC 本身
@@ -440,6 +448,20 @@ mod tests {
     }
 
     #[test]
+    fn test_truncated_ansi_no_panic() {
+        // 截斷的 ANSI 序列不應 panic
+        let _ = parse_ansi("\x1b[");
+        let _ = parse_ansi("\x1b[31");
+        let _ = parse_ansi("\x1b");
+        let _ = parse_ansi("\x1b(");
+        let _ = parse_ansi("\x1b)");
+        // strip_ansi 同樣不應 panic
+        let _ = strip_ansi("\x1b[");
+        let _ = strip_ansi("\x1b(");
+        let _ = strip_ansi("\x1b)");
+    }
+
+    #[test]
     fn test_dual_color_multi_sgr() {
         // 雙色字：\x1b[1;31m\x1b[m\x1b[1m桃 → bold red + reset + bold
         let input = "\x1b[1;31m\x1b[m\x1b[1m桃";
@@ -449,5 +471,130 @@ mod tests {
         assert_eq!(spans[0].fg_color_left, Some(Color32::from_rgb(255, 85, 85))); // Bold Red
         assert_eq!(spans[0].fg_color, Color32::from_rgb(200, 200, 200)); // Default（bold 亮度在渲染器提升）
         assert!(spans[0].bold);
+    }
+
+    // ========== 邊界條件測試 ==========
+
+    #[test]
+    fn test_empty_input() {
+        let spans = parse_ansi("");
+        assert!(spans.is_empty());
+        assert_eq!(strip_ansi(""), "");
+    }
+
+    #[test]
+    fn test_256_color_foreground() {
+        // 38;5;196 = 256-color 紅色
+        let spans = parse_ansi("\x1b[38;5;196mRed256\x1b[0m");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].text, "Red256");
+    }
+
+    #[test]
+    fn test_256_color_background() {
+        // 48;5;21 = 256-color 背景藍色
+        let spans = parse_ansi("\x1b[48;5;21mBlueBG\x1b[0m");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].text, "BlueBG");
+        assert!(spans[0].bg_color.is_some());
+    }
+
+    #[test]
+    fn test_truecolor_rgb() {
+        // 38;2;r;g;b = TrueColor 前景
+        let spans = parse_ansi("\x1b[38;2;255;128;0mOrange\x1b[0m");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].text, "Orange");
+        assert_eq!(spans[0].fg_color, Color32::from_rgb(255, 128, 0));
+    }
+
+    #[test]
+    fn test_truecolor_background() {
+        // 48;2;r;g;b = TrueColor 背景
+        let spans = parse_ansi("\x1b[48;2;0;100;200mTCBG\x1b[0m");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].bg_color, Some(Color32::from_rgb(0, 100, 200)));
+    }
+
+    #[test]
+    fn test_256_color_grayscale() {
+        // 38;5;240 = 灰階（index 232-255）
+        let spans = parse_ansi("\x1b[38;5;240mGray\x1b[0m");
+        assert_eq!(spans.len(), 1);
+        // 240 - 232 = 8, gray = 8*10+8 = 88
+        assert_eq!(spans[0].fg_color, Color32::from_rgb(88, 88, 88));
+    }
+
+    #[test]
+    fn test_multi_sgr_params() {
+        // 多個 SGR 參數在同一序列中：bold + fg_red + bg_blue
+        let spans = parse_ansi("\x1b[1;31;44mStyled\x1b[0m");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].text, "Styled");
+        assert!(spans[0].bold);
+        assert_eq!(spans[0].fg_color, Color32::from_rgb(255, 85, 85)); // bold red
+        assert_eq!(spans[0].bg_color, Some(Color32::from_rgb(0, 0, 187))); // blue bg
+    }
+
+    #[test]
+    fn test_reset_fg_bg_separately() {
+        // 39 重置前景，49 重置背景
+        let spans = parse_ansi("\x1b[31;42mColored\x1b[39mFGReset\x1b[49mBGReset");
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans[1].fg_color, Color32::from_rgb(200, 200, 200)); // default fg
+        assert_eq!(spans[1].bg_color, Some(Color32::from_rgb(0, 187, 0))); // green bg preserved
+        assert_eq!(spans[2].bg_color, None); // bg reset
+    }
+
+    #[test]
+    fn test_high_intensity_background() {
+        // 100-107 高亮背景色
+        let spans = parse_ansi("\x1b[101mBrightRedBG\x1b[0m");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].bg_color, Some(Color32::from_rgb(255, 85, 85)));
+    }
+
+    #[test]
+    fn test_only_ansi_no_text() {
+        // 只有 ANSI 碼沒有文字
+        let spans = parse_ansi("\x1b[31m\x1b[0m");
+        assert!(spans.is_empty());
+    }
+
+    #[test]
+    fn test_strip_ansi_preserves_text() {
+        let input = "\x1b[1;31mHello\x1b[0m \x1b[32mWorld\x1b[0m!";
+        assert_eq!(strip_ansi(input), "Hello World!");
+    }
+
+    #[test]
+    fn test_strip_ansi_control_chars() {
+        // 不可見控制字元（BEL、BS）應被移除
+        let input = "Hello\x07World\x08!";
+        assert_eq!(strip_ansi(input), "HelloWorld!");
+    }
+
+    #[test]
+    fn test_newline_preserved() {
+        let spans = parse_ansi("line1\nline2");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].text, "line1\nline2");
+    }
+
+    #[test]
+    fn test_consecutive_color_changes() {
+        // 連續切換顏色不含文字，只有最後一個生效
+        let spans = parse_ansi("\x1b[31m\x1b[32m\x1b[33mYellow\x1b[0m");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].fg_color, Color32::from_rgb(187, 187, 0)); // yellow
+    }
+
+    #[test]
+    fn test_unbold_code() {
+        // SGR 22 取消粗體
+        let spans = parse_ansi("\x1b[1mBold\x1b[22mNormal");
+        assert_eq!(spans.len(), 2);
+        assert!(spans[0].bold);
+        assert!(!spans[1].bold);
     }
 }

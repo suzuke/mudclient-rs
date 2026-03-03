@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tracing::{debug, error, info, warn};
 
-use super::protocol::{generate_refusal, parse_telnet_data, TelnetEvent};
+use super::protocol::{generate_refusal, parse_telnet_data, GmcpMessage, TelnetEvent, TelnetOption, TelnetCommand, IAC};
 use crate::encoding::encode_big5;
 
 /// Telnet 客戶端錯誤
@@ -75,6 +75,8 @@ pub struct TelnetClient {
     outgoing_buffer: Vec<u8>,
     /// Big5 解碼器（保留用於相容，但已切換為手動狀態機處理）
     _decoder: encoding_rs::Decoder,
+    /// GMCP 訊息佇列（每次 read 後由呼叫者取走）
+    gmcp_queue: Vec<GmcpMessage>,
 }
 
 impl TelnetClient {
@@ -90,6 +92,7 @@ impl TelnetClient {
             pending_ansi: Vec::new(),
             ansi_buffer: Vec::new(),
             _decoder: encoding_rs::BIG5.new_decoder(),
+            gmcp_queue: Vec::new(),
         }
     }
 
@@ -221,7 +224,13 @@ impl TelnetClient {
                     // 將回應放入緩衝區，等讀取完成後統一發送或由 flush 調用
                     self.outgoing_buffer.extend_from_slice(&response);
                 }
-            } else if let TelnetEvent::Subnegotiation(_option, _data) = event {
+            } else if let TelnetEvent::Subnegotiation(option, sub_data) = event {
+                if option == TelnetOption::Gmcp {
+                    if let Some(msg) = GmcpMessage::parse(&sub_data) {
+                        debug!("收到 GMCP: {} {:?}", msg.package, msg.data);
+                        self.gmcp_queue.push(msg);
+                    }
+                }
             }
         }
 
@@ -340,6 +349,19 @@ impl TelnetClient {
         }
 
         (final_output, final_widths)
+    }
+
+    /// 取出並清空 GMCP 訊息佇列
+    pub fn drain_gmcp(&mut self) -> Vec<GmcpMessage> {
+        std::mem::take(&mut self.gmcp_queue)
+    }
+
+    /// 發送 GMCP 訊息到伺服器
+    pub async fn send_gmcp(&mut self, message: &GmcpMessage) -> Result<(), TelnetError> {
+        let mut packet = vec![IAC, TelnetCommand::Sb as u8, TelnetOption::Gmcp.as_byte()];
+        packet.extend_from_slice(&message.to_bytes());
+        packet.extend_from_slice(&[IAC, TelnetCommand::Se as u8]);
+        self.send_raw(&packet).await
     }
 
     /// 向後相容的 read

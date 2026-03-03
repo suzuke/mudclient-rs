@@ -146,7 +146,6 @@ impl TelnetOption {
 
 /// Telnet 資料解析結果
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)] // Data variant 保留給未來使用
 pub enum TelnetEvent {
     /// 純文字資料
     Data(Vec<u8>),
@@ -154,6 +153,42 @@ pub enum TelnetEvent {
     Command(TelnetCommand, TelnetOption),
     /// Sub-negotiation 資料
     Subnegotiation(TelnetOption, Vec<u8>),
+}
+
+/// GMCP 訊息（解析後的結構化資料）
+#[derive(Debug, Clone, PartialEq)]
+pub struct GmcpMessage {
+    /// 訊息包名（如 "Room.Info", "Char.Vitals"）
+    pub package: String,
+    /// JSON 資料（可選）
+    pub data: Option<String>,
+}
+
+impl GmcpMessage {
+    /// 從 GMCP 子協商原始資料解析
+    pub fn parse(raw: &[u8]) -> Option<Self> {
+        let text = std::str::from_utf8(raw).ok()?;
+        // 格式: "package.message" 或 "package.message json_data"
+        // 分隔符可以是空格或換行
+        let (package, data) = if let Some(pos) = text.find(|c: char| c == ' ' || c == '\n') {
+            let (pkg, rest) = text.split_at(pos);
+            let rest = rest[1..].trim();
+            (pkg.to_string(), if rest.is_empty() { None } else { Some(rest.to_string()) })
+        } else {
+            (text.to_string(), None)
+        };
+        Some(Self { package, data })
+    }
+
+    /// 序列化為 GMCP 子協商資料（用於傳送）
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut result = self.package.as_bytes().to_vec();
+        if let Some(ref data) = self.data {
+            result.push(b' ');
+            result.extend_from_slice(data.as_bytes());
+        }
+        result
+    }
 }
 
 /// 解析 Telnet 資料流，分離出文字和命令
@@ -252,9 +287,9 @@ pub fn generate_refusal(cmd: TelnetCommand, option: TelnetOption) -> Vec<u8> {
         _ => return vec![],
     };
 
-    // 對於 SGA，我們接受；對於 ECHO，我們選擇忽略（避免在切換遊戲模式時產生干擾位元組）
+    // 對於 SGA/GMCP，我們接受；對於 ECHO，我們選擇忽略
     let response_cmd = match option {
-        TelnetOption::SuppressGoAhead => {
+        TelnetOption::SuppressGoAhead | TelnetOption::Gmcp => {
             if cmd == TelnetCommand::Will {
                 TelnetCommand::Do
             } else if cmd == TelnetCommand::Do {
@@ -329,6 +364,49 @@ mod tests {
     fn test_ignore_echo() {
         let response = generate_refusal(TelnetCommand::Will, TelnetOption::Echo);
         assert!(response.is_empty());
+    }
+
+    #[test]
+    fn test_accept_gmcp() {
+        // GMCP WILL → 回應 DO
+        let response = generate_refusal(TelnetCommand::Will, TelnetOption::Gmcp);
+        assert_eq!(response, vec![IAC, TelnetCommand::Do as u8, TelnetOption::Gmcp.as_byte()]);
+    }
+
+    #[test]
+    fn test_gmcp_subnegotiation_parsing() {
+        // IAC SB GMCP "Room.Info {json}" IAC SE
+        let json_data = r#"{"id":123,"name":"Town Square"}"#;
+        let mut input = vec![IAC, TelnetCommand::Sb as u8, TelnetOption::Gmcp.as_byte()];
+        input.extend_from_slice(format!("Room.Info {json_data}").as_bytes());
+        input.extend_from_slice(&[IAC, TelnetCommand::Se as u8]);
+
+        let (_data, events, _) = parse_telnet_data(&input);
+        assert_eq!(events.len(), 1);
+        if let TelnetEvent::Subnegotiation(opt, sub_data) = &events[0] {
+            assert_eq!(*opt, TelnetOption::Gmcp);
+            let msg = GmcpMessage::parse(sub_data).unwrap();
+            assert_eq!(msg.package, "Room.Info");
+            assert_eq!(msg.data.as_deref(), Some(json_data));
+        } else {
+            panic!("Expected Subnegotiation event");
+        }
+    }
+
+    #[test]
+    fn test_gmcp_message_parse_no_data() {
+        let msg = GmcpMessage::parse(b"Core.Ping").unwrap();
+        assert_eq!(msg.package, "Core.Ping");
+        assert!(msg.data.is_none());
+    }
+
+    #[test]
+    fn test_gmcp_message_roundtrip() {
+        let msg = GmcpMessage { package: "Char.Vitals".into(), data: Some(r#"{"hp":100}"#.into()) };
+        let bytes = msg.to_bytes();
+        let parsed = GmcpMessage::parse(&bytes).unwrap();
+        assert_eq!(parsed.package, "Char.Vitals");
+        assert_eq!(parsed.data.as_deref(), Some(r#"{"hp":100}"#));
     }
 
     #[test]
