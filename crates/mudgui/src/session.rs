@@ -681,8 +681,8 @@ impl Session {
         }
         
         // [向前掃描] 從 name_index 開始，跳過非房間名的雜訊行
-        // 觀察：MUD 房間名（如「市中心」、「風采裝備倉庫」）不以句號結尾
-        //       而 NPC 動作/玩家行為/系統訊息 都以 '.' 或 '。' 結尾
+        // 觀察：MUD 房間名（如「市中心」、「風采裝備倉庫」）不以句末標點結尾
+        //       而 NPC 動作/玩家行為/系統訊息 都以句末標點結尾
         while name_index < n - 1 {
             let raw = &self.server_buffer[name_index];
             let clean = if raw.contains('\x1b') {
@@ -692,8 +692,14 @@ impl Session {
             };
             let trimmed = clean.trim();
             
-            // 空行或以句號結尾的行 → 不是房間名，跳過
-            if trimmed.is_empty() || trimmed.ends_with('.') || trimmed.ends_with('。') {
+            // 空行或以句末標點結尾的行 → 不是房間名，跳過
+            let ends_with_punctuation = trimmed.ends_with('.')
+                || trimmed.ends_with('。')
+                || trimmed.ends_with('?')
+                || trimmed.ends_with('？')
+                || trimmed.ends_with('!')
+                || trimmed.ends_with('！');
+            if trimmed.is_empty() || ends_with_punctuation {
                 name_index += 1;
             } else {
                 break;
