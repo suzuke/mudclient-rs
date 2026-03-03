@@ -1869,26 +1869,16 @@ impl MudApp {
             return;
         }
 
-        // 檢查是否發生了手動修改：
-        // 如果當前輸入與上次自動補齊後的結果不同，則視為使用者手動修改了內容
-        if let Some(ref last_completed) = session.last_completed_input {
-            if &session.input != last_completed {
-                session.tab_completion_prefix = None;
-                session.tab_completion_index = 0;
-            }
-        }
-        
-        if let Some(ref prefix) = session.tab_completion_prefix {
-            if !session.input.starts_with(prefix) || &session.input == prefix {
-                session.tab_completion_prefix = Some(session.input.clone());
-                session.tab_completion_index = 0;
-                session.tab_completed = false;
-            }
-        } else {
+        // 判斷是否在循環補齊中（input 等於上次補齊結果）
+        let is_cycling = session.last_completed_input.as_ref() == Some(&session.input);
+
+        if !is_cycling {
+            // 使用者手動修改了輸入 → 重設前綴為當前輸入
             session.tab_completion_prefix = Some(session.input.clone());
             session.tab_completion_index = 0;
             session.tab_completed = false;
         }
+        // 循環中：保留原始 prefix，不重設 index（index 在上次 Tab 已 +1）
         
         let original_prefix = session.tab_completion_prefix.clone().unwrap();
         
