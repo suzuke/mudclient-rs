@@ -1,5 +1,41 @@
 [
   {
+    "timestamp": 1772523948815,
+    "issues": [],
+    "summary": {
+      "totalIssues": 0,
+      "todoCount": 0,
+      "durationMs": 74
+    }
+  },
+  {
+    "timestamp": 1772523948314,
+    "issues": [],
+    "summary": {
+      "totalIssues": 0,
+      "todoCount": 0,
+      "durationMs": 365
+    }
+  },
+  {
+    "timestamp": 1772523787123,
+    "issues": [],
+    "summary": {
+      "totalIssues": 0,
+      "todoCount": 0,
+      "durationMs": 84
+    }
+  },
+  {
+    "timestamp": 1772523786198,
+    "issues": [],
+    "summary": {
+      "totalIssues": 0,
+      "todoCount": 0,
+      "durationMs": 172
+    }
+  },
+  {
     "timestamp": 1772521835908,
     "issues": [],
     "summary": {

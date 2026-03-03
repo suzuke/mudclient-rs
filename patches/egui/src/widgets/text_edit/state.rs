@@ -43,7 +43,7 @@ pub struct TextEditState {
 
     // If IME candidate window is shown on this text edit.
     #[cfg_attr(feature = "serde", serde(skip))]
-    pub(crate) ime_enabled: bool,
+    pub ime_enabled: bool,
 
     // cursor range for IME candidate.
     #[cfg_attr(feature = "serde", serde(skip))]
