@@ -1693,6 +1693,7 @@ impl MudApp {
                 *pending_action = Some(PendingAction::ToggleProfile);
             }
         }
+
     }
 
     /// 繪製攻略分頁
@@ -3723,18 +3724,16 @@ impl eframe::App for MudApp {
 
         // === 2. UI 渲染 ===
 
-        // === 頂部：狀態列 + 功能鍵 ===
+        // === 頂部：三行工具列 ===
         egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
-            // 第一行：狀態列
+            // --- Row 1: 伺服器資訊 + 狀態 + 連線按鈕 ---
             ui.horizontal(|ui| {
                 if let Some(session) = self.session_manager.active_session() {
-                    ui.label("伺服器:");
-                    ui.label(RichText::new(&session.host).strong());
-                    ui.label(":");
-                    ui.label(&session.port);
+                    use crate::session::ConnectionStatus as SessionStatus;
+
+                    ui.label(format!("伺服器: {} : {}", session.host, session.port));
                     ui.separator();
 
-                    use crate::session::ConnectionStatus as SessionStatus;
                     match &session.status {
                         SessionStatus::Disconnected => {
                             ui.label(RichText::new("● 未連線").color(Color32::GRAY));
@@ -3748,7 +3747,7 @@ impl eframe::App for MudApp {
                         }
                         SessionStatus::Reconnecting => {
                             ui.spinner();
-                            ui.label(RichText::new("⟳ 重連中...").color(Color32::YELLOW));
+                            ui.label(RichText::new("重連中...").color(Color32::YELLOW));
                         }
                     }
 
@@ -3768,46 +3767,52 @@ impl eframe::App for MudApp {
                         }
                     });
                 } else {
-                    ui.label(RichText::new("請從「連線管理」點擊連線以開始").italics().color(Color32::GRAY));
+                    ui.label(RichText::new("MUD Client").strong());
                 }
             });
 
             ui.separator();
 
-            // 第二行：功能鍵
+            // --- Row 2: F1/F2/F3 按鈕 + 九宮格切換 ---
             ui.horizontal(|ui| {
-                if ui.button("F1 說明").clicked() {}
-                if ui.button("F2 別名").clicked() { pending_action = Some(PendingAction::ToggleSettings); }
-                if ui.button("F3 觸發").clicked() { pending_action = Some(PendingAction::ToggleSettings); }
-
-                ui.separator();
-
-                // 九宮格行走模式切換
-                let numpad_label = if self.global_config.numpad.enabled {
-                    RichText::new("🎮 九宮格 ON").color(Color32::GREEN)
-                } else {
-                    RichText::new("🎮 九宮格").color(Color32::GRAY)
-                };
-                if ui.button(numpad_label).on_hover_text("切換九宮格行走模式").clicked() {
-                    self.global_config.numpad.enabled = !self.global_config.numpad.enabled;
-                    let _ = self.global_config.save();
+                if ui.button("F1 說明").on_hover_text("設定中心").clicked() {
+                    pending_action = Some(PendingAction::ToggleSettings);
+                }
+                if ui.button("F2 別名").on_hover_text("別名管理").clicked() {
+                    self.show_alias_window = !self.show_alias_window;
+                }
+                if ui.button("F3 觸發").on_hover_text("觸發管理").clicked() {
+                    self.show_trigger_window = !self.show_trigger_window;
                 }
 
-                ui.separator();
-                // 分頁列
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let numpad_label = if self.global_config.numpad.enabled {
+                        RichText::new("🎮 九宮格 ON").color(Color32::GREEN)
+                    } else {
+                        RichText::new("🎮 九宮格 OFF").color(Color32::GRAY)
+                    };
+                    if ui.button(numpad_label).on_hover_text("切換九宮格行走模式").clicked() {
+                        self.global_config.numpad.enabled = !self.global_config.numpad.enabled;
+                        let _ = self.global_config.save();
+                    }
+                });
+            });
+
+            ui.separator();
+
+            // --- Row 3: Session 分頁標籤 + ➕ ---
+            ui.horizontal(|ui| {
                 if self.session_manager.len() > 0 {
                     let mut close_id = None;
                     for i in 0..self.session_manager.len() {
                         let is_active = i == self.session_manager.active_index();
                         if let Some(s) = self.session_manager.sessions().get(i) {
-                            // 使用 group 讓分頁標籤與關閉按鈕視覺上結合
                             ui.group(|ui| {
                                 ui.horizontal(|ui| {
                                     ui.spacing_mut().item_spacing.x = 4.0;
                                     if ui.selectable_label(is_active, s.tab_title()).clicked() {
                                         pending_action = Some(PendingAction::SwitchTab(i));
                                     }
-                                    // 關閉按鈕 (x)
                                     if ui.add(egui::Button::new("x").small().frame(false)).clicked() {
                                         close_id = Some(s.id);
                                     }
@@ -3819,12 +3824,10 @@ impl eframe::App for MudApp {
                         pending_action = Some(PendingAction::CloseSession(id));
                     }
                 }
-                
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("➕").clicked() {
-                        pending_action = Some(PendingAction::ToggleProfile);
-                    }
-                });
+
+                if ui.button("➕").on_hover_text("新增連線").clicked() {
+                    pending_action = Some(PendingAction::ToggleProfile);
+                }
             });
         });
 
