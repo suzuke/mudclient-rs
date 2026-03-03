@@ -1221,9 +1221,9 @@ impl Session {
             if has_mob_brackets {
                 for cap in MOB_BRACKET_RE.captures_iter(&clean_text) {
                     let content = &cap[1];
-                    for word in content.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-') {
+                    for word in content.split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-') {
                         if word.len() >= 2
-                            && word.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+                            && word.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
                             && !word.chars().all(|c| c.is_ascii_digit())
                             && !is_stat_word(word)
                         {
@@ -1240,9 +1240,9 @@ impl Session {
             if is_slash_line {
                 if let Some(slash_idx) = clean_text.rfind('/') {
                     let after_slash = &clean_text[slash_idx+1..];
-                    for word in after_slash.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-') {
+                    for word in after_slash.split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-') {
                         if word.len() >= 2
-                            && word.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+                            && word.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
                             && !word.chars().all(|c| c.is_ascii_digit())
                             && !is_stat_word(word)
                         {
@@ -1261,9 +1261,9 @@ impl Session {
             } else {
                 WordSource::ScreenText
             };
-            for word in clean_text.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-') {
+            for word in clean_text.split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-') {
                 if word.len() >= 2
-                    && word.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+                    && word.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
                     && !word.chars().all(|c| c.is_ascii_digit())
                     && !is_stat_word(word)
                 {

@@ -1899,9 +1899,9 @@ impl MudApp {
             (original_prefix.clone(), None)
         };
 
-        // 支援 "2.ne" -> "2.necklace" 的數字索引補齊
+        // 支援 "2.ne" -> "2.necklace" 和 "all.sc" -> "all.scroll" 的前綴補齊
         let (search_key, dot_prefix) = if let Some((idx_str, suffix)) = prefix_to_match.split_once('.') {
-            if !idx_str.is_empty() && idx_str.chars().all(|c| c.is_ascii_digit()) {
+            if !idx_str.is_empty() && (idx_str.chars().all(|c| c.is_ascii_digit()) || idx_str.eq_ignore_ascii_case("all")) {
                  (suffix.to_string(), Some(format!("{}.", idx_str)))
             } else {
                  (prefix_to_match.clone(), None)
