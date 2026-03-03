@@ -651,6 +651,18 @@ impl Session {
                 found_prev_exit = true;
                 break;
             }
+            
+            // 5. Mob/NPC/玩家存在行 (例如 "XXX 站在這兒.")
+            // 這些行出現在出口行之後，屬於上一個房間區塊的殘留
+            if trim_line.ends_with("站在這兒.")
+                || trim_line.ends_with("站在這裡.")
+                || trim_line.ends_with("is here.")
+                || trim_line.ends_with("is standing here.")
+            {
+                name_index = i + 1;
+                found_prev_exit = true;
+                break;
+            }
         }
         
         // 如果沒找到明確的分隔線，且我們回溯到了 start_index
@@ -676,6 +688,16 @@ impl Session {
             raw_name.to_string()
         };
         
+        // [安全網] 驗證名稱不是 Mob/玩家存在行
+        let name_trimmed = name.trim();
+        if name_trimmed.ends_with("站在這兒.")
+            || name_trimmed.ends_with("站在這裡.")
+            || name_trimmed.ends_with("is here.")
+            || name_trimmed.ends_with("is standing here.")
+        {
+            return; // 不是合法房間名，跳過偵測
+        }
+        
         // 描述是中間的部分 (移除 ANSI)
         // [修正] 排除提示字元行 (Prompt)，這些行通常動態變化，會破壞 Hash 穩定性
         let mut desc_lines = Vec::new();
@@ -694,7 +716,13 @@ impl Session {
             let is_exits = trimmed.starts_with("[出口:");
             let is_script = trimmed.starts_with('[') && !is_exits;
             
-            let is_noise = is_prompt || is_script;
+            // 偵測 Mob/NPC/玩家存在行
+            let is_presence = trimmed.ends_with("站在這兒.")
+                || trimmed.ends_with("站在這裡.")
+                || trimmed.ends_with("is here.")
+                || trimmed.ends_with("is standing here.");
+            
+            let is_noise = is_prompt || is_script || is_presence;
             
             if !is_noise {
                 desc_lines.push(clean_line);

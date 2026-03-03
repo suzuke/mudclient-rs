@@ -61,6 +61,8 @@
 
 在觸發器 (Triggers)、別名 (Aliases) 的腳本模式中，或使用 `/lua` 時，可以使用 `mud` 物件與客戶端互動。
 
+> 💡 **進階閱讀：**關於觸發器與別名的完整使用方式（包含設定格式、正則捕獲、參數替換等），請參考 [**觸發器與別名指南 (Triggers & Aliases)**](Triggers_Aliases.md)。
+
 ### `mud` 物件函數
 
 | 函數 | 說明 | 範例 |
@@ -108,3 +110,11 @@ else
     mud.echo("生命值安全: " .. current_hp)
 end
 ```
+
+---
+
+## 相關文件
+
+* [觸發器與別名指南 (Triggers & Aliases)](Triggers_Aliases.md)
+* [腳本開發指南 (Script Guide)](ScriptGuide.md)
+* [腳本使用手冊 (Scripts)](Scripts.md)

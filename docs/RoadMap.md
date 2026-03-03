@@ -23,9 +23,10 @@
 - [x] Lua 模組系統 (MudNav, MudCombat, MudLoot, MudMapper, MudExplorer, MudUtils)
 - [x] 任務腳本庫擴充 (ikkoku_quest, poker_quest, smurf_quest, itemfarm 等)
 
-### v0.3.0 (穩定與發布) - � 進行中
+### v0.3.0 (穩定與發布) - 🏃 進行中
 - [x] CI/CD 自動建置流程 (GitHub Actions)
 - [x] macOS DMG 打包 (Apple Silicon / Intel Universal)
+- [x] 文件補齊 (API、腳本教學、觸發器與別名指南)
 - [ ] 跨平台執行檔簽章 (macOS Notarization / Windows Signing)
 - [ ] 自動地圖繪製 (Mapper) 視覺化整合
 - [ ] 使用者設定檔 (Profile) 管理介面優化

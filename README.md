@@ -55,6 +55,7 @@
 *   **MudMapper** — 房間記錄與地圖建構
 
 ### 文件索引
+*   **[觸發器與別名指南 (Triggers & Aliases)](docs/Triggers_Aliases.md)**: 自動化操作的核心設定。
 *   **[API 文件 (Lua Scripting)](docs/API.md)**: 詳細的腳本 API 參考。
 *   **[腳本開發指南 (Script Guide)](docs/ScriptGuide.md)**: 從零開始寫腳本。
 *   **[系統架構 (Architecture)](docs/Architecture.md)**: 了解內部運作原理。
