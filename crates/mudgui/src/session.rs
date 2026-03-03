@@ -680,6 +680,30 @@ impl Session {
             return;
         }
         
+        // [向前掃描] 從 name_index 開始，跳過非房間名的雜訊行
+        // 觀察：MUD 房間名（如「市中心」、「風采裝備倉庫」）不以句號結尾
+        //       而 NPC 動作/玩家行為/系統訊息 都以 '.' 或 '。' 結尾
+        while name_index < n - 1 {
+            let raw = &self.server_buffer[name_index];
+            let clean = if raw.contains('\x1b') {
+                ANSI_STRIP_RE.replace_all(raw, "").to_string()
+            } else {
+                raw.to_string()
+            };
+            let trimmed = clean.trim();
+            
+            // 空行或以句號結尾的行 → 不是房間名，跳過
+            if trimmed.is_empty() || trimmed.ends_with('.') || trimmed.ends_with('。') {
+                name_index += 1;
+            } else {
+                break;
+            }
+        }
+        
+        if name_index >= n - 1 {
+            return; // 全部都是雜訊行，放棄偵測
+        }
+        
         // 取得名稱 (移除 ANSI)
         let raw_name = &self.server_buffer[name_index];
         let name = if raw_name.contains('\x1b') {
@@ -687,16 +711,6 @@ impl Session {
         } else {
             raw_name.to_string()
         };
-        
-        // [安全網] 驗證名稱不是 Mob/玩家存在行
-        let name_trimmed = name.trim();
-        if name_trimmed.ends_with("站在這兒.")
-            || name_trimmed.ends_with("站在這裡.")
-            || name_trimmed.ends_with("is here.")
-            || name_trimmed.ends_with("is standing here.")
-        {
-            return; // 不是合法房間名，跳過偵測
-        }
         
         // 描述是中間的部分 (移除 ANSI)
         // [修正] 排除提示字元行 (Prompt)，這些行通常動態變化，會破壞 Hash 穩定性
