@@ -1,5 +1,19 @@
 [
   {
+    "timestamp": 1772527307872,
+    "accounts": [
+      {
+        "id": "36cd45bae181",
+        "email": "suzuke789@gmail.com",
+        "isCurrent": true,
+        "maxRemainingPercent": 100,
+        "minRemainingPercent": 0,
+        "availableModelCount": 14,
+        "modelCount": 17
+      }
+    ]
+  },
+  {
     "timestamp": 1772523947948,
     "accounts": []
   },
