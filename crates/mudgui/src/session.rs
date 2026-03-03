@@ -31,6 +31,11 @@ lazy_static! {
     static ref PROMPT_STAT_RE: regex::Regex = regex::Regex::new(r"\d+/\d+").unwrap();
 }
 
+/// Prompt 邊界標記 — 利用 telnet 協定中 prompt 沒有尾隨 \n 的特性
+/// 當收到的 TCP chunk 不以 \n 結尾時，在 server_buffer 插入此標記
+/// 作為 backward scan 的 stop signal，隔開廣播雜訊與房間輸出
+const PROMPT_BOUNDARY: &str = "\x01PROMPT\x01";
+
 // ============================================================================
 // SessionId
 // ============================================================================
@@ -631,7 +636,15 @@ impl Session {
             // 檢查是否為 "停止訊號" (Stop Signals)
             // 這些特徵通常出現在房間名稱之前，表示我們已經回溯到了上一區塊的結尾
             let trim_line = clean_line.trim();
-            
+
+            // 0. Prompt boundary (telnet 協定層偵測 — prompt 沒有尾隨 \n)
+            // 這是最可靠的分界符，不依賴 prompt 內容
+            if trim_line == PROMPT_BOUNDARY {
+                name_index = i + 1;
+                found_prev_exit = true;
+                break;
+            }
+
             // 1. 指令回顯 (例如 "> w")
             if trim_line.starts_with('>') {
                 name_index = i + 1;
@@ -674,14 +687,11 @@ impl Session {
             }
         }
         
-        // 如果沒找到明確的分隔線，且我們回溯到了 start_index
+        // 沒有可靠的分隔線 → 放棄偵測
+        // 根因：登入後首次偵測時 buffer 充滿 MOTD/登入文字，無錨點會導致 hash 不穩定
+        // 此外，非房間指令（如 ch）的輸出若包含 [出口:] 也會在無錨點時誤判
         if !found_prev_exit {
-            // 如果 buffer 夠大，我們假設 start_index 就是開始？
-            // 這有風險，但比完全不更新好。
-            if self.server_buffer.len() >= 40 && start_index > 0 {
-                return;
-            }
-            name_index = 0;
+            return;
         }
         
         if name_index >= n - 1 {
@@ -713,7 +723,8 @@ impl Session {
                 || trimmed.ends_with('!')
                 || trimmed.ends_with('！');
             let starts_with_noise = trimmed.starts_with('(') || trimmed.starts_with('>');
-            if trimmed.is_empty() || ends_with_punctuation || starts_with_noise {
+            let is_boundary = trimmed == PROMPT_BOUNDARY;
+            if trimmed.is_empty() || ends_with_punctuation || starts_with_noise || is_boundary {
                 name_index += 1;
             } else {
                 break;
@@ -731,7 +742,13 @@ impl Session {
         } else {
             raw_name.to_string()
         };
-        
+        let name = name.trim().to_string();
+
+        // 防禦性檢查：名稱不能是出口行本身（如 ch 指令輸出意外觸發偵測）
+        if name.starts_with("[出口:") || name.starts_with("[Exits:") || name.is_empty() {
+            return;
+        }
+
         // 描述是中間的部分 (移除 ANSI)
         // [修正] 排除提示字元行 (Prompt)，這些行通常動態變化，會破壞 Hash 穩定性
         let mut desc_lines = Vec::new();
@@ -756,7 +773,8 @@ impl Session {
                 || trimmed.ends_with("is here.")
                 || trimmed.ends_with("is standing here.");
             
-            let is_noise = is_prompt || is_script || is_presence;
+            let is_boundary = trimmed == PROMPT_BOUNDARY;
+            let is_noise = is_prompt || is_script || is_presence || is_boundary;
             
             if !is_noise {
                 desc_lines.push(clean_line);
@@ -1045,16 +1063,16 @@ impl Session {
             let mut result = true;
             let mut current_pos = 0;
             let lines: Vec<&str> = text.split('\n').collect();
-            for line in lines {
+            for line in &lines {
                 // 計算該行的位元組寬度切片
                 let line_widths = if let Some(widths) = byte_widths {
                     let char_count = line.chars().count();
                     let start = current_pos;
                     let end = (start + char_count).min(widths.len());
-                    
+
                     // 下一行的起始位置需跳過這行的字元數 + 1 (換行符)
                     current_pos += char_count + 1;
-                    
+
                     if start < widths.len() {
                         Some(&widths[start..end])
                     } else {
@@ -1066,6 +1084,17 @@ impl Session {
 
                 result &= self.handle_text_with_widths(line, is_echo, line_widths);
             }
+
+            // [Prompt Boundary] Telnet 協定：prompt 不以 \n 結尾
+            // 若整段 text 不以 \n 結尾，代表最後一段是 prompt → 插入邊界標記
+            // 這讓 backward scan 能正確隔開「廣播雜訊」與「房間輸出」
+            if !is_echo && !text.ends_with('\n') {
+                if self.server_buffer.len() >= 40 {
+                    self.server_buffer.pop_front();
+                }
+                self.server_buffer.push_back(PROMPT_BOUNDARY.to_string());
+            }
+
             return result;
         }
 
