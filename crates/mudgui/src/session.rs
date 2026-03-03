@@ -692,14 +692,19 @@ impl Session {
             };
             let trimmed = clean.trim();
             
-            // 空行或以句末標點結尾的行 → 不是房間名，跳過
+            // 跳過明確不是房間名的行：
+            // - 空行
+            // - 以句末標點結尾（NPC 動作/系統訊息）
+            // - 以 '(' 開頭（NPC 光環標記如「(白色聖光) NPC名」，房間名不會以括號開頭）
+            // - 以 '>' 開頭（指令回顯）
             let ends_with_punctuation = trimmed.ends_with('.')
                 || trimmed.ends_with('。')
                 || trimmed.ends_with('?')
                 || trimmed.ends_with('？')
                 || trimmed.ends_with('!')
                 || trimmed.ends_with('！');
-            if trimmed.is_empty() || ends_with_punctuation {
+            let starts_with_noise = trimmed.starts_with('(') || trimmed.starts_with('>');
+            if trimmed.is_empty() || ends_with_punctuation || starts_with_noise {
                 name_index += 1;
             } else {
                 break;
@@ -794,6 +799,11 @@ impl Session {
                  tracing::error!("on_room_detected hook error: {}", e);
             }
         }
+
+        // [結構性修復] 偵測成功後清空 server_buffer，保留出口行作為下次的錨點
+        // 這樣出口之後的 NPC/玩家行不會殘留在 buffer 中，汙染下次房間偵測
+        self.server_buffer.clear();
+        self.server_buffer.push_back(clean_current);
     }
 
     /// 檢查並執行到期的計時器
