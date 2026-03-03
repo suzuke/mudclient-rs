@@ -94,9 +94,6 @@ pub struct MudApp {
 
     /// API 狀態管理器（每個 Session 獨立的 API 狀態）
     api_state_mgr: ApiStateManager,
-
-    /// 九宮格行走模式攔截到的待發送指令
-    pending_numpad_commands: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,8 +197,6 @@ impl MudApp {
             active_guide_name: None,
 
             api_state_mgr,
-
-            pending_numpad_commands: Vec::new(),
         }
     }
 
@@ -3243,24 +3238,20 @@ impl MudApp {
 }
 
 impl eframe::App for MudApp {
-    /// 攔截原始輸入：九宮格行走模式
+    /// 攔截原始輸入：九宮格 Numpad 行走
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
-        if !self.global_config.numpad.enabled {
-            return;
-        }
-
-        // 收集要攔截的方向指令，同時標記要移除的事件索引
+        // 收集 numpad 按鍵對應的方向指令
         let mut commands_to_send: Vec<String> = Vec::new();
-        let mut keys_to_remove: Vec<egui::Key> = Vec::new();
+        let mut numpad_indices: Vec<usize> = Vec::new();
         let mut texts_to_remove: Vec<String> = Vec::new();
 
-        for event in raw_input.events.iter() {
-            if let egui::Event::Key { key, pressed: true, modifiers, .. } = event {
-                // 只攔截無修飾鍵的按鍵（避免干擾 Cmd+1~9 分頁切換等）
+        for (i, event) in raw_input.events.iter().enumerate() {
+            if let egui::Event::Key { key, pressed: true, is_numpad: true, modifiers, .. } = event {
+                // 有修飾鍵時不攔截（保留 Cmd+數字 分頁切換等功能）
                 if modifiers.alt || modifiers.command || modifiers.mac_cmd || modifiers.ctrl {
                     continue;
                 }
-                // Key → numpad index (0-9 for digits, 10 for period)
+                // Key → numpad index
                 let index = match key {
                     egui::Key::Num0 => Some(0u8),
                     egui::Key::Num1 => Some(1),
@@ -3278,8 +3269,8 @@ impl eframe::App for MudApp {
                 if let Some(idx) = index {
                     if let Some(cmd) = self.global_config.numpad.command_for_index(idx) {
                         commands_to_send.push(cmd.to_string());
-                        keys_to_remove.push(*key);
-                        // 數字鍵同時會產生 Text 事件，需要一併移除
+                        numpad_indices.push(i);
+                        // 對應的 Text 事件也要移除
                         let text_char = if idx <= 9 {
                             std::char::from_digit(idx as u32, 10).map(|c| c.to_string())
                         } else {
@@ -3294,37 +3285,29 @@ impl eframe::App for MudApp {
         }
 
         if !commands_to_send.is_empty() {
-            // 移除被九宮格攔截的 Key 和 Text 事件
+            // 從後往前移除已攔截的 Key 事件
+            for &i in numpad_indices.iter().rev() {
+                raw_input.events.remove(i);
+            }
+            // 移除對應的 Text 事件
             raw_input.events.retain(|event| {
-                match event {
-                    egui::Event::Key { key, pressed: true, modifiers, .. } => {
-                        if modifiers.alt || modifiers.command || modifiers.mac_cmd || modifiers.ctrl {
-                            true // 有修飾鍵的按鍵不移除
-                        } else {
-                            !keys_to_remove.contains(key)
-                        }
-                    }
-                    egui::Event::Text(text) => {
-                        !texts_to_remove.contains(text)
-                    }
-                    _ => true,
+                if let egui::Event::Text(text) = event {
+                    !texts_to_remove.contains(text)
+                } else {
+                    true
                 }
             });
 
-            self.pending_numpad_commands.extend(commands_to_send);
-        }
-    }
-
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // === 0. 處理九宮格行走指令 ===
-        if !self.pending_numpad_commands.is_empty() {
-            let commands: Vec<String> = self.pending_numpad_commands.drain(..).collect();
+            // 直接發送，不等下一幀
             if let Some(session) = self.session_manager.active_session_mut() {
-                for cmd in commands {
+                for cmd in commands_to_send {
                     Self::send_direction_for_session(session, &cmd);
                 }
             }
         }
+    }
+
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
 
         // === 1. 背景邏輯處理 ===
         
