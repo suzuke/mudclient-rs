@@ -483,7 +483,7 @@ impl Session {
             last_sent_command: None,
             repeat_command_count: 0,
             line_buffer: std::collections::VecDeque::with_capacity(20),
-            server_buffer: std::collections::VecDeque::with_capacity(20),
+            server_buffer: std::collections::VecDeque::with_capacity(40),
             api_state,
         };
 
@@ -600,7 +600,7 @@ impl Session {
         let mut found_prev_exit = false;
         
         // 限制回溯行數，避免讀到太久以前的雜訊
-        let scan_limit = 12; // 假設房間描述不會超過 12 行
+        let scan_limit = 30; // 容納長描述房間 (如 14+ 行的魔幻空間)
         let start_index = if n > scan_limit + 1 { n - 1 - scan_limit } else { 0 };
 
         for i in (start_index..n-1).rev() {
@@ -669,7 +669,7 @@ impl Session {
         if !found_prev_exit {
             // 如果 buffer 夠大，我們假設 start_index 就是開始？
             // 這有風險，但比完全不更新好。
-            if self.server_buffer.len() >= 20 && start_index > 0 {
+            if self.server_buffer.len() >= 40 && start_index > 0 {
                 return;
             }
             name_index = 0;
@@ -1067,7 +1067,7 @@ impl Session {
             let clean_lower_pre = clean_text.to_lowercase();
             let is_prompt_pre = clean_lower_pre.trim().starts_with('(') && clean_lower_pre.contains(')') && PROMPT_STAT_RE.is_match(&clean_lower_pre);
             if !is_prompt_pre {
-                if self.server_buffer.len() >= 20 {
+                if self.server_buffer.len() >= 40 {
                     self.server_buffer.pop_front();
                 }
                 self.server_buffer.push_back(text.trim().to_string());
