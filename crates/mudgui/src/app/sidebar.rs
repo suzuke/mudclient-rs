@@ -197,7 +197,7 @@ impl MudApp {
             self.map_renderer.sync_from_database(&session.map_database);
 
             // 同步當前房間
-            let current_room_id = session.current_room.as_ref().map(|room| room.hash(true));
+            let current_room_id = session.current_room_id.clone();
             self.map_renderer.set_current_room(current_room_id);
         } else if self.map_renderer.data.is_none() {
             // Fallback: 無 session 時嘗試從檔案載入

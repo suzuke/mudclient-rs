@@ -71,6 +71,9 @@ impl SubWindow {
 
     /// 添加訊息
     pub fn push(&mut self, message: WindowMessage) {
+        if self.capacity == 0 {
+            return;
+        }
         if self.messages.len() >= self.capacity {
             self.messages.pop_front();
         }
@@ -97,6 +100,18 @@ impl SubWindow {
         let len = self.messages.len();
         let skip = len.saturating_sub(n);
         self.messages.iter().skip(skip)
+    }
+
+    /// 獲取最後 N 條訊息的 O(1) slice 存取（利用 VecDeque::as_slices）
+    pub fn last_n_slices(&self, n: usize) -> (&[WindowMessage], &[WindowMessage]) {
+        let len = self.messages.len();
+        let skip = len.saturating_sub(n);
+        let (front, back) = self.messages.as_slices();
+        if skip >= front.len() {
+            (&[], &back[skip - front.len()..])
+        } else {
+            (&front[skip..], back)
+        }
     }
 }
 

@@ -149,7 +149,7 @@ impl MapRenderer {
         }
     }
 
-    /// 計算房間佈局（BFS 方向性佈局）
+    /// 計算房間佈局（BFS 方向性佈局，含碰撞偏移）
     fn compute_layout(&mut self) {
         self.layout.clear();
 
@@ -161,10 +161,14 @@ impl MapRenderer {
             .cloned();
         let Some(start_id) = start_id else { return };
 
+        // 已佔用的格位 (量化後的座標 → room_id)
+        let mut occupied = HashMap::<(i32, i32), String>::new();
         let mut visited = std::collections::HashSet::new();
         let mut queue = std::collections::VecDeque::new();
 
-        self.layout.insert(start_id.clone(), Pos2::new(0.0, 0.0));
+        let start_pos = Pos2::new(0.0, 0.0);
+        self.layout.insert(start_id.clone(), start_pos);
+        occupied.insert(Self::quantize(start_pos), start_id.clone());
         queue.push_back(start_id.clone());
         visited.insert(start_id);
 
@@ -177,9 +181,11 @@ impl MapRenderer {
                         continue;
                     }
                     let offset = Self::direction_offset(direction) * 120.0;
-                    let next_pos = current_pos + offset;
+                    let ideal_pos = current_pos + offset;
+                    let next_pos = Self::resolve_collision(ideal_pos, direction, &occupied);
 
                     self.layout.insert(next_id.clone(), next_pos);
+                    occupied.insert(Self::quantize(next_pos), next_id.clone());
                     queue.push_back(next_id.clone());
                     visited.insert(next_id.clone());
                 }
@@ -187,6 +193,40 @@ impl MapRenderer {
         }
 
         self.needs_relayout = false;
+    }
+
+    /// 將座標量化為格位鍵（用於碰撞檢測）
+    fn quantize(pos: Pos2) -> (i32, i32) {
+        ((pos.x / 60.0).round() as i32, (pos.y / 60.0).round() as i32)
+    }
+
+    /// 碰撞偏移：若理想位置已佔用，沿方向的垂直軸偏移
+    fn resolve_collision(
+        ideal: Pos2,
+        direction: &str,
+        occupied: &HashMap<(i32, i32), String>,
+    ) -> Pos2 {
+        let key = Self::quantize(ideal);
+        if !occupied.contains_key(&key) {
+            return ideal;
+        }
+
+        // 沿移動方向的垂直軸偏移
+        let perp = match direction.to_lowercase().as_str() {
+            "n" | "north" | "s" | "south" => Vec2::new(1.0, 0.0),
+            "e" | "east" | "w" | "west" => Vec2::new(0.0, 1.0),
+            _ => Vec2::new(1.0, 1.0),
+        };
+
+        for i in 1..=10 {
+            for sign in [1.0_f32, -1.0] {
+                let candidate = ideal + perp * (60.0 * i as f32 * sign);
+                if !occupied.contains_key(&Self::quantize(candidate)) {
+                    return candidate;
+                }
+            }
+        }
+        ideal
     }
 
     /// 根據方向字串返回單位向量
@@ -270,13 +310,21 @@ impl MapRenderer {
 
         let Some(data) = &self.data else { return None };
 
+        // 裁剪矩形：只繪製畫布可見區域（預留 margin）
+        let cull_rect = response.rect.expand(80.0);
+
         // 繪製連線
         for (from_id, exits) in &data.moves {
             let Some(&from_pos) = self.layout.get(from_id) else { continue };
             for to_id in exits.values() {
                 let Some(&to_pos) = self.layout.get(to_id) else { continue };
+                let from_screen = to_screen(from_pos);
+                let to_screen_pos = to_screen(to_pos);
+                if !cull_rect.contains(from_screen) && !cull_rect.contains(to_screen_pos) {
+                    continue;
+                }
                 painter.line_segment(
-                    [to_screen(from_pos), to_screen(to_pos)],
+                    [from_screen, to_screen_pos],
                     Stroke::new(1.5, Color32::from_gray(100)),
                 );
             }
@@ -285,6 +333,9 @@ impl MapRenderer {
         // 繪製房間節點
         for (room_id, pos) in &self.layout {
             let screen_pos = to_screen(*pos);
+            if !cull_rect.contains(screen_pos) {
+                continue;
+            }
             let radius = 25.0 * self.zoom;
             let Some(room_info) = data.rooms.get(room_id) else { continue };
 

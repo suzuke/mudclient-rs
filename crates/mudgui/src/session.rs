@@ -169,6 +169,9 @@ pub struct Session {
     /// 當前房間
     pub current_room: Option<Room>,
 
+    /// 當前房間 ID 快取（避免每幀重算 SHA-256）
+    pub current_room_id: Option<String>,
+
     // === 獨立的管理器（Profile 專屬） ===
     /// 別名管理器
     pub alias_manager: AliasManager,
@@ -259,6 +262,8 @@ pub struct Session {
 
     /// 內建地圖資料庫（Rust 原生 MudMapper）
     pub map_database: MapDatabase,
+    /// 上次自動儲存時的 map data_version
+    map_last_saved_version: u64,
 }
 
 /// 單字來源類型
@@ -456,6 +461,7 @@ impl Session {
             message_rx: None,
             connected_at: None,
             current_room: None,
+            current_room_id: None,
             alias_manager,
             trigger_manager,
             path_manager,
@@ -495,6 +501,7 @@ impl Session {
                     MapDatabase::new()
                 }
             },
+            map_last_saved_version: 0,
         };
 
         // 自動載入 scripts/ 目錄下的腳本
@@ -810,9 +817,19 @@ impl Session {
 
         self.script_engine.set_current_room(Some(room.clone()));
         self.current_room = Some(room);
+        self.current_room_id = Some(id.clone());
 
         // Rust 內建地圖記錄
         self.map_database.on_room_detected(&id, &name, &api_exits);
+
+        // 自動儲存地圖（每 10 次變更）
+        if self.map_database.data_version - self.map_last_saved_version >= 10 {
+            let path = std::path::Path::new("data/mapper_data.json");
+            if let Err(e) = self.map_database.save(path) {
+                tracing::warn!("[Map] 自動儲存失敗: {}", e);
+            }
+            self.map_last_saved_version = self.map_database.data_version;
+        }
 
         if let Ok(mut api) = self.api_state.lock() {
             api.current_room = Some(crate::api::RoomInfo {
@@ -2017,6 +2034,13 @@ impl SessionManager {
     /// 關閉 Session
     pub fn close_session(&mut self, id: SessionId) -> bool {
         if let Some(pos) = self.sessions.iter().position(|s| s.id == id) {
+            // 關閉前自動儲存地圖
+            if self.sessions[pos].map_database.data_version > self.sessions[pos].map_last_saved_version {
+                let path = std::path::Path::new("data/mapper_data.json");
+                if let Err(e) = self.sessions[pos].map_database.save(path) {
+                    tracing::warn!("[Map] 關閉 session 時儲存地圖失敗: {}", e);
+                }
+            }
             self.sessions.remove(pos);
             
             // 調整 active_index

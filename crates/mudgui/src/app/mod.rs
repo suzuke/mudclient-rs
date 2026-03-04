@@ -629,9 +629,11 @@ impl MudApp {
     }
 
     /// 處理所有活躍 Session 的網路訊息
-    fn process_messages(&mut self) {
+    /// 處理所有活躍 Session 的網路訊息，回傳是否有收到訊息
+    fn process_messages(&mut self) -> bool {
         use crate::session::NetMessage;
         let session_ids: Vec<_> = self.session_manager.sessions().iter().map(|s| s.id).collect();
+        let mut had_messages = false;
 
         for id in session_ids {
             // 首先收集訊息，避免借用衝突
@@ -651,6 +653,7 @@ impl MudApp {
 
             // 處理收集到的訊息
             if !messages.is_empty() {
+                had_messages = true;
                 if let Some(session) = self.session_manager.get_mut(id) {
                     for msg in messages {
                         match msg {
@@ -696,6 +699,7 @@ impl MudApp {
         }
         // 處理 API 命令
         self.process_api_commands();
+        had_messages
     }
 
     /// 處理 API 傳入的指令和 Lua 程式碼（多 Session 版）
@@ -789,9 +793,8 @@ impl MudApp {
                 if let Some(window) = session.window_manager.get(active_window_id) {
                     // 只渲染最近 N 條訊息以避免效能問題
                     let visible_lines = ((available_height / (font_size + 4.0)) as usize * 3).max(200);
-                    let total = window.message_count();
-                    let skip = total.saturating_sub(visible_lines);
-                    for msg in window.messages().skip(skip) {
+                    let (slice_a, slice_b) = window.last_n_slices(visible_lines);
+                    for msg in slice_a.iter().chain(slice_b.iter()) {
                         use crate::ansi::parse_ansi_with_widths;
                         let spans = parse_ansi_with_widths(&msg.content, Some(&msg.byte_widths));
 
@@ -1586,8 +1589,10 @@ impl eframe::App for MudApp {
             self.save_config();
         }
 
-        // 處理網路訊息
-        self.process_messages();
+        // 處理網路訊息（有新訊息時觸發重繪）
+        if self.process_messages() {
+            ctx.request_repaint();
+        }
 
         // 設定暗黑模式
         ctx.set_visuals(egui::Visuals::dark());
@@ -1787,12 +1792,12 @@ impl eframe::App for MudApp {
             self.render_settings_window(ctx);
         }
 
-        // 僅在有活躍連線時持續刷新（處理持續收到的伺服器訊息）
+        // 有活躍連線時以低頻率輪詢新訊息（取代之前的每幀刷新）
         let has_active_connection = self.session_manager.sessions().iter().any(|s| {
             matches!(s.status, crate::session::ConnectionStatus::Connected(_) | crate::session::ConnectionStatus::Connecting)
         });
         if has_active_connection {
-            ctx.request_repaint();
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
     }
 }
