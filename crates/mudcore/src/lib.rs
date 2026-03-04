@@ -31,4 +31,5 @@ pub use speedwalk::parse_speedwalk;
 pub use script::{MudContext, ScriptEngine};
 pub use telnet::{GmcpMessage, TelnetClient};
 pub use trigger::{Trigger, TriggerAction, TriggerManager, TriggerPattern};
+pub use map::MapDatabase;
 pub use window::{SubWindow, WindowManager, WindowMessage};

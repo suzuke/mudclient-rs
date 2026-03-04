@@ -3,6 +3,7 @@
 //! 負責讀取 MudMapper 生成的地圖資料並渲染為可互動的視覺化地圖
 
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
+use mudcore::MapDatabase;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -79,6 +80,8 @@ pub struct MapRenderer {
     zoom: f32,
     /// 是否需要重新計算佈局
     needs_relayout: bool,
+    /// 上次同步的 MapDatabase 版本號
+    last_synced_version: u64,
 }
 
 impl Default for MapRenderer {
@@ -91,6 +94,7 @@ impl Default for MapRenderer {
             offset: Vec2::ZERO,
             zoom: 1.0,
             needs_relayout: true,
+            last_synced_version: 0,
         }
     }
 }
@@ -98,6 +102,31 @@ impl Default for MapRenderer {
 impl MapRenderer {
     /// 載入地圖資料
     pub fn load_data(&mut self, data: MapperData) {
+        self.data = Some(data);
+        self.needs_relayout = true;
+    }
+
+    /// 從 MapDatabase 即時同步（版本號變更時才觸發 relayout）
+    pub fn sync_from_database(&mut self, db: &MapDatabase) {
+        if db.data_version == self.last_synced_version && self.data.is_some() {
+            return;
+        }
+        self.last_synced_version = db.data_version;
+
+        let rooms: HashMap<String, RoomInfo> = db.rooms.iter().map(|(id, r)| {
+            (id.clone(), RoomInfo {
+                id: r.id.clone(),
+                name: r.name.clone(),
+                visited: r.visited,
+                first_visit: r.first_visit,
+                exits: r.exits.clone(),
+            })
+        }).collect();
+
+        let data = MapperData {
+            rooms,
+            moves: db.moves.clone(),
+        };
         self.data = Some(data);
         self.needs_relayout = true;
     }
@@ -185,11 +214,11 @@ impl MapRenderer {
                 ui.add_space(20.0);
                 ui.label("尚未載入地圖資料");
                 ui.add_space(10.0);
-                if ui.button("啟動 MudMapper").clicked() {
+                ui.label(egui::RichText::new("地圖記錄預設啟用，移動後將自動顯示。").small().color(Color32::GRAY));
+                ui.add_space(5.0);
+                if ui.button("啟動 #map start").clicked() {
                     action = Some(MapAction::StartMapper);
                 }
-                ui.add_space(5.0);
-                ui.label(egui::RichText::new("手動: /lua require(\"modules.MudMapper\"); mapper.start()").small().color(Color32::GRAY));
             });
             return action;
         }

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Instant;
 use mudcore::{
-    Alias, AliasManager, Logger, ScriptEngine, Trigger, TriggerAction,
+    Alias, AliasManager, Logger, MapDatabase, ScriptEngine, Trigger, TriggerAction,
     TriggerManager, TriggerPattern, WindowManager, WindowMessage,
     MudContext, Path, PathManager, PathRecorder, LoopStatus,
     map::Room,
@@ -256,6 +256,9 @@ pub struct Session {
 
     /// API 共享狀態（供 HTTP API 使用）
     pub api_state: SharedApiState,
+
+    /// 內建地圖資料庫（Rust 原生 MudMapper）
+    pub map_database: MapDatabase,
 }
 
 /// 單字來源類型
@@ -481,6 +484,17 @@ impl Session {
             line_buffer: std::collections::VecDeque::with_capacity(20),
             server_buffer: std::collections::VecDeque::with_capacity(40),
             api_state,
+            map_database: {
+                let map_path = std::path::Path::new("data/mapper_data.json");
+                if map_path.exists() {
+                    MapDatabase::load_from_file(map_path).unwrap_or_else(|e| {
+                        tracing::warn!("載入地圖資料庫失敗: {}", e);
+                        MapDatabase::new()
+                    })
+                } else {
+                    MapDatabase::new()
+                }
+            },
         };
 
         // 自動載入 scripts/ 目錄下的腳本
@@ -796,6 +810,9 @@ impl Session {
 
         self.script_engine.set_current_room(Some(room.clone()));
         self.current_room = Some(room);
+
+        // Rust 內建地圖記錄
+        self.map_database.on_room_detected(&id, &name, &api_exits);
 
         if let Ok(mut api) = self.api_state.lock() {
             api.current_room = Some(crate::api::RoomInfo {
@@ -1693,6 +1710,170 @@ impl Session {
                     }
                     return;
                 }
+                "#map" => {
+                    if parts.len() < 2 {
+                        self.system_message("Usage: #map <start|stop|save|load|status|find|path|go>");
+                        return;
+                    }
+                    match parts[1] {
+                        "start" => {
+                            self.map_database.enable();
+                            self.system_message("[Map] 地圖記錄已啟用。");
+                        }
+                        "stop" => {
+                            self.map_database.disable();
+                            self.system_message("[Map] 地圖記錄已停用。");
+                        }
+                        "save" => {
+                            let path = std::path::Path::new("data/mapper_data.json");
+                            match self.map_database.save(path) {
+                                Ok(()) => self.system_message(&format!(
+                                    "[Map] 地圖已儲存 ({} 房間, {} 邊緣)",
+                                    self.map_database.rooms.len(),
+                                    self.map_database.edge_count()
+                                )),
+                                Err(e) => self.system_message(&format!("[Map] 儲存失敗: {}", e)),
+                            }
+                        }
+                        "load" => {
+                            let path = std::path::Path::new("data/mapper_data.json");
+                            match MapDatabase::load_from_file(path) {
+                                Ok(db) => {
+                                    let room_count = db.rooms.len();
+                                    let edge_count = db.edge_count();
+                                    self.map_database = db;
+                                    self.system_message(&format!(
+                                        "[Map] 已載入地圖 ({} 房間, {} 邊緣)",
+                                        room_count, edge_count
+                                    ));
+                                }
+                                Err(e) => self.system_message(&format!("[Map] 載入失敗: {}", e)),
+                            }
+                        }
+                        "status" => {
+                            let current = self.map_database.last_room_id.as_deref()
+                                .and_then(|id| self.map_database.rooms.get(id))
+                                .map(|r| r.name.as_str())
+                                .unwrap_or("未知");
+                            self.system_message(&format!(
+                                "[Map] 狀態: {} | 房間: {} | 邊緣: {} | 當前: {}",
+                                if self.map_database.enabled { "啟用" } else { "停用" },
+                                self.map_database.rooms.len(),
+                                self.map_database.edge_count(),
+                                current
+                            ));
+                        }
+                        "find" => {
+                            if parts.len() < 3 {
+                                self.system_message("Usage: #map find <名稱或ID>");
+                                return;
+                            }
+                            let query = parts[2..].join(" ");
+                            let results = self.map_database.resolve_target(&query);
+                            if results.is_empty() {
+                                self.system_message(&format!("[Map] 找不到符合 '{}' 的房間。", query));
+                            } else {
+                                self.system_message(&format!("[Map] 找到 {} 個結果:", results.len()));
+                                for (id, name) in &results {
+                                    let short_id = if id.len() > 12 { &id[..12] } else { id };
+                                    self.system_message(&format!("  {} ({}...)", name, short_id));
+                                }
+                            }
+                        }
+                        "path" => {
+                            if parts.len() < 3 {
+                                self.system_message("Usage: #map path <目標>");
+                                return;
+                            }
+                            let query = parts[2..].join(" ");
+                            let from = match &self.map_database.last_room_id {
+                                Some(id) => id.clone(),
+                                None => {
+                                    self.system_message("[Map] 尚未定位，請先移動。");
+                                    return;
+                                }
+                            };
+                            let targets = self.map_database.resolve_target(&query);
+                            match targets.len() {
+                                0 => self.system_message(&format!("[Map] 找不到 '{}'。", query)),
+                                1 => {
+                                    let (to_id, to_name) = &targets[0];
+                                    match self.map_database.find_path(&from, to_id) {
+                                        Some(path) if path.is_empty() => {
+                                            self.system_message("[Map] 你已在目的地。");
+                                        }
+                                        Some(path) => {
+                                            let path_str = path.join(";");
+                                            self.system_message(&format!(
+                                                "[Map] 路徑至 {} ({} 步): {}",
+                                                to_name, path.len(), path_str
+                                            ));
+                                        }
+                                        None => self.system_message(&format!(
+                                            "[Map] 找不到通往 {} 的路徑。", to_name
+                                        )),
+                                    }
+                                }
+                                _ => {
+                                    self.system_message(&format!("[Map] 目標不明確，找到 {} 個結果:", targets.len()));
+                                    for (id, name) in &targets {
+                                        let short_id = if id.len() > 12 { &id[..12] } else { id };
+                                        self.system_message(&format!("  {} ({}...)", name, short_id));
+                                    }
+                                }
+                            }
+                        }
+                        "go" => {
+                            if parts.len() < 3 {
+                                self.system_message("Usage: #map go <目標>");
+                                return;
+                            }
+                            let query = parts[2..].join(" ");
+                            let from = match &self.map_database.last_room_id {
+                                Some(id) => id.clone(),
+                                None => {
+                                    self.system_message("[Map] 尚未定位，請先移動。");
+                                    return;
+                                }
+                            };
+                            let targets = self.map_database.resolve_target(&query);
+                            match targets.len() {
+                                0 => self.system_message(&format!("[Map] 找不到 '{}'。", query)),
+                                1 => {
+                                    let (to_id, to_name) = &targets[0];
+                                    match self.map_database.find_path(&from, to_id) {
+                                        Some(path) if path.is_empty() => {
+                                            self.system_message("[Map] 你已在目的地。");
+                                        }
+                                        Some(path) => {
+                                            self.system_message(&format!(
+                                                "[Map] 導航至 {} ({} 步)...",
+                                                to_name, path.len()
+                                            ));
+                                            for dir in path {
+                                                self.handle_user_input_with_depth(&dir, depth + 1);
+                                            }
+                                        }
+                                        None => self.system_message(&format!(
+                                            "[Map] 找不到通往 {} 的路徑。", to_name
+                                        )),
+                                    }
+                                }
+                                _ => {
+                                    self.system_message(&format!("[Map] 目標不明確，找到 {} 個結果:", targets.len()));
+                                    for (id, name) in &targets {
+                                        let short_id = if id.len() > 12 { &id[..12] } else { id };
+                                        self.system_message(&format!("  {} ({}...)", name, short_id));
+                                    }
+                                }
+                            }
+                        }
+                        _ => {
+                            self.system_message("Usage: #map <start|stop|save|load|status|find|path|go>");
+                        }
+                    }
+                    return;
+                }
                 _ => {
                     // 如果不是已知指令，則視為普通內容發送
                 }
@@ -1737,6 +1918,9 @@ impl Session {
             if self.path_recorder.is_recording {
                  self.path_recorder.record(&input);
             }
+
+            // Rust 內建地圖：記錄移動方向
+            self.map_database.record_last_direction(&input);
 
             // 觸發 Lua Hook: on_command(command)
             if let Ok(Some(context)) = self.script_engine.invoke_hook("on_command", &input, &input, false) {

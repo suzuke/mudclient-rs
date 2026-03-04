@@ -192,8 +192,15 @@ impl MudApp {
 
     /// 繪製地圖分頁
     pub(super) fn render_map_tab(&mut self, ui: &mut egui::Ui) {
-        // 自動載入地圖資料
-        if self.map_renderer.data.is_none() {
+        // 優先從 active session 的 MapDatabase 即時同步
+        if let Some(session) = self.session_manager.active_session() {
+            self.map_renderer.sync_from_database(&session.map_database);
+
+            // 同步當前房間
+            let current_room_id = session.current_room.as_ref().map(|room| room.hash(true));
+            self.map_renderer.set_current_room(current_room_id);
+        } else if self.map_renderer.data.is_none() {
+            // Fallback: 無 session 時嘗試從檔案載入
             let path = std::path::Path::new("data/mapper_data.json");
             if path.exists() {
                 if let Err(e) = self.map_renderer.load_from_file(path) {
@@ -202,22 +209,14 @@ impl MudApp {
             }
         }
 
-        // 從 active session 同步當前房間
-        let current_room_id = self.session_manager.active_session()
-            .and_then(|s| s.current_room.as_ref())
-            .map(|room| room.hash(true));
-        self.map_renderer.set_current_room(current_room_id);
-
         // 渲染地圖，處理動作
         if let Some(action) = self.map_renderer.render(ui) {
             if let Some(session) = self.session_manager.active_session() {
                 if let Some(tx) = &session.command_tx {
                     let cmd = match action {
-                        crate::mapper::MapAction::StartMapper => {
-                            r#"/lua require("modules.MudMapper"); mapper.start()"#.to_string()
-                        }
+                        crate::mapper::MapAction::StartMapper => "#map start".to_string(),
                         crate::mapper::MapAction::Navigate(target) => {
-                            format!(r#"/lua if mapper then mapper.go("{}") else mud.echo("{{R請先啟動 MudMapper{{x}}") end"#, target)
+                            format!("#map go {}", target)
                         }
                     };
                     let _ = tx.try_send(crate::session::Command::Send(cmd));
