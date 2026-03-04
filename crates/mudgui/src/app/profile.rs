@@ -2,6 +2,8 @@
 //\!
 //\! 包含 Profile 選擇與編輯視窗
 
+use std::time::Instant;
+
 use eframe::egui::{self, Color32, RichText};
 
 use super::MudApp;
@@ -33,19 +35,31 @@ impl MudApp {
                             let import_path = "profiles_export.json";
                             match std::fs::read_to_string(import_path) {
                                 Ok(content) => {
-                                    if let Ok(profiles) = serde_json::from_str::<Vec<crate::config::Profile>>(&content) {
-                                        let mut imported = 0;
-                                        for profile in profiles {
-                                            if !self.profile_manager.exists(&profile.name) {
-                                                if self.profile_manager.save(profile).is_ok() {
-                                                    imported += 1;
+                                    match serde_json::from_str::<Vec<crate::config::Profile>>(&content) {
+                                        Ok(profiles) => {
+                                            let total = profiles.len();
+                                            let mut imported = 0;
+                                            for profile in profiles {
+                                                if !self.profile_manager.exists(&profile.name) {
+                                                    if self.profile_manager.save(profile).is_ok() {
+                                                        imported += 1;
+                                                    }
                                                 }
                                             }
+                                            if imported > 0 {
+                                                self.toast_message = Some((format!("✅ 已匯入 {} 個 Profile", imported), Instant::now()));
+                                            } else if total > 0 {
+                                                self.toast_message = Some(("⚠ 所有 Profile 已存在，無需匯入".to_string(), Instant::now()));
+                                            }
+                                            tracing::info!("匯入了 {} 個 Profile", imported);
                                         }
-                                        tracing::info!("匯入了 {} 個 Profile", imported);
+                                        Err(_) => {
+                                            self.toast_message = Some(("❌ 匯入失敗: 格式錯誤".to_string(), Instant::now()));
+                                        }
                                     }
                                 }
                                 Err(_) => {
+                                    self.toast_message = Some(("❌ 找不到 profiles_export.json".to_string(), Instant::now()));
                                     tracing::warn!("找不到 {}", import_path);
                                 }
                             }
@@ -53,12 +67,23 @@ impl MudApp {
                         // 匯出所有 Profile
                         if ui.button("📤 匯出").clicked() {
                             let profiles: Vec<_> = self.profile_manager.list().to_vec();
-                            if let Ok(json) = serde_json::to_string_pretty(&profiles) {
-                                let export_path = "profiles_export.json";
-                                if let Err(e) = std::fs::write(export_path, &json) {
-                                    tracing::error!("匯出失敗: {}", e);
-                                } else {
-                                    tracing::info!("已匯出至 {}", export_path);
+                            let count = profiles.len();
+                            match serde_json::to_string_pretty(&profiles) {
+                                Ok(json) => {
+                                    let export_path = "profiles_export.json";
+                                    match std::fs::write(export_path, &json) {
+                                        Ok(()) => {
+                                            self.toast_message = Some((format!("✅ 已匯出 {} 個 Profile 至 profiles_export.json", count), Instant::now()));
+                                            tracing::info!("已匯出至 {}", export_path);
+                                        }
+                                        Err(e) => {
+                                            self.toast_message = Some((format!("❌ 匯出失敗: {}", e), Instant::now()));
+                                            tracing::error!("匯出失敗: {}", e);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    self.toast_message = Some((format!("❌ 匯出失敗: {}", e), Instant::now()));
                                 }
                             }
                         }
@@ -174,6 +199,24 @@ impl MudApp {
                     ui.label("目前無活躍連線。");
                 } else {
                     ui.label(format!("活躍 Session 數量: {}", session_count));
+                }
+
+                // Toast 訊息
+                if let Some((msg, created_at)) = &self.toast_message {
+                    if created_at.elapsed().as_secs() < 3 {
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.add_space(4.0);
+                        let color = if msg.starts_with("✅") {
+                            Color32::from_rgb(100, 200, 100)
+                        } else if msg.starts_with("⚠") {
+                            Color32::from_rgb(230, 180, 50)
+                        } else {
+                            Color32::from_rgb(230, 80, 80)
+                        };
+                        ui.label(RichText::new(msg).color(color).strong());
+                        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                    }
                 }
 
                 ui.add_space(15.0);

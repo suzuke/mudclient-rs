@@ -103,6 +103,9 @@ pub struct MudApp {
 
     /// 地圖渲染器
     map_renderer: crate::mapper::MapRenderer,
+
+    /// Toast 訊息 (文字, 建立時間)
+    toast_message: Option<(String, Instant)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -203,6 +206,8 @@ impl MudApp {
             api_state_mgr,
 
             map_renderer: crate::mapper::MapRenderer::default(),
+
+            toast_message: None,
         }
     }
 
