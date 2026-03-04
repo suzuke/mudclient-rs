@@ -11,13 +11,44 @@ use std::sync::{Arc, Mutex};
 
 use axum::{
     Router,
-    extract::{Query, State},
+    extract::{Path as AxumPath, Query, State},
     http::StatusCode,
     routing::{get, post},
     Json,
 };
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
+
+// ============================================================================
+// ApiQuery — 需要在 GUI 執行緒處理的查詢
+// ============================================================================
+
+#[derive(Debug)]
+pub enum ApiQuery {
+    ListAliases,
+    ListTriggers,
+    ListPaths,
+    ListWindows,
+    ReadWindow { id: String, count: usize },
+    GetHistory { count: usize },
+    GetMapStats,
+    SearchMapRooms { query: String },
+    FindMapPath { from: String, to: String },
+    ManageAlias {
+        action: String,
+        name: String,
+        pattern: Option<String>,
+        replacement: Option<String>,
+        is_script: Option<bool>,
+    },
+    ManageTrigger {
+        action: String,
+        name: String,
+        pattern: Option<String>,
+        pattern_type: Option<String>,
+        script: Option<String>,
+    },
+}
 
 // ============================================================================
 // Per-Session 共享狀態
@@ -44,6 +75,8 @@ pub struct ApiState {
     pub pending_lua: VecDeque<String>,
     /// 待評估的 Lua 程式碼佇列 (附帶 oneshot channel 用於回傳結果)
     pub pending_eval_lua: VecDeque<(String, tokio::sync::oneshot::Sender<String>)>,
+    /// 待處理的 API 查詢佇列 (附帶 oneshot channel 用於回傳 JSON 結果)
+    pub pending_api_queries: VecDeque<(ApiQuery, tokio::sync::oneshot::Sender<serde_json::Value>)>,
 }
 
 /// 房間資訊
@@ -67,6 +100,7 @@ impl ApiState {
             pending_commands: VecDeque::new(),
             pending_lua: VecDeque::new(),
             pending_eval_lua: VecDeque::new(),
+            pending_api_queries: VecDeque::new(),
         }
     }
 
@@ -91,6 +125,11 @@ impl ApiState {
     /// 取出所有待評估的 Lua（GUI 呼叫）
     pub fn drain_eval_lua(&mut self) -> Vec<(String, tokio::sync::oneshot::Sender<String>)> {
         self.pending_eval_lua.drain(..).collect()
+    }
+
+    /// 取出所有待處理的 API 查詢（GUI 呼叫）
+    pub fn drain_api_queries(&mut self) -> Vec<(ApiQuery, tokio::sync::oneshot::Sender<serde_json::Value>)> {
+        self.pending_api_queries.drain(..).collect()
     }
 }
 
@@ -129,7 +168,7 @@ impl ApiStateManager {
 
     /// 註冊一個新的 Session，回傳其專屬的 SharedApiState
     pub fn register_session(&self, session_key: &str, display_name: &str) -> SharedApiState {
-        let mut inner = self.inner.lock().expect("API state manager lock poisoned");
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(existing) = inner.states.get(session_key) {
             return existing.clone();
         }
@@ -149,7 +188,7 @@ impl ApiStateManager {
 
     /// 設定當前活動的 Session
     pub fn set_active(&self, session_key: &str) {
-        let mut inner = self.inner.lock().expect("API state manager lock poisoned");
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if inner.states.contains_key(session_key) {
             inner.active_key = Some(session_key.to_string());
         }
@@ -157,14 +196,14 @@ impl ApiStateManager {
 
     /// 取得指定 Session 的 ApiState（透過 key）
     pub fn get(&self, session_key: &str) -> Option<SharedApiState> {
-        let inner = self.inner.lock().expect("API state manager lock poisoned");
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.states.get(session_key).cloned()
     }
 
     /// 取得當前活動 Session 的 ApiState
     /// 若 active_key 指向的 Session 已不存在，自動 fallback 到第一個可用的 Session
     pub fn get_active(&self) -> Option<SharedApiState> {
-        let mut inner = self.inner.lock().expect("API state manager lock poisoned");
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         // 先嘗試用 active_key
         if let Some(key) = &inner.active_key {
             if let Some(state) = inner.states.get(key) {
@@ -185,7 +224,7 @@ impl ApiStateManager {
 
     /// 列出所有 Session 資訊
     pub fn list_sessions(&self) -> Vec<SessionInfo> {
-        let inner = self.inner.lock().expect("API state manager lock poisoned");
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.order.iter().filter_map(|key| {
             let state = inner.states.get(key)?;
             let s = state.lock().ok()?;
@@ -200,7 +239,7 @@ impl ApiStateManager {
 
     /// 取得所有 session key → SharedApiState 的映射（用於遍歷 drain）
     pub fn all_states(&self) -> Vec<(String, SharedApiState)> {
-        let inner = self.inner.lock().expect("API state manager lock poisoned");
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.order.iter().filter_map(|key| {
             inner.states.get(key).map(|s| (key.clone(), s.clone()))
         }).collect()
@@ -275,6 +314,45 @@ struct OkResponse {
 #[derive(Serialize)]
 struct SessionsResponse {
     sessions: Vec<SessionInfo>,
+}
+
+#[derive(Deserialize)]
+struct CountQuery {
+    count: Option<usize>,
+    session: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SearchQuery {
+    query: Option<String>,
+    session: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct MapPathRequest {
+    from: String,
+    to: String,
+    session: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ManageAliasRequest {
+    action: String,
+    name: String,
+    pattern: Option<String>,
+    replacement: Option<String>,
+    is_script: Option<bool>,
+    session: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ManageTriggerRequest {
+    action: String,
+    name: String,
+    pattern: Option<String>,
+    pattern_type: Option<String>,
+    script: Option<String>,
+    session: Option<String>,
 }
 
 // ============================================================================
@@ -446,6 +524,139 @@ async fn evaluate_lua(
 }
 
 // ============================================================================
+// 新增 API Handlers（透過 ApiQuery 走 GUI 主執行緒）
+// ============================================================================
+
+async fn api_query(
+    mgr: &ApiStateManager,
+    session_param: Option<&str>,
+    query: ApiQuery,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let state = mgr.resolve(session_param).ok_or(StatusCode::NOT_FOUND)?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    {
+        let mut s = state.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        s.pending_api_queries.push_back((query, tx));
+    }
+    match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
+        Ok(Ok(val)) => Ok(Json(val)),
+        Ok(Err(_)) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Err(_) => Err(StatusCode::REQUEST_TIMEOUT),
+    }
+}
+
+async fn get_aliases(
+    State(mgr): State<ApiStateManager>,
+    Query(params): Query<SessionQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    api_query(&mgr, params.session.as_deref(), ApiQuery::ListAliases).await
+}
+
+async fn get_triggers(
+    State(mgr): State<ApiStateManager>,
+    Query(params): Query<SessionQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    api_query(&mgr, params.session.as_deref(), ApiQuery::ListTriggers).await
+}
+
+async fn get_paths(
+    State(mgr): State<ApiStateManager>,
+    Query(params): Query<SessionQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    api_query(&mgr, params.session.as_deref(), ApiQuery::ListPaths).await
+}
+
+async fn get_windows(
+    State(mgr): State<ApiStateManager>,
+    Query(params): Query<SessionQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    api_query(&mgr, params.session.as_deref(), ApiQuery::ListWindows).await
+}
+
+async fn get_window(
+    State(mgr): State<ApiStateManager>,
+    AxumPath(id): AxumPath<String>,
+    Query(params): Query<CountQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    api_query(
+        &mgr,
+        params.session.as_deref(),
+        ApiQuery::ReadWindow { id, count: params.count.unwrap_or(50) },
+    ).await
+}
+
+async fn get_history(
+    State(mgr): State<ApiStateManager>,
+    Query(params): Query<CountQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    api_query(
+        &mgr,
+        params.session.as_deref(),
+        ApiQuery::GetHistory { count: params.count.unwrap_or(50) },
+    ).await
+}
+
+async fn get_map_stats(
+    State(mgr): State<ApiStateManager>,
+    Query(params): Query<SessionQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    api_query(&mgr, params.session.as_deref(), ApiQuery::GetMapStats).await
+}
+
+async fn search_map_rooms(
+    State(mgr): State<ApiStateManager>,
+    Query(params): Query<SearchQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let query = params.query.unwrap_or_default();
+    api_query(&mgr, params.session.as_deref(), ApiQuery::SearchMapRooms { query }).await
+}
+
+async fn find_map_path(
+    State(mgr): State<ApiStateManager>,
+    Json(payload): Json<MapPathRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    api_query(
+        &mgr,
+        payload.session.as_deref(),
+        ApiQuery::FindMapPath { from: payload.from, to: payload.to },
+    ).await
+}
+
+async fn manage_alias(
+    State(mgr): State<ApiStateManager>,
+    Json(payload): Json<ManageAliasRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    api_query(
+        &mgr,
+        payload.session.as_deref(),
+        ApiQuery::ManageAlias {
+            action: payload.action,
+            name: payload.name,
+            pattern: payload.pattern,
+            replacement: payload.replacement,
+            is_script: payload.is_script,
+        },
+    ).await
+}
+
+async fn manage_trigger(
+    State(mgr): State<ApiStateManager>,
+    Json(payload): Json<ManageTriggerRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    api_query(
+        &mgr,
+        payload.session.as_deref(),
+        ApiQuery::ManageTrigger {
+            action: payload.action,
+            name: payload.name,
+            pattern: payload.pattern,
+            pattern_type: payload.pattern_type,
+            script: payload.script,
+        },
+    ).await
+}
+
+// ============================================================================
 // 啟動 API Server
 // ============================================================================
 
@@ -461,6 +672,18 @@ pub fn create_api_router(mgr: ApiStateManager) -> Router {
         .route("/api/send", post(send_command))
         .route("/api/lua", post(execute_lua))
         .route("/api/evaluate", post(evaluate_lua))
+        // Phase 1: 新增端點
+        .route("/api/aliases", get(get_aliases))
+        .route("/api/triggers", get(get_triggers))
+        .route("/api/paths", get(get_paths))
+        .route("/api/windows", get(get_windows))
+        .route("/api/window/{id}", get(get_window))
+        .route("/api/history", get(get_history))
+        .route("/api/map/stats", get(get_map_stats))
+        .route("/api/map/search", get(search_map_rooms))
+        .route("/api/map/path", post(find_map_path))
+        .route("/api/alias", post(manage_alias))
+        .route("/api/trigger", post(manage_trigger))
         .layer(CorsLayer::permissive())
         .with_state(mgr)
 }

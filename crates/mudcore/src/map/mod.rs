@@ -25,7 +25,13 @@ pub(crate) fn room_deserialize_exits<'de, D: serde::Deserializer<'de>>(
             Ok(v)
         }
         fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<Vec<String>, A::Error> {
-            while map.next_entry::<String, serde_json::Value>()?.is_some() {}
+            let mut count = 0;
+            while map.next_entry::<String, serde_json::Value>()?.is_some() {
+                count += 1;
+            }
+            if count > 0 {
+                tracing::warn!("[Map] exits 欄位為非空 object，已忽略 {} 個 entry", count);
+            }
             Ok(Vec::new())
         }
     }

@@ -32,10 +32,12 @@ impl Room {
     pub fn hash(&self, strict: bool) -> String {
         let mut hasher = Sha256::new();
         hasher.update(self.name.as_bytes());
+        hasher.update(b"\x00"); // 分隔符，防止 name+desc 邊界模糊造成碰撞
         hasher.update(self.description.as_bytes());
-        
+
         if strict {
             for exit in &self.exits {
+                hasher.update(b"\x00");
                 hasher.update(exit.as_bytes());
             }
         }

@@ -35,8 +35,12 @@ impl MessageBuffer {
 
     /// 添加訊息到緩衝區
     ///
-    /// 如果緩衝區已滿，最舊的訊息會被移除
+    /// 如果緩衝區已滿，最舊的訊息會被移除。
+    /// capacity 為 0 時不儲存任何訊息。
     pub fn push(&mut self, message: String) {
+        if self.capacity == 0 {
+            return;
+        }
         if self.messages.len() >= self.capacity {
             self.messages.pop_front();
         }

@@ -191,8 +191,11 @@ impl GmcpMessage {
     }
 }
 
+/// Sub-negotiation 資料最大長度（64KB，足夠 GMCP JSON）
+const MAX_SUBNEG_SIZE: usize = 65536;
+
 /// 解析 Telnet 資料流，分離出文字和命令
-/// 
+///
 /// 返回 (文字資料, 事件列表, 已處理的位元組數)
 pub fn parse_telnet_data(input: &[u8]) -> (Vec<u8>, Vec<TelnetEvent>, usize) {
     let mut data = Vec::new();
@@ -239,17 +242,38 @@ pub fn parse_telnet_data(input: &[u8]) -> (Vec<u8>, Vec<TelnetEvent>, usize) {
                             let mut found_se = false;
 
                             while j + 1 < input.len() {
-                                if input[j] == IAC && input[j + 1] == TelnetCommand::Se as u8 {
-                                    events.push(TelnetEvent::Subnegotiation(option, sub_data));
-                                    i = j + 2;
-                                    last_consumed = i;
-                                    found_se = true;
+                                if input[j] == IAC {
+                                    if input[j + 1] == TelnetCommand::Se as u8 {
+                                        events.push(TelnetEvent::Subnegotiation(option, sub_data));
+                                        i = j + 2;
+                                        last_consumed = i;
+                                        found_se = true;
+                                        break;
+                                    } else if input[j + 1] == IAC {
+                                        // IAC IAC = 轉義的 0xFF（RFC 854）
+                                        sub_data.push(IAC);
+                                        j += 2;
+                                        continue;
+                                    }
+                                }
+                                // 防止惡意過大的 sub-negotiation 資料
+                                if sub_data.len() >= MAX_SUBNEG_SIZE {
+                                    // 跳過剩餘資料，尋找 IAC SE
+                                    while j + 1 < input.len() {
+                                        if input[j] == IAC && input[j + 1] == TelnetCommand::Se as u8 {
+                                            i = j + 2;
+                                            last_consumed = i;
+                                            found_se = true;
+                                            break;
+                                        }
+                                        j += 1;
+                                    }
                                     break;
                                 }
                                 sub_data.push(input[j]);
                                 j += 1;
                             }
-                            
+
                             if !found_se {
                                 break; // 尚未收到 SE，留在緩衝區
                             }

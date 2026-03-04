@@ -63,8 +63,7 @@ impl MapDatabase {
         if !self.enabled {
             return;
         }
-        let cmd_lower = cmd.to_lowercase();
-        if let Some(normalized) = normalize_direction(&cmd_lower) {
+        if let Some(normalized) = normalize_direction(cmd) {
             self.last_direction = Some(normalized);
             self.last_direction_time = Some(Instant::now());
         }
@@ -116,7 +115,8 @@ impl MapDatabase {
         self.data_version += 1;
 
         if is_new {
-            tracing::info!("[Map] 新房間: {} (ID: {}...)", name, &id[..id.len().min(8)]);
+            let short_id: String = id.chars().take(8).collect();
+            tracing::info!("[Map] 新房間: {} (ID: {}...)", name, short_id);
         }
     }
 
@@ -169,7 +169,7 @@ impl MapDatabase {
         matches
     }
 
-    /// 儲存至 JSON 檔案
+    /// 儲存至 JSON 檔案（原子寫入：先寫暫存檔再 rename，防止中斷導致損毀）
     pub fn save(&self, path: &Path) -> Result<(), String> {
         // 確保目錄存在
         if let Some(parent) = path.parent() {
@@ -179,8 +179,12 @@ impl MapDatabase {
 
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| format!("JSON 序列化失敗: {}", e))?;
-        std::fs::write(path, json)
-            .map_err(|e| format!("寫入檔案失敗: {}", e))?;
+
+        let tmp_path = path.with_extension("json.tmp");
+        std::fs::write(&tmp_path, &json)
+            .map_err(|e| format!("寫入暫存檔失敗: {}", e))?;
+        std::fs::rename(&tmp_path, path)
+            .map_err(|e| format!("替換檔案失敗: {}", e))?;
         Ok(())
     }
 

@@ -58,6 +58,11 @@ impl Default for TelnetConfig {
     }
 }
 
+/// raw_buffer 最大大小（256KB），超過時強制丟棄以防 OOM
+const MAX_RAW_BUFFER: usize = 256 * 1024;
+/// ANSI 序列緩衝區最大長度（合法 CSI 序列不應超過此長度）
+const MAX_ANSI_BUFFER: usize = 256;
+
 /// Telnet 客戶端
 pub struct TelnetClient {
     stream: Option<TcpStream>,
@@ -151,6 +156,12 @@ impl TelnetClient {
             let _ = stream.into_std(); // 讓 stream 自動關閉
         }
         self.state = ConnectionState::Disconnected;
+        self.raw_buffer.clear();
+        self.text_buffer.clear();
+        self.outgoing_buffer.clear();
+        self.pending_ansi.clear();
+        self.ansi_buffer.clear();
+        self.gmcp_queue.clear();
         info!("已斷開連線");
     }
 
@@ -212,6 +223,13 @@ impl TelnetClient {
 
         self.raw_buffer.extend_from_slice(&buffer[..n]);
 
+        // 防止惡意伺服器造成 raw_buffer 無限增長
+        if self.raw_buffer.len() > MAX_RAW_BUFFER {
+            warn!("raw_buffer 超過 {}KB，強制清除", MAX_RAW_BUFFER / 1024);
+            self.raw_buffer.clear();
+            return Ok((String::new(), Vec::new()));
+        }
+
         let (text_bytes, events, consumed) = parse_telnet_data(&self.raw_buffer);
         self.raw_buffer.drain(..consumed);
 
@@ -256,7 +274,13 @@ impl TelnetClient {
             if !self.ansi_buffer.is_empty() {
                 self.ansi_buffer.push(b);
                 i += 1;
-                
+
+                // 防止惡意過長的 ANSI 序列
+                if self.ansi_buffer.len() > MAX_ANSI_BUFFER {
+                    self.ansi_buffer.clear();
+                    continue;
+                }
+
                 let is_complete = if self.ansi_buffer.len() > 1 && self.ansi_buffer[1] == b'[' {
                     // CSI 序列 (ESC [ ...): 必須至少 3 字元，且最後一個是 0x40-0x7E
                     self.ansi_buffer.len() > 2 && (0x40..=0x7E).contains(&b)

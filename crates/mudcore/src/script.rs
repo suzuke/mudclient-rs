@@ -58,6 +58,17 @@ pub struct MudContext {
 
     /// 指令回應收集請求 (command, callback_code)
     pub response_collectors: Vec<(String, String)>,
+
+    /// LLM 請求佇列 (prompt, callback_lua_code, model)
+    pub llm_requests: Vec<LlmRequest>,
+}
+
+/// LLM 非同步請求
+#[derive(Debug, Clone)]
+pub struct LlmRequest {
+    pub prompt: String,
+    pub callback_code: String,
+    pub model: Option<String>,
 }
 
 impl MudContext {
@@ -116,10 +127,11 @@ impl ScriptEngine {
     /// 展開變數 (將 $var 替換為變數值)
     pub fn expand_variables(&self, text: &str) -> String {
         let mut result = text.to_string();
-        // 簡單的替換：尋找 $ 開頭的單字
-        // TODO: 使用 regex 支援更複雜的變數名或 ${var} 格式
         let vars = self.persistent_vars.borrow();
-        for (key, value) in vars.iter() {
+        // 按 key 長度降序排列，避免 $hp 先於 $hp_max 被替換
+        let mut sorted_vars: Vec<_> = vars.iter().collect();
+        sorted_vars.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        for (key, value) in sorted_vars {
             let placeholder = format!("${}", key);
             if result.contains(&placeholder) {
                 result = result.replace(&placeholder, value);
@@ -266,7 +278,11 @@ impl ScriptEngine {
             // 創建 response_collectors 表
             let response_collectors = self.lua.create_table()?;
             mud.set("response_collectors", response_collectors)?;
-            
+
+            // 創建 llm_requests 表
+            let llm_requests = self.lua.create_table()?;
+            mud.set("llm_requests", llm_requests)?;
+
             // gag 標記
             mud.set("gag", false)?;
 
@@ -390,6 +406,21 @@ impl ScriptEngine {
                 Ok(())
             })?;
             mud.set("collect_response", collect_response_fn)?;
+
+            // mud.ask_llm(prompt, callback_lua_code, [model])
+            // 非同步呼叫 LLM，回覆後執行 callback（callback 中 $RESULT 被替換為回覆）
+            let ask_llm_fn = scope.create_function(|lua, (prompt, callback_code, model): (String, String, Option<String>)| {
+                let mud: mlua::Table = lua.globals().get("mud")?;
+                let requests: mlua::Table = mud.get("llm_requests")?;
+                let len = requests.len()? + 1;
+                let entry = lua.create_table()?;
+                entry.set(1, prompt)?;
+                entry.set(2, callback_code)?;
+                entry.set(3, model.unwrap_or_default())?;
+                requests.set(len, entry)?;
+                Ok(())
+            })?;
+            mud.set("ask_llm", ask_llm_fn)?;
 
             // mud.get_room_id(name, desc, exits, [strict]) -> string
             let get_room_id_fn = scope.create_function(|_lua, (name, desc, exits, strict): (String, String, Vec<String>, Option<bool>)| {
@@ -604,7 +635,23 @@ impl ScriptEngine {
                     }
                 }
             }
-            
+
+            // 收集 llm_requests
+            if let Ok(requests) = mud.get::<mlua::Table>("llm_requests") {
+                for pair in requests.pairs::<i64, mlua::Table>() {
+                    if let Ok((_, tbl)) = pair {
+                        if let (Ok(prompt), Ok(callback)) = (tbl.get::<String>(1), tbl.get::<String>(2)) {
+                            let model = tbl.get::<String>(3).ok().filter(|s| !s.is_empty());
+                            context.llm_requests.push(LlmRequest {
+                                prompt,
+                                callback_code: callback,
+                                model,
+                            });
+                        }
+                    }
+                }
+            }
+
             Ok::<_, mlua::Error>(eval_res_str)
         })?;
 
@@ -619,6 +666,14 @@ impl ScriptEngine {
 
     /// 呼叫全域 Lua 鉤子函數
     pub fn invoke_hook(&self, hook_name: &str, arg: &str, clean_arg: &str, is_echo: bool) -> Result<Option<MudContext>, ScriptError> {
+        // 驗證 hook_name 是合法的 Lua 識別符，防止程式碼注入
+        if !hook_name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            || hook_name.is_empty()
+            || hook_name.as_bytes()[0].is_ascii_digit()
+        {
+            return Err(ScriptError::Lua(format!("invalid hook name: {}", hook_name)));
+        }
+
         // 檢查函數是否存在
         if !self.lua.globals().contains_key(hook_name)? {
             return Ok(None);
@@ -626,17 +681,11 @@ impl ScriptEngine {
 
         // 執行呼叫
         self.lua.scope(|_scope| {
-           // 我們只是檢查是否存在，實際上呼叫是透過下面的 adapter_code
-           // let _func: mlua::Function = self.lua.globals().get(hook_name)?;
            Ok(())
         })?;
-        
-        // 為了避免 lifetime 和 borrow 問題，我們使用 execute_inline 的既有路徑
-        // 構造一段呼叫代碼
-        // 將 is_echo 也傳遞給鉤子函數
+
         let adapter_code = format!("if _G['{0}'] then _G['{0}'](message, clean_message, is_echo) end", hook_name);
-        // 注意：這裡我們依賴 execute_inline 將 message 注入到全局
-        
+
         self.run_code(&adapter_code, None, arg, clean_arg, &[], is_echo).map(|(ctx, _)| Some(ctx))
     }
 }

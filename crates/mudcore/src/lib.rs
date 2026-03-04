@@ -28,7 +28,7 @@ pub use encoding::{decode_big5, encode_big5};
 pub use logger::{LogFormat, Logger};
 pub use paths::{Path, PathManager, PathRecorder, LoopStatus};
 pub use speedwalk::parse_speedwalk;
-pub use script::{MudContext, ScriptEngine};
+pub use script::{LlmRequest, MudContext, ScriptEngine};
 pub use telnet::{GmcpMessage, TelnetClient};
 pub use trigger::{Trigger, TriggerAction, TriggerManager, TriggerPattern};
 pub use map::MapDatabase;

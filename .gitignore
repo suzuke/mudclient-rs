@@ -24,3 +24,10 @@ docs/7777/
 
 # Maps output
 map_output.mermaid
+
+# Exported data
+profiles_export.json
+
+# Old TypeScript MCP server (replaced by Rust crate)
+mcp-server/node_modules/
+mcp-server/dist/

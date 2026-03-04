@@ -17,25 +17,30 @@
 - [x] 側邊欄工具面板 (Tools, Notes, Guide)
 - [x] 日誌系統優化 (HTML 輸出, 訊息折疊)
 - [x] 自動路徑記錄與回溯 (`#path`)
-- [x] MCP Server (Node.js) — AI 外部控制 API
+- [x] MCP Server — AI 外部控制 API（已從 Node.js 改為 Rust 原生實作）
 - [x] Multi-Session 支援 — 多連線管理與切換
 - [x] 輸入自動補齊 (Autocomplete) — 房間描述、怪物/玩家 ID
 - [x] Lua 模組系統 (MudNav, MudCombat, MudLoot, MudMapper, MudExplorer, MudUtils)
 - [x] 任務腳本庫擴充 (ikkoku_quest, poker_quest, smurf_quest, itemfarm 等)
 
-### v0.3.0 (穩定與發布) - 🏃 進行中
+### v0.3.0 (穩定與發布) - 🏃 收尾中
 - [x] CI/CD 自動建置流程 (GitHub Actions)
 - [x] macOS DMG 打包 (Apple Silicon / Intel Universal)
 - [x] 文件補齊 (API、腳本教學、觸發器與別名指南)
-- [ ] 跨平台執行檔簽章 (macOS Notarization / Windows Signing)
-- [ ] 自動地圖繪製 (Mapper) 視覺化整合
-- [ ] 使用者設定檔 (Profile) 管理介面優化
+- [x] 跨平台執行檔簽章 (macOS Notarization / Windows Signing) — CI 已完成，需設定 secrets
+- [x] 自動地圖繪製 (Mapper) 視覺化整合 — egui canvas 渲染、BFS 佈局、互動導航
+- [x] 使用者設定檔 (Profile) 管理介面 — CRUD、import/export、keychain 密碼儲存
+- [x] Rust 原生 MCP Server — 取代 TypeScript 版本，19 個工具，rmcp 1.x stdio 傳輸
+- [x] HTTP API 擴充 — 11 個新端點（aliases/triggers/paths/windows/history/map）
+- [x] Rust 原生 MapDatabase — 取代 Lua MudMapper 的地圖資料庫
+- [x] `mud.ask_llm()` Lua API — 觸發器可非同步呼叫 Anthropic LLM 決策
+- [ ] 字型設定 — 允許使用者自訂字型家族（大小已可調）
+- [ ] 主題切換 — 深色/淺色模式切換
 
 ### v0.4.0 (進階擴展) - 📝 規劃中
 - [ ] 插件系統架構設計
-- [ ] 自動導航 (Pathfinding) 整合 MudMapper
+- [ ] 自動導航 (Pathfinding) Rust 原生整合 — Lua BFS 版已可用，視效能需求決定
 - [ ] 無障礙支援 — 螢幕閱讀器相容性優化
-- [ ] 字型設定 — 允許使用者自訂字型與大小
 
 ### v0.5.0 (長期願景) - 🔮 構想中
 - [ ] 跨平台 Linux 支援 (AppImage / deb 打包)
@@ -65,15 +70,16 @@
 - [ ] **主題切換**：深色/淺色模式微調
 
 ### MCP / AI 自動化
-- [x] **REST API**：內建 Axum HTTP Server，供外部工具存取
-- [x] **MCP Server**：Node.js/TypeScript，支援 AI Agent 控制 MUD
+- [x] **REST API**：內建 Axum HTTP Server（19 個端點），供外部工具存取
+- [x] **MCP Server**：Rust 原生（rmcp 1.x），19 個工具，支援 AI Agent 控制 MUD
 - [x] **Multi-Session API**：透過 session key 指定操作目標
 - [x] **Lua 執行**：遠端執行/評估 Lua 程式碼
+- [x] **LLM 整合**：`mud.ask_llm()` 讓 Lua 觸發器非同步呼叫 Anthropic API
 
 ### 進階功能 (Advanced)
 - [x] **路徑系統**：路徑錄製 (`#path record`)、倒帶 (`#path back`)
 - [x] **地圖資料**：MudMapper 房間識別 (Hash/ID)、MudNav 導航
-- [ ] **地圖視覺化**：Canvas/Mermaid 渲染
-- [ ] **自動導航**：Pathfinding 演算法整合
+- [x] **地圖視覺化**：egui canvas 渲染、BFS 佈局、zoom/pan 互動
+- [x] **自動導航**：Lua BFS pathfinding (`MudMapper.find_path`)
 
-> 最後更新: 2026-03-02
+> 最後更新: 2026-03-05

@@ -708,16 +708,16 @@ impl MudApp {
         let all_states = self.api_state_mgr.all_states();
         
         for (session_key, api_state) in all_states {
-            let (commands, lua_codes, eval_lua_codes) = {
+            let (commands, lua_codes, eval_lua_codes, api_queries) = {
                 if let Ok(mut api) = api_state.lock() {
-                    (api.drain_commands(), api.drain_lua(), api.drain_eval_lua())
+                    (api.drain_commands(), api.drain_lua(), api.drain_eval_lua(), api.drain_api_queries())
                 } else {
                     continue;
                 }
             };
 
             // 跳過沒有待處理項目的 Session
-            if commands.is_empty() && lua_codes.is_empty() && eval_lua_codes.is_empty() {
+            if commands.is_empty() && lua_codes.is_empty() && eval_lua_codes.is_empty() && api_queries.is_empty() {
                 continue;
             }
 
@@ -747,6 +747,10 @@ impl MudApp {
                         }
                     };
                     let _ = tx.send(result_str);
+                }
+                for (query, tx) in api_queries {
+                    let result = session.handle_api_query(query);
+                    let _ = tx.send(result);
                 }
             }
         }

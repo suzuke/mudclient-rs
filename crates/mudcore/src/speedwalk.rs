@@ -1,6 +1,9 @@
 use regex::Regex;
 use std::sync::OnceLock;
 
+/// 單一方向最大重複次數
+const MAX_REPEAT: usize = 200;
+
 /// 解析 Speedwalk路徑字串
 ///
 /// 格式範例: `/3w3se` -> `recall`, `w`, `w`, `w`, `se`, `se`, `se`
@@ -45,8 +48,11 @@ pub fn parse_speedwalk(input: &str) -> Option<Vec<String>> {
             let count: usize = if count_str.is_empty() {
                 1
             } else {
-                // 如果數字太大或解析失敗，視為 1 (或是這裡應該 fail? 照直覺先 parse)
-                count_str.parse().unwrap_or(1) // Regex 確保是數字，應該不會 panic
+                let n = count_str.parse().unwrap_or(1);
+                if n > MAX_REPEAT {
+                    return None; // 超過上限，視為無效路徑
+                }
+                n
             };
 
             for _ in 0..count {

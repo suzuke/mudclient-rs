@@ -74,6 +74,11 @@
 | `mud.window(name, text)` | 將訊息輸出到指定的子視窗 | `mud.window("chat", "頻道訊息...")` |
 | `mud.timer(seconds, code)`| 設定延遲執行 (單位: 秒) | `mud.timer(2.5, "mud.send('heal')")` |
 | `mud.enable_trigger(name, bool)`| 啟用或禁用指定名稱的觸發器 | `mud.enable_trigger("autoloot", false)` |
+| `mud.get_room_id()` | 取得目前房間的 Hash ID | `local id = mud.get_room_id()` |
+| `mud.get_current_room()` | 取得目前房間名稱 | `local name = mud.get_current_room()` |
+| `mud.get_current_room_id()` | 取得目前房間 ID（同 get_room_id） | `local id = mud.get_current_room_id()` |
+| `mud.collect_response(N)` | 收集接下來 N 行伺服器回應 | `mud.collect_response(10)` |
+| `mud.ask_llm(prompt, callback)` | 非同步呼叫 LLM，回覆後執行 callback | 見下方範例 |
 
 ### 變數與表格
 
@@ -83,6 +88,26 @@
 *   **`matches`** (或 `captures`): 觸發器的正則表達式捕獲組 (Captures)。
     *   `captures[1]` 代表第一個括號捕捉到的內容。
 *   **`message`**: 當前觸發的原始訊息行。
+
+### LLM 整合 (`mud.ask_llm`)
+
+`mud.ask_llm(prompt, callback_lua_code [, model])` 可非同步呼叫 Anthropic API，收到回覆後執行 callback。callback 中用 `$RESULT` 代表 LLM 的回覆文字。
+
+需設定環境變數 `ANTHROPIC_API_KEY`。預設使用 `claude-haiku-4-5-20251001`。
+
+```lua
+-- 詢問 LLM 並將回覆顯示在畫面
+mud.ask_llm("說 hello", "mud.echo($RESULT)")
+
+-- 在觸發器中使用：偵測到怪物時詢問 LLM 決策
+mud.ask_llm(
+  "我在「" .. room .. "」遇到「" .. mob .. "」，該打還是跑？只回答 kill 或 flee",
+  "mud.send($RESULT)"
+)
+
+-- 指定模型
+mud.ask_llm("翻譯這段文字", "mud.echo($RESULT)", "claude-sonnet-4-5-20250514")
+```
 
 ## 範例腳本
 

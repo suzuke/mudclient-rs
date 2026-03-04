@@ -85,19 +85,22 @@ graph TD
 | **序列化** | serde, serde_json | 設定檔與資料儲存 |
 | **正則** | regex | 觸發器匹配 |
 | **雜湊** | sha2 | 房間 ID 雜湊 |
-| **MCP** | @modelcontextprotocol/sdk (TS) | AI Agent 控制介面 |
+| **MCP** | rmcp 1.x (Rust) | AI Agent 控制介面 (stdio) |
+| **LLM** | reqwest + Anthropic API | Lua 腳本非同步 LLM 呼叫 |
 
 ### 3. `mcp-server` (AI 控制介面)
-獨立的 Node.js/TypeScript 應用程式，透過 MCP 協定讓 AI Agent（如 Claude、Gemini）操控 MUD 客戶端。
+Rust 原生的 MCP Server，透過 stdio 模式讓 AI Agent（如 Claude Code、Claude Desktop）操控 MUD 客戶端。
 
-*   **協定**: Model Context Protocol (stdio 模式)。
-*   **後端通訊**: 呼叫 `mudgui` 內建的 Axum REST API。
-*   **核心功能**:
-    *   `send_command` — 送出遊戲指令。
-    *   `read_messages` / `clear_messages` — 讀取/清除訊息緩衝區。
-    *   `execute_lua` / `evaluate_lua` — 遠端執行 Lua 程式碼。
-    *   `get_room_info` / `get_status` — 查詢遊戲狀態。
-    *   `list_sessions` — 多連線 session 管理。
+*   **協定**: Model Context Protocol (stdio 模式，rmcp 1.x)。
+*   **後端通訊**: 透過 reqwest 呼叫 `mudgui` 內建的 Axum REST API。
+*   **19 個工具**:
+    *   **連線管理**: `list_sessions`, `get_status`
+    *   **訊息**: `read_messages`, `clear_messages`, `get_command_history`
+    *   **遊戲操作**: `send_command`, `get_room_info`
+    *   **腳本**: `execute_lua`, `evaluate_lua`
+    *   **地圖**: `get_map_stats`, `search_map_rooms`, `find_map_path`
+    *   **自動化管理**: `list_aliases`, `list_triggers`, `list_paths`, `manage_alias`, `manage_trigger`
+    *   **子視窗**: `list_windows`, `read_window`
 
 ### 4. `scripts/` (Lua 腳本庫)
 遊戲自動化腳本集合，分為獨立腳本與共用模組。
@@ -116,10 +119,9 @@ graph TD
 
 *   `.agent/`: AI Agent 配置 (Rules, Skills, Workflows, Hooks)。
 *   `assets/`: 字型、圖示等靜態資源。
-*   `crates/`: Rust 原始碼 (Workspace: `mudcore` + `mudgui`)。
+*   `crates/`: Rust 原始碼 (Workspace: `mudcore` + `mudgui` + `mcp-server`)。
 *   `data/`: 靜態資料檔 (地圖、設定)。
 *   `docs/`: 專案文件。
-*   `mcp-server/`: MCP Server (TypeScript)。
 *   `packaging/`: 打包腳本 (DMG 建置等)。
 *   `scripts/`: Lua 腳本庫與共用模組。
 *   `logs/`: 執行日誌與遊戲紀錄。
@@ -138,8 +140,8 @@ cargo build -p mudgui --release
 # 執行測試
 cargo test --workspace
 
-# MCP Server 開發
-cd mcp-server && npm install && npm run build
+# MCP Server 編譯
+cargo build -p mcp-server --release
 ```
 
 ## 📚 相關文件
