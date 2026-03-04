@@ -313,10 +313,12 @@ impl MapRenderer {
         // 裁剪矩形：只繪製畫布可見區域（預留 margin）
         let cull_rect = response.rect.expand(80.0);
 
-        // 繪製連線
+        // 繪製連線（含方向標籤）
+        let label_font = egui::FontId::proportional(9.0 * self.zoom);
+        let label_color = Color32::from_gray(160);
         for (from_id, exits) in &data.moves {
             let Some(&from_pos) = self.layout.get(from_id) else { continue };
-            for to_id in exits.values() {
+            for (dir, to_id) in exits {
                 let Some(&to_pos) = self.layout.get(to_id) else { continue };
                 let from_screen = to_screen(from_pos);
                 let to_screen_pos = to_screen(to_pos);
@@ -326,6 +328,15 @@ impl MapRenderer {
                 painter.line_segment(
                     [from_screen, to_screen_pos],
                     Stroke::new(1.5, Color32::from_gray(100)),
+                );
+                // 方向標籤：畫在靠近起點 1/3 處，避免與反向標籤重疊
+                let label_pos = from_screen + (to_screen_pos - from_screen) * 0.3;
+                painter.text(
+                    label_pos,
+                    egui::Align2::CENTER_CENTER,
+                    dir,
+                    label_font.clone(),
+                    label_color,
                 );
             }
         }

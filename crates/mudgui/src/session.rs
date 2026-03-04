@@ -584,7 +584,212 @@ impl Session {
         }
     }
 
+    /// 處理來自 HTTP API 的查詢，回傳 JSON
+    pub fn handle_api_query(&mut self, query: crate::api::ApiQuery) -> serde_json::Value {
+        use crate::api::ApiQuery;
+        match query {
+            ApiQuery::ListAliases => {
+                let aliases: Vec<serde_json::Value> = self.alias_manager.sorted_aliases.iter()
+                    .filter_map(|name| self.alias_manager.get(name))
+                    .map(|a| serde_json::json!({
+                        "name": a.name,
+                        "pattern": a.pattern,
+                        "replacement": a.replacement,
+                        "enabled": a.enabled,
+                        "is_script": a.is_script,
+                        "category": a.category,
+                    }))
+                    .collect();
+                serde_json::json!({ "aliases": aliases, "count": aliases.len() })
+            }
+            ApiQuery::ListTriggers => {
+                let triggers: Vec<serde_json::Value> = self.trigger_manager.order.iter()
+                    .filter_map(|name| self.trigger_manager.get(name))
+                    .map(|t| {
+                        let (pat_str, pat_type) = match &t.pattern {
+                            TriggerPattern::Contains(s) => (s.clone(), "contains"),
+                            TriggerPattern::StartsWith(s) => (s.clone(), "startswith"),
+                            TriggerPattern::EndsWith(s) => (s.clone(), "endswith"),
+                            TriggerPattern::Regex(s) => (s.clone(), "regex"),
+                        };
+                        let action_str = t.actions.first().map(|a| match a {
+                            TriggerAction::SendCommand(s) => s.clone(),
+                            TriggerAction::ExecuteScript(s) => s.clone(),
+                            _ => String::new(),
+                        }).unwrap_or_default();
+                        let is_script = t.actions.first().map(|a| matches!(a, TriggerAction::ExecuteScript(_))).unwrap_or(false);
+                        serde_json::json!({
+                            "name": t.name,
+                            "pattern": pat_str,
+                            "pattern_type": pat_type,
+                            "action": action_str,
+                            "enabled": t.enabled,
+                            "is_script": is_script,
+                            "category": t.category,
+                        })
+                    })
+                    .collect();
+                serde_json::json!({ "triggers": triggers, "count": triggers.len() })
+            }
+            ApiQuery::ListPaths => {
+                let paths: Vec<serde_json::Value> = self.path_manager.sorted_keys.iter()
+                    .filter_map(|name| self.path_manager.get(name))
+                    .map(|p| serde_json::json!({
+                        "name": p.name,
+                        "value": p.value,
+                        "category": p.category,
+                    }))
+                    .collect();
+                serde_json::json!({ "paths": paths, "count": paths.len() })
+            }
+            ApiQuery::ListWindows => {
+                let windows: Vec<serde_json::Value> = self.window_manager.windows().iter()
+                    .map(|w| serde_json::json!({
+                        "id": w.id,
+                        "title": w.title,
+                        "visible": w.visible,
+                        "message_count": w.message_count(),
+                    }))
+                    .collect();
+                serde_json::json!({ "windows": windows })
+            }
+            ApiQuery::ReadWindow { id, count } => {
+                match self.window_manager.get(&id) {
+                    Some(window) => {
+                        let messages: Vec<String> = window.last_n(count)
+                            .map(|m| {
+                                if m.content.contains('\x1b') {
+                                    ANSI_STRIP_RE.replace_all(&m.content, "").to_string()
+                                } else {
+                                    m.content.clone()
+                                }
+                            })
+                            .collect();
+                        serde_json::json!({
+                            "id": id,
+                            "messages": messages,
+                            "count": messages.len(),
+                        })
+                    }
+                    None => serde_json::json!({ "error": format!("Window '{}' not found", id) }),
+                }
+            }
+            ApiQuery::GetHistory { count } => {
+                let total = self.input_history.len();
+                let start = total.saturating_sub(count);
+                let history: Vec<&str> = self.input_history[start..].iter().map(|s| s.as_str()).collect();
+                serde_json::json!({ "history": history, "total": total })
+            }
+            ApiQuery::GetMapStats => {
+                serde_json::json!({
+                    "enabled": self.map_database.enabled,
+                    "room_count": self.map_database.rooms.len(),
+                    "edge_count": self.map_database.edge_count(),
+                    "current_room_id": self.current_room_id,
+                    "last_room_id": self.map_database.last_room_id,
+                })
+            }
+            ApiQuery::SearchMapRooms { query } => {
+                let results = self.map_database.resolve_target(&query);
+                let rooms: Vec<serde_json::Value> = results.iter()
+                    .take(20)
+                    .map(|(id, name)| serde_json::json!({ "id": id, "name": name }))
+                    .collect();
+                serde_json::json!({ "results": rooms, "total": results.len() })
+            }
+            ApiQuery::FindMapPath { from, to } => {
+                // 支援 "current" 關鍵字
+                let from_id = if from == "current" {
+                    self.current_room_id.clone().unwrap_or_default()
+                } else {
+                    // 嘗試 resolve 名稱到 ID
+                    self.map_database.resolve_target(&from)
+                        .first().map(|(id, _)| id.clone()).unwrap_or(from)
+                };
+                let to_targets = self.map_database.resolve_target(&to);
+                let to_id = to_targets.first().map(|(id, _)| id.clone()).unwrap_or(to);
 
+                if from_id.is_empty() {
+                    return serde_json::json!({ "error": "Cannot determine source room" });
+                }
+                match self.map_database.find_path(&from_id, &to_id) {
+                    Some(path) => serde_json::json!({
+                        "found": true,
+                        "from": from_id,
+                        "to": to_id,
+                        "path": path,
+                        "steps": path.len(),
+                    }),
+                    None => serde_json::json!({
+                        "found": false,
+                        "from": from_id,
+                        "to": to_id,
+                    }),
+                }
+            }
+            ApiQuery::ManageAlias { action, name, pattern, replacement, is_script } => {
+                match action.as_str() {
+                    "add" => {
+                        let pat = pattern.unwrap_or_default();
+                        let rep = replacement.unwrap_or_default();
+                        let mut alias = mudcore::Alias::new(&name, &pat, &rep);
+                        alias.is_script = is_script.unwrap_or(false);
+                        self.alias_manager.add(alias);
+                        serde_json::json!({ "ok": true, "message": format!("Alias '{}' added", name) })
+                    }
+                    "remove" => {
+                        match self.alias_manager.remove(&name) {
+                            Some(_) => serde_json::json!({ "ok": true, "message": format!("Alias '{}' removed", name) }),
+                            None => serde_json::json!({ "ok": false, "message": format!("Alias '{}' not found", name) }),
+                        }
+                    }
+                    "toggle" => {
+                        if let Some(a) = self.alias_manager.aliases.get_mut(&name) {
+                            a.enabled = !a.enabled;
+                            serde_json::json!({ "ok": true, "enabled": a.enabled })
+                        } else {
+                            serde_json::json!({ "ok": false, "message": format!("Alias '{}' not found", name) })
+                        }
+                    }
+                    _ => serde_json::json!({ "ok": false, "message": format!("Unknown action '{}'", action) }),
+                }
+            }
+            ApiQuery::ManageTrigger { action, name, pattern, pattern_type, script } => {
+                match action.as_str() {
+                    "add" => {
+                        let pat_str = pattern.unwrap_or_default();
+                        let pat = match pattern_type.as_deref() {
+                            Some("startswith") => TriggerPattern::StartsWith(pat_str),
+                            Some("endswith") => TriggerPattern::EndsWith(pat_str),
+                            Some("regex") => TriggerPattern::Regex(pat_str),
+                            _ => TriggerPattern::Contains(pat_str),
+                        };
+                        let mut trigger = mudcore::Trigger::new(&name, pat);
+                        if let Some(s) = script {
+                            trigger = trigger.add_action(TriggerAction::ExecuteScript(s));
+                        }
+                        self.trigger_manager.add(trigger);
+                        serde_json::json!({ "ok": true, "message": format!("Trigger '{}' added", name) })
+                    }
+                    "remove" => {
+                        match self.trigger_manager.remove(&name) {
+                            Some(_) => serde_json::json!({ "ok": true, "message": format!("Trigger '{}' removed", name) }),
+                            None => serde_json::json!({ "ok": false, "message": format!("Trigger '{}' not found", name) }),
+                        }
+                    }
+                    "toggle" => {
+                        if let Some(t) = self.trigger_manager.triggers.get_mut(&name) {
+                            t.enabled = !t.enabled;
+                            serde_json::json!({ "ok": true, "enabled": t.enabled })
+                        } else {
+                            serde_json::json!({ "ok": false, "message": format!("Trigger '{}' not found", name) })
+                        }
+                    }
+                    _ => serde_json::json!({ "ok": false, "message": format!("Unknown action '{}'", action) }),
+                }
+            }
+        }
+    }
 
     /// 嘗試從行緩衝區偵測房間資訊
     fn detect_room_info(&mut self, current_line: &str) {
@@ -1077,6 +1282,100 @@ impl Session {
                 tracing::info!("CollectResponse: queued for command '{}'", cmd);
             }
         }
+
+        // 9. LLM 請求（非同步呼叫 Anthropic API）
+        for req in context.llm_requests {
+            self.dispatch_llm_request(req);
+        }
+    }
+
+    /// 派發 LLM 請求：透過 api_state 排入 pending_lua，由 tokio 非同步執行
+    fn dispatch_llm_request(&self, req: mudcore::LlmRequest) {
+        let api_state = self.api_state.clone();
+
+        // 在 tokio runtime 中非同步呼叫 Anthropic API
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build();
+            let Ok(rt) = rt else { return };
+            rt.block_on(async move {
+                let api_key = match std::env::var("ANTHROPIC_API_KEY") {
+                    Ok(k) if !k.is_empty() => k,
+                    _ => {
+                        if let Ok(mut s) = api_state.lock() {
+                            s.pending_lua.push_back(
+                                r#"mud.echo("\x1b[31m[LLM] ANTHROPIC_API_KEY not set\x1b[0m")"#.to_string()
+                            );
+                        }
+                        return;
+                    }
+                };
+
+                let model = req.model.as_deref().unwrap_or("claude-haiku-4-5-20251001");
+
+                let client = reqwest::Client::new();
+                let body = serde_json::json!({
+                    "model": model,
+                    "max_tokens": 256,
+                    "messages": [{"role": "user", "content": req.prompt}]
+                });
+
+                let resp = client
+                    .post("https://api.anthropic.com/v1/messages")
+                    .header("x-api-key", &api_key)
+                    .header("anthropic-version", "2023-06-01")
+                    .header("content-type", "application/json")
+                    .json(&body)
+                    .send()
+                    .await;
+
+                let result_text = match resp {
+                    Ok(r) => {
+                        match r.json::<serde_json::Value>().await {
+                            Ok(json) => {
+                                json["content"]
+                                    .as_array()
+                                    .and_then(|arr| arr.first())
+                                    .and_then(|c| c["text"].as_str())
+                                    .unwrap_or("")
+                                    .trim()
+                                    .to_string()
+                            }
+                            Err(e) => {
+                                tracing::error!("[LLM] JSON parse error: {}", e);
+                                String::new()
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("[LLM] HTTP error: {}", e);
+                        String::new()
+                    }
+                };
+
+                if result_text.is_empty() {
+                    if let Ok(mut s) = api_state.lock() {
+                        s.pending_lua.push_back(
+                            r#"mud.echo("\x1b[31m[LLM] Empty or failed response\x1b[0m")"#.to_string()
+                        );
+                    }
+                    return;
+                }
+
+                // 將 $RESULT 替換為 LLM 回覆（JSON escape 避免注入）
+                let escaped = result_text
+                    .replace('\\', "\\\\")
+                    .replace('"', "\\\"")
+                    .replace('\n', "\\n")
+                    .replace('\r', "");
+                let lua_code = req.callback_code.replace("$RESULT", &format!("\"{}\"", escaped));
+
+                if let Ok(mut s) = api_state.lock() {
+                    s.pending_lua.push_back(lua_code);
+                }
+            });
+        });
     }
 
     /// 處理接收到的文字與觸發器
