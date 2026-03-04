@@ -274,7 +274,7 @@ impl MudApp {
                 if !self.profile_edit_password.is_empty() {
                     ui.colored_label(
                         Color32::from_rgb(100, 200, 100),
-                        "🔒 密碼儲存於 OS Keychain"
+                        "🔒 密碼已設定"
                     );
                 }
 

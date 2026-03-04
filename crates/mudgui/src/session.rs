@@ -1562,7 +1562,7 @@ impl Session {
                     if parts.len() >= 3 {
                         if let Ok(ms) = parts[1].parse::<u64>() {
                             let sub_cmd = parts[2..].join(" ");
-                            let lua_code = format!("mud.send(\"{}\")", sub_cmd.replace("\"", "\\\""));
+                            let lua_code = format!("mud.send(\"{}\")", sub_cmd.replace('\\', "\\\\").replace('"', "\\\""));
                             
                             self.active_timers.push(ActiveTimer {
                                 expires_at: Instant::now() + std::time::Duration::from_millis(ms),

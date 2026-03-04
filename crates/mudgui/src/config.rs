@@ -5,10 +5,28 @@
 //! - `Profile`: 單一帳號/伺服器的設定（連線資訊、專屬別名/觸發器）
 //! - `ProfileManager`: Profile 的 CRUD 操作
 
-use serde::{Deserialize, Serialize};
+use base64::Engine;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+
+fn ser_password<S: Serializer>(pw: &Option<String>, s: S) -> Result<S::Ok, S::Error> {
+    match pw {
+        Some(p) => s.serialize_str(&base64::engine::general_purpose::STANDARD.encode(p)),
+        None => s.serialize_none(),
+    }
+}
+
+fn de_password<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    let opt: Option<String> = Option::deserialize(d)?;
+    Ok(opt.and_then(|encoded| {
+        base64::engine::general_purpose::STANDARD
+            .decode(&encoded)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+    }))
+}
 
 // ============================================================================
 // 基礎設定結構（與舊版相容）
@@ -100,8 +118,9 @@ pub struct Profile {
     /// 登入帳號
     #[serde(default)]
     pub username: Option<String>,
-    /// 登入密碼（運行時使用，不序列化到磁碟，改由 OS keychain 儲存）
-    #[serde(skip)]
+    /// 登入密碼（base64 編碼儲存）
+    #[serde(default, skip_serializing_if = "Option::is_none",
+            serialize_with = "ser_password", deserialize_with = "de_password")]
     pub password: Option<String>,
 
     /// 建立時間 (Unix timestamp)
@@ -358,12 +377,14 @@ impl GlobalConfig {
         Self::default()
     }
 
-    /// 儲存全域設定到檔案
+    /// 儲存全域設定到檔案（原子寫入）
     pub fn save(&self) -> Result<(), std::io::Error> {
         let path = Self::config_path();
         ensure_parent_dir(&path)?;
         let content = serde_json::to_string_pretty(self)?;
-        fs::write(&path, content)?;
+        let tmp_path = path.with_extension("json.tmp");
+        fs::write(&tmp_path, &content)?;
+        fs::rename(&tmp_path, &path)?;
         Ok(())
     }
 }
@@ -406,9 +427,7 @@ impl ProfileManager {
                 let path = entry.path();
                 if path.extension().map_or(false, |ext| ext == "json") {
                     if let Ok(content) = fs::read_to_string(&path) {
-                        if let Ok(mut profile) = serde_json::from_str::<Profile>(&content) {
-                            // 從 OS keychain 載入密碼
-                            profile.password = load_password(&profile.name);
+                        if let Ok(profile) = serde_json::from_str::<Profile>(&content) {
                             self.profiles.insert(profile.name.clone(), profile);
                         }
                     }
@@ -434,21 +453,23 @@ impl ProfileManager {
 
     /// 新增或更新 Profile
     pub fn save(&mut self, profile: Profile) -> Result<(), std::io::Error> {
+        // 防止 path traversal：Profile name 僅允許 ASCII 字母數字、底線、連字號
+        if !is_safe_profile_name(&profile.name) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("不安全的 profile 名稱: {}", profile.name),
+            ));
+        }
+
         let dir = Self::profiles_dir();
         ensure_parent_dir(&dir.join("_"))?;
 
-        // 密碼存入 OS keychain（不寫入 JSON）
-        if let Some(ref pw) = profile.password {
-            if let Err(e) = save_password(&profile.name, pw) {
-                tracing::warn!("密碼儲存到 keychain 失敗: {e}");
-            }
-        } else {
-            delete_password(&profile.name);
-        }
-
         let path = dir.join(format!("{}.json", profile.name));
         let content = serde_json::to_string_pretty(&profile)?;
-        fs::write(&path, content)?;
+        // 原子寫入：先寫暫存檔再 rename
+        let tmp_path = path.with_extension("json.tmp");
+        fs::write(&tmp_path, &content)?;
+        fs::rename(&tmp_path, &path)?;
 
         self.profiles.insert(profile.name.clone(), profile);
         Ok(())
@@ -456,7 +477,12 @@ impl ProfileManager {
 
     /// 刪除 Profile
     pub fn delete(&mut self, name: &str) -> Result<(), std::io::Error> {
-        delete_password(name);
+        if !is_safe_profile_name(name) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("不安全的 profile 名稱: {}", name),
+            ));
+        }
         let path = Self::profiles_dir().join(format!("{}.json", name));
         if path.exists() {
             fs::remove_file(&path)?;
@@ -492,33 +518,6 @@ impl Default for ProfileManager {
 }
 
 // ============================================================================
-// 密碼安全儲存 (OS Keychain)
-// ============================================================================
-
-const KEYRING_SERVICE: &str = "mudclient-rs";
-
-/// 將密碼儲存到 OS keychain
-pub fn save_password(profile_name: &str, password: &str) -> Result<(), String> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, profile_name)
-        .map_err(|e| format!("keyring 初始化失敗: {e}"))?;
-    entry.set_password(password)
-        .map_err(|e| format!("儲存密碼失敗: {e}"))
-}
-
-/// 從 OS keychain 讀取密碼
-pub fn load_password(profile_name: &str) -> Option<String> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, profile_name).ok()?;
-    entry.get_password().ok()
-}
-
-/// 從 OS keychain 刪除密碼
-pub fn delete_password(profile_name: &str) {
-    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, profile_name) {
-        let _ = entry.delete_credential();
-    }
-}
-
-// ============================================================================
 // 工具函數
 // ============================================================================
 
@@ -537,6 +536,13 @@ fn ensure_parent_dir(path: &PathBuf) -> Result<(), std::io::Error> {
         fs::create_dir_all(parent)?;
     }
     Ok(())
+}
+
+/// 檢查 profile 名稱是否安全（僅允許 ASCII 字母數字、底線、連字號，1-64 字元）
+fn is_safe_profile_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 /// 取得當前 Unix timestamp
