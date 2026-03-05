@@ -109,8 +109,9 @@ function MudNav.send_next()
         -- Just overwrite ID. If previous runs, it checks waiting_confirm anyway.
     end
     
+    local timer_step = s.index -- 記錄此計時器屬於哪一步
     s.confirm_timer_id = MudUtils.safe_timer(3.0, function()
-        if s.walking and not s.paused and s.waiting_confirm then
+        if s.walking and not s.paused and s.waiting_confirm and s.index == timer_step then
              if MudNav.config.debug then mud.echo("[MudNav] Step Stuck (No Exits). Forcing Look...") end
              s.forced_look = true -- 標記為 auto-look 觸發
              mud.send("l")
