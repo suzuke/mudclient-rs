@@ -13,8 +13,10 @@
 *   **🎨 現代化介面**: 支援 256 色與 TrueColor，可自訂分頁、側邊欄工具與主題。
 *   **🤖 自動化助手**: 內建路徑記錄 (`#path`)、模組化任務腳本 (MudNav, MudCombat 等)。
 *   **📜 完整紀錄**: 支援 HTML 格式日誌，保留顏色與格式，方便回顧。
-*   **🧠 AI 整合**: 內建 [MCP Server](docs/MCP_Usage.md)，讓 AI Agent 透過標準協定操控 MUD。
+*   **🧠 AI 整合**: 內建 [MCP Server](docs/MCP_Usage.md)，讓 AI Agent 透過標準協定操控 MUD；Lua 腳本可透過 `mud.ask_llm()` 即時呼叫 LLM 決策。
 *   **🔗 多連線管理**: Multi-Session 支援，同時管理多個 MUD 連線。
+*   **🖥️ 內嵌終端**: 側邊欄嵌入終端模擬器 ([egui-term](crates/egui-term))，不離開客戶端即可操作 Shell。
+*   **🗺️ 地圖視覺化**: Rust 原生地圖資料庫，egui canvas 渲染、BFS 佈局、互動縮放導航。
 
 ## 📥 安裝與執行
 
@@ -82,8 +84,8 @@ cargo build -p mudgui
 # 執行測試
 cargo test --workspace
 
-# 啟動 MCP Server (需 Node.js)
-cd mcp-server && npm install && npm run build
+# 編譯 MCP Server (Rust 原生)
+cargo build -p mcp-server --release
 ```
 
 ## 🤝 貢獻

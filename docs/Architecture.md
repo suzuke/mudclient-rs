@@ -88,7 +88,14 @@ graph TD
 | **MCP** | rmcp 1.x (Rust) | AI Agent 控制介面 (stdio) |
 | **LLM** | reqwest + Anthropic API | Lua 腳本非同步 LLM 呼叫 |
 
-### 3. `mcp-server` (AI 控制介面)
+### 3. `egui-term` (內嵌終端模擬器)
+側邊欄嵌入的終端模擬器元件，讓使用者不離開客戶端即可操作 Shell。
+
+*   **Backend**: 基於 PTY (pseudo-terminal) 的終端後端。
+*   **Rendering**: 自訂 egui widget，處理終端字元渲染、游標與主題。
+*   **Integration**: 嵌入 `mudgui` 側邊欄，獨立於 MUD 連線運作。
+
+### 4. `mcp-server` (AI 控制介面)
 Rust 原生的 MCP Server，透過 stdio 模式讓 AI Agent（如 Claude Code、Claude Desktop）操控 MUD 客戶端。
 
 *   **協定**: Model Context Protocol (stdio 模式，rmcp 1.x)。
@@ -119,7 +126,7 @@ Rust 原生的 MCP Server，透過 stdio 模式讓 AI Agent（如 Claude Code、
 
 *   `.agent/`: AI Agent 配置 (Rules, Skills, Workflows, Hooks)。
 *   `assets/`: 字型、圖示等靜態資源。
-*   `crates/`: Rust 原始碼 (Workspace: `mudcore` + `mudgui` + `mcp-server`)。
+*   `crates/`: Rust 原始碼 (Workspace: `mudcore` + `mudgui` + `mcp-server` + `egui-term`)。
 *   `data/`: 靜態資料檔 (地圖、設定)。
 *   `docs/`: 專案文件。
 *   `packaging/`: 打包腳本 (DMG 建置等)。
