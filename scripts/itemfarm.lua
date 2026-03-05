@@ -46,6 +46,28 @@ _G.ItemFarm.config = {
     show_echo = true,        -- 是否顯示非關鍵訊息
 }
 
+-- ===== 共用路徑 =====
+local function extend_path(base, extra)
+    local p = {}
+    for i, v in ipairs(base) do p[i] = v end
+    for _, v in ipairs(extra) do p[#p + 1] = v end
+    return p
+end
+
+-- recall → 博物館入口 → look painting → 吉雅尼斯城 → 主要廣場
+local path_to_painting_area = {
+    {cmd="recall", id="4e9c9dd2418fa5c52e762d52985dfca6fe1d77cd111c87536d3211df7cf5ca2e"},
+    {cmd="w", id="478ffe9f12a30d704186f327ca56a85531b46db421602509b46fe58eb6c267c5"},
+    {cmd="w", id="349965591ea7cea0ca7de23a02a1cdc517fe5d1617867d0cb8d4623c72af7dbd"},
+    {cmd="w", id="314bd5656517c827bebea9e72a871802325927e2241ee17c5f4ed37b420f39a6"},
+    {cmd="s", id="582cf9bb9b3444959f6ac8882c7e6f6174599a42efa746ccad882be7bfd8bfaa"},
+    {cmd="s", id="b370fe0b35b66d61dd7c1b38070c1dbcea24550aabad37e266148b7244204459"},
+    {cmd="s", id="5530f4e241b3cd903a4cc158d4732764c974e1bcb554ce97169140eecda97a85"},
+    {cmd="e", id="97f8fe848f5492717e2b12e0538552c62937548236d20a028f7cc1ebaedb18b8"},
+    {cmd="look painting", id="e913d4e99d70ba89895dab53d22aa6669d5c585ffb066eb241cb2abedace31b3"},
+    {cmd="s", id="eef1fdd15511ea3c48793299ca947aa4de44be5a095cd7194a4e103740fc2e2c"},
+}
+
 -- ===== 任務列表 =====
 -- search_type: "quest" (偵測「他正在這個世界中」) / "locate" (偵測「攜帶著」)
 -- mode: "summon" (召喚後攻擊) / "direct" (直接到場攻擊)
@@ -172,21 +194,11 @@ _G.ItemFarm.jobs = {
         target_mob = {"一位魔法見習生", "魔法見習生"},
         attack_cmd = "c charm student", -- 魅惑指令
 
-        path_to_mob = {
-            {cmd="recall", id="4f918fc15a8b069659b31992056d461a0cfa7d5f582328ecf6155c1ba7124796"}, -- 開頭通常需要 recall
-            {cmd="w", id="be100b7e304b3ed4e70d3bf961f3f94746ae8816df57b4422a6bfc8be0c702c4"},
-            {cmd="w", id="eb257918905bfb009def79fcaa0fc531cece9cd8fdc5deb498195160f322e37e"},
-            {cmd="w", id="649a77e5e2d1a2cb9355d83dca9bea4e280e356dd4874f8bbd7933f47a74a7c5"},
-            {cmd="s", id="72008fa8a1dd170fcf415d13368ebdb8da3647244a10df44bffc5189be8dc653"},
-            {cmd="s", id="2a695678483d60ef8dcc35d3dad1e0e55062fed9ca86de6c689870905cb0297a"},
-            {cmd="s", id="c398e18f18255d90f9232dd806a4e83c3e7434958e40fb011de5a01563fac7cb"},
-            {cmd="e", id="2c473de7cf10e0ce4d7d52a42fbdc3fee857c7d6c62187c478cc45af1b579139"},
-            {cmd="look painting", id="2c473de7cf10e0ce4d7d52a42fbdc3fee857c7d6c62187c478cc45af1b579139"},
-            {cmd="s", id="72313d7a6e0b544c81fc2cfd65cc8da356939eb906ea5d572d1397cbcc8198f0"},
-            {cmd="w", id="2259a448daecaebeca8357e460987e0b95c058ee55fee51a19dd99a69fa55f9b"},
-            {cmd="w", id="cfeb1f603e90d9eca7d3fd42b8066c0fceb496567b9b95a34131d2c37380779c"},
-            {cmd="s", id="ca13c9f0bede1d2284cb413bc6301eb3441bfe488ff73e320380c3172aa259d7"},
-        },
+        path_to_mob = extend_path(path_to_painting_area, {
+            {cmd="w", id="17d58425b0bfaeb6cd94043280833333ed3aa5a503b0b094fc13e877a7fce6cb"},
+            {cmd="w", id="de0bc88cac4c3db67d96141608ab2d39af185a9f6346f3f76c191b93f1bd7909"},
+            {cmd="s", id="a0bdbe8419a511cf0d91f90a708e8be8aca8fa6f48d5cd1ca527e5821015edf8"},
+        }),
         -- 魅惑後帶往擊殺點的路徑
         path_to_kill = "or all hi;or all recall;recall;n;n;n;e", 
         -- 抵達擊殺點後，若需強制目標卸下裝備可設定此項
@@ -205,18 +217,7 @@ _G.ItemFarm.jobs = {
         summon_cmd = "c summon traveller",
         target_mob = {"一位四處旅行的","旅人"},
         attack_cmd = "c fire traveller",
-        path_to_mob = {
-            {cmd="recall", id="4f918fc15a8b069659b31992056d461a0cfa7d5f582328ecf6155c1ba7124796"}, -- 開頭通常需要 recall
-            {cmd="w", id="be100b7e304b3ed4e70d3bf961f3f94746ae8816df57b4422a6bfc8be0c702c4"},
-            {cmd="w", id="eb257918905bfb009def79fcaa0fc531cece9cd8fdc5deb498195160f322e37e"},
-            {cmd="w", id="649a77e5e2d1a2cb9355d83dca9bea4e280e356dd4874f8bbd7933f47a74a7c5"},
-            {cmd="s", id="72008fa8a1dd170fcf415d13368ebdb8da3647244a10df44bffc5189be8dc653"},
-            {cmd="s", id="2a695678483d60ef8dcc35d3dad1e0e55062fed9ca86de6c689870905cb0297a"},
-            {cmd="s", id="c398e18f18255d90f9232dd806a4e83c3e7434958e40fb011de5a01563fac7cb"},
-            {cmd="e", id="2c473de7cf10e0ce4d7d52a42fbdc3fee857c7d6c62187c478cc45af1b579139"},
-            {cmd="look painting", id="2c473de7cf10e0ce4d7d52a42fbdc3fee857c7d6c62187c478cc45af1b579139"},
-            {cmd="s", id="72313d7a6e0b544c81fc2cfd65cc8da356939eb906ea5d572d1397cbcc8198f0"},
-        },
+        path_to_mob = path_to_painting_area,
         path_to_storage = "recall;3n;e",
         loot_items = {"curse"},
         remove_nodrop = {},
@@ -231,12 +232,12 @@ _G.ItemFarm.jobs = {
     --     target_mob = {"西裝筆挺", "銀行職員"},
     --     attack_cmd = "c charm servant",
     --     path_to_mob = {
-    --         {cmd="recall", id="4f918fc15a8b069659b31992056d461a0cfa7d5f582328ecf6155c1ba7124796"},
-    --         {cmd="n", id="1a37bff38fa05f235f537bbd4e5b3e46502d046cae0310c7993e352bdffd69ec"},
-    --         {cmd="n", id="20a3a70f08c21a9d16cf512ed82828c11a7c9afa4d1a674fc3bef8c61e743513"},
-    --         {cmd="n", id="9de3abc7fdced045c822d512f10a5a62d85fd3f4c77438be5957b7474fad4b71"},
-    --         {cmd="n", id="41a1d27ac2bc1662a970f35523ff006edcd6a7ea5cc5753a0ef547998306ee33"},
-    --         {cmd="e", id="4379ebe8f14d8626e9f0f19282a791c3d64301264fec95e4a0007209e146ad4d"},
+    --         {cmd="recall", id="4e9c9dd2418fa5c52e762d52985dfca6fe1d77cd111c87536d3211df7cf5ca2e"},
+    --         {cmd="n", id="89ab35d8c4dfacdb66314ae3b3d2700053e39f552fe8f140aa14941ad9da7574"},
+    --         {cmd="n", id="60f099d91883b289ba84f1745d7adf38cf4c23b1886b4d58884619f9a1d9413c"},
+    --         {cmd="n", id="ea3efa3229d62ea33d8dade3608e6672a52af3ee03747d70e5e9d41efb23a1ab"},
+    --         {cmd="n", id="67936504a24314c48830ecfb6304301615bdf0e3f6723e09aa2c1b65944c26da"},
+    --         {cmd="e", id="05879f4b72fb468bb4f31c9112a969d88bfc8e011f7f19cbef61c2bc2dcb9c4c"},
     --     },
     --     path_to_kill = "w;s;s;s;e", 
     --     kill_action = "or all drop all",
