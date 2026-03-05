@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/mudcore", "crates/mudgui", "crates/mcp-server"]
+members = ["crates/mudcore", "crates/mudgui", "crates/mcp-server", "crates/egui-term"]
 resolver = "2"
 
 [workspace.package]

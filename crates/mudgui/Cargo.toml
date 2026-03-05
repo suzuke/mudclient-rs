@@ -29,4 +29,5 @@ axum = "0.8"
 tower-http = { version = "0.6", features = ["cors"] }
 base64 = "0.22"
 reqwest = { version = "0.12", features = ["json"] }
+egui-term = { path = "../egui-term" }
 

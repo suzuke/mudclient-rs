@@ -1,0 +1,12 @@
+[package]
+name = "egui-term"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal emulator widget powered by EGUI framework and alacritty terminal backend (forked from egui_term 0.1.0, downgraded to egui 0.30)."
+license = "MIT"
+
+[dependencies]
+alacritty_terminal = "0.25.0"
+anyhow = "1.0.96"
+egui = "0.30"
+open = "5.3.2"

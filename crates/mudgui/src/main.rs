@@ -6,6 +6,7 @@ mod app;
 mod config;
 mod mapper;
 mod session;
+mod terminal;
  
 use app::MudApp;
 use image::GenericImageView;

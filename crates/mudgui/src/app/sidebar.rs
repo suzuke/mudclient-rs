@@ -9,9 +9,13 @@ use super::{MudApp, PendingAction, SidePanelTab};
 impl MudApp {
     /// 繪製側邊欄
     pub(super) fn render_side_panel(&mut self, ctx: &egui::Context, active_window_id: String, _active_id: Option<crate::session::SessionId>, pending_action: &mut Option<PendingAction>) {
+        let is_terminal = self.side_panel_tab == SidePanelTab::Terminal;
+        let min_width = if is_terminal { 500.0 } else { 200.0 };
+
         egui::SidePanel::right("tools_panel")
             .resizable(true)
-            .default_width(250.0) // 增加寬度以容納攻略
+            .default_width(if is_terminal { 500.0 } else { 250.0 })
+            .min_width(min_width)
             .show(ctx, |ui| {
                 // 1. 標籤頁切換
                 ui.horizontal(|ui| {
@@ -19,8 +23,14 @@ impl MudApp {
                     ui.selectable_value(&mut self.side_panel_tab, SidePanelTab::Guide, "📖 攻略");
                     ui.selectable_value(&mut self.side_panel_tab, SidePanelTab::Notes, "📝 筆記");
                     ui.selectable_value(&mut self.side_panel_tab, SidePanelTab::Map, "🗺️ 地圖");
+                    ui.selectable_value(&mut self.side_panel_tab, SidePanelTab::Terminal, "💻 終端");
                 });
                 ui.separator();
+
+                // 終端分頁的焦點管理
+                let terminal_has_focus = self.side_panel_tab == SidePanelTab::Terminal
+                    && ui.ui_contains_pointer();
+                self.terminal_manager.set_focus(terminal_has_focus);
 
                 // 2. 內容渲染
                 match self.side_panel_tab {
@@ -36,8 +46,16 @@ impl MudApp {
                     SidePanelTab::Map => {
                         self.render_map_tab(ui);
                     }
+                    SidePanelTab::Terminal => {
+                        self.render_terminal_tab(ui);
+                    }
                 }
             });
+    }
+
+    /// 繪製終端分頁
+    fn render_terminal_tab(&mut self, ui: &mut egui::Ui) {
+        self.terminal_manager.render(ui);
     }
 
     /// 繪製工具分頁 (原有的側邊欄內容)

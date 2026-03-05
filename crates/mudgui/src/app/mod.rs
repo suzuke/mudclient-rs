@@ -104,6 +104,9 @@ pub struct MudApp {
     /// 地圖渲染器
     map_renderer: crate::mapper::MapRenderer,
 
+    /// 終端管理器
+    terminal_manager: crate::terminal::TerminalManager,
+
     /// Toast 訊息 (文字, 建立時間)
     toast_message: Option<(String, Instant)>,
 }
@@ -131,6 +134,7 @@ enum SidePanelTab {
     Guide,
     Notes,
     Map,
+    Terminal,
 }
 
 impl MudApp {
@@ -206,6 +210,8 @@ impl MudApp {
             api_state_mgr,
 
             map_renderer: crate::mapper::MapRenderer::default(),
+
+            terminal_manager: crate::terminal::TerminalManager::new(),
 
             toast_message: None,
         }
@@ -1726,7 +1732,8 @@ impl eframe::App for MudApp {
             egui::TopBottomPanel::bottom("input_panel").show(ctx, |ui| {
                 if let Some(session) = self.session_manager.get_mut(id) {
                     ui.add_space(5.0);
-                    Self::render_input_area(ui, session, any_popup_open, self.global_config.ui.font_size);
+                    let suppress_autofocus = any_popup_open || self.side_panel_tab == SidePanelTab::Terminal;
+                    Self::render_input_area(ui, session, suppress_autofocus, self.global_config.ui.font_size);
                     ui.add_space(5.0);
                 }
             });
@@ -1796,11 +1803,12 @@ impl eframe::App for MudApp {
             self.render_settings_window(ctx);
         }
 
-        // 有活躍連線時以低頻率輪詢新訊息（取代之前的每幀刷新）
+        // 有活躍連線或終端運行時以低頻率輪詢新訊息
         let has_active_connection = self.session_manager.sessions().iter().any(|s| {
             matches!(s.status, crate::session::ConnectionStatus::Connected(_) | crate::session::ConnectionStatus::Connecting)
         });
-        if has_active_connection {
+        let terminal_active = self.side_panel_tab == SidePanelTab::Terminal && self.terminal_manager.is_running();
+        if has_active_connection || terminal_active {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
     }

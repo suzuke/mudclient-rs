@@ -57,6 +57,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "alacritty_terminal"
+version = "0.25.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46319972e74179d707445f64aaa2893bbf6a111de3a9af29b7eb382f8b39e282"
+dependencies = [
+ "base64 0.22.1",
+ "bitflags 2.10.0",
+ "home",
+ "libc",
+ "log",
+ "miow",
+ "parking_lot",
+ "piper",
+ "polling",
+ "regex-automata",
+ "rustix 1.1.3",
+ "rustix-openpty",
+ "serde",
+ "signal-hook",
+ "unicode-width",
+ "vte",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "aligned"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -879,6 +904,16 @@ dependencies = [
  "profiling",
  "ron",
  "serde",
+]
+
+[[package]]
+name = "egui-term"
+version = "0.1.0"
+dependencies = [
+ "alacritty_terminal",
+ "anyhow",
+ "egui",
+ "open",
 ]
 
 [[package]]
@@ -1856,6 +1891,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "is-docker"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "928bae27f42bc99b60d9ac7334e3a21d10ad8f1835a4e12ec3ec0464765ed1b3"
+dependencies = [
+ "once_cell",
+]
+
+[[package]]
+name = "is-wsl"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "173609498df190136aa7dea1a91db051746d339e18476eed5ca40521f02d7aa5"
+dependencies = [
+ "is-docker",
+ "once_cell",
+]
+
+[[package]]
 name = "itertools"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2146,6 +2200,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "miow"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "536bfad37a309d62069485248eeaba1e8d9853aaf951caaeaed0585a95346f08"
+dependencies = [
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "mlua"
 version = "0.10.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2209,6 +2272,7 @@ dependencies = [
  "base64 0.22.1",
  "dirs",
  "eframe",
+ "egui-term",
  "egui_extras",
  "font-kit",
  "image",
@@ -2658,6 +2722,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
 
 [[package]]
+name = "open"
+version = "5.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "43bb73a7fa3799b198970490a51174027ba0d4ec504b03cd08caf513d40024bc"
+dependencies = [
+ "is-wsl",
+ "libc",
+ "pathdiff",
+]
+
+[[package]]
 name = "openssl"
 version = "0.10.75"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2768,6 +2843,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b867cad97c0791bbd3aaa6472142568c6c9e8f71937e98379f584cfb0cf35bec"
 
 [[package]]
+name = "pathdiff"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df94ce210e5bc13cb6651479fa48d14f601d9858cfe0467f43ae157023b938d3"
+
+[[package]]
 name = "pathfinder_geometry"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2873,6 +2954,17 @@ name = "pin-utils"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
+
+[[package]]
+name = "piper"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c835479a4443ded371d6c535cbfd8d31ad92c5d23ae9770a61bc155e4992a3c1"
+dependencies = [
+ "atomic-waker",
+ "fastrand",
+ "futures-io",
+]
 
 [[package]]
 name = "pkg-config"
@@ -3408,6 +3500,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustix-openpty"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1de16c7c59892b870a6336f185dc10943517f1327447096bbb7bb32cd85e2393"
+dependencies = [
+ "errno",
+ "libc",
+ "rustix 1.1.3",
+]
+
+[[package]]
 name = "rustls"
 version = "0.23.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3665,6 +3768,16 @@ name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
+
+[[package]]
+name = "signal-hook"
+version = "0.3.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d881a16cf4426aa584979d30bd82cb33429027e42122b169753d6ef1085ed6e2"
+dependencies = [
+ "libc",
+ "signal-hook-registry",
+]
 
 [[package]]
 name = "signal-hook-registry"
@@ -4372,6 +4485,20 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "vte"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5924018406ce0063cd67f8e008104968b74b563ee1b85dde3ed1f7cb87d3dbd"
+dependencies = [
+ "arrayvec",
+ "bitflags 2.10.0",
+ "cursor-icon",
+ "log",
+ "memchr",
+ "serde",
+]
 
 [[package]]
 name = "walkdir"
