@@ -1359,12 +1359,7 @@ impl Session {
             self.event_bus.off(id);
         }
 
-        // 12. Event emissions
-        for (name, data) in context.event_emissions {
-            self.emit_event(&name, data);
-        }
-
-        // 13. State machine definitions
+        // 12. State machine definitions (before emissions so emit() in same scope can trigger SM)
         for (name, initial, states_json, trans_json) in context.state_machine_defs {
             if let (Ok(states_val), Ok(trans_val)) = (
                 serde_json::from_str::<serde_json::Value>(&states_json),
@@ -1400,6 +1395,11 @@ impl Session {
                 tracing::info!("State machine '{}' created, initial state: '{}'", name, sm.current_state());
                 self.state_machines.add(sm);
             }
+        }
+
+        // 13. Event emissions (after SM defs so same-scope emit can trigger SM)
+        for (name, data) in context.event_emissions {
+            self.emit_event(&name, data);
         }
 
         // 14. State machine manual transitions
