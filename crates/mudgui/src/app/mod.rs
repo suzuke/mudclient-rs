@@ -611,7 +611,11 @@ impl MudApp {
                                                             }
                                                         }
                                                         SessionCommand::CollectResponse { command, callback_code } => {
-                                                            // === Phase 0: 先把 channel 裡所有等待的 Send 指令發出去 ===
+                                                            // 處理 CollectResponse 佇列（支援 send_chain 連續多個）
+                                                            let mut queue = vec![(command, callback_code)];
+
+                                                            // === Phase 0: 收集 channel 中所有待處理的指令 ===
+                                                            // Send 立即發出，CollectResponse 加入佇列依序處理
                                                             while let Ok(pending_cmd) = cmd_rx.try_recv() {
                                                                 match pending_cmd {
                                                                     SessionCommand::Send(text) => {
@@ -619,94 +623,97 @@ impl MudApp {
                                                                             let _ = msg_tx.send(NetMessage::Text(format!(">>> 發送失敗: {}\n", e), Vec::new())).await;
                                                                         }
                                                                     }
-                                                                    // 如果有另一個 CollectResponse 排在後面，暫時忽略（不應該發生）
+                                                                    SessionCommand::CollectResponse { command: c, callback_code: cb } => {
+                                                                        queue.push((c, cb));
+                                                                    }
+                                                                    SessionCommand::Disconnect => {
+                                                                        client.disconnect().await;
+                                                                        let _ = msg_tx.send(NetMessage::Text(">>> 已斷開連線\n".to_string(), Vec::new())).await;
+                                                                        queue.clear();
+                                                                        break;
+                                                                    }
                                                                     _ => {}
                                                                 }
                                                             }
 
-                                                            // === Phase 1: Drain — 讀盡管線中所有待處理的回應 ===
-                                                            // 所有前序指令已發送，等待它們的回應全部到達
-                                                            // 使用 500ms timeout 確保高延遲網路下也能完整 drain
-                                                            loop {
-                                                                match tokio::time::timeout(
-                                                                    std::time::Duration::from_millis(500),
-                                                                    client.read_with_widths()
-                                                                ).await {
-                                                                    Ok(Ok((text, widths))) if !text.is_empty() => {
-                                                                        let _ = msg_tx.send(NetMessage::Text(text, widths)).await;
-                                                                        ctx.request_repaint();
-                                                                    }
-                                                                    _ => break, // Timeout 或錯誤 = 管線已清
-                                                                }
-                                                            }
-
-                                                            // === Phase 2: 發送指令 ===
-                                                            if let Err(e) = client.send(&command).await {
-                                                                let _ = msg_tx.send(NetMessage::Text(format!(">>> CollectResponse 發送失敗: {}\n", e), Vec::new())).await;
-                                                                continue;
-                                                            }
-
-                                                            // === Phase 3: Collect — 收集回應直到 prompt ===
-                                                            let mut collected_lines: Vec<String> = Vec::new();
-                                                            loop {
-                                                                match tokio::time::timeout(
-                                                                    std::time::Duration::from_secs(5),
-                                                                    client.read_with_widths()
-                                                                ).await {
-                                                                    Ok(Ok((text, widths))) if !text.is_empty() => {
-                                                                        // 轉發給 UI 顯示
-                                                                        let _ = msg_tx.send(NetMessage::Text(text.clone(), widths)).await;
-                                                                        ctx.request_repaint();
-
-                                                                        // 解析行，加入收集
-                                                                        for line in text.split('\n') {
-                                                                            let clean = crate::ansi::strip_ansi(line);
-                                                                            let trimmed = clean.replace('\r', "");
-                                                                            let trimmed = trimmed.trim();
-                                                                            if !trimmed.is_empty() {
-                                                                                collected_lines.push(trimmed.to_string());
-                                                                            }
+                                                            // === 依序處理每個 CollectResponse ===
+                                                            for (cmd, cb_code) in queue {
+                                                                // Drain — 讀盡管線中所有待處理的回應
+                                                                loop {
+                                                                    match tokio::time::timeout(
+                                                                        std::time::Duration::from_millis(500),
+                                                                        client.read_with_widths()
+                                                                    ).await {
+                                                                        Ok(Ok((text, widths))) if !text.is_empty() => {
+                                                                            let _ = msg_tx.send(NetMessage::Text(text, widths)).await;
+                                                                            ctx.request_repaint();
                                                                         }
+                                                                        _ => break,
+                                                                    }
+                                                                }
 
-                                                                        // 判斷回應是否結束：不以 \n 結尾 + 50ms 確認
-                                                                        if !text.ends_with('\n') {
-                                                                            match tokio::time::timeout(
-                                                                                std::time::Duration::from_millis(50),
-                                                                                client.read_with_widths()
-                                                                            ).await {
-                                                                                Err(_) => {
-                                                                                    // 確認：prompt，收集結束
-                                                                                    // 移除最後一行（prompt 行）
-                                                                                    collected_lines.pop();
-                                                                                    break;
+                                                                // 發送指令
+                                                                if let Err(e) = client.send(&cmd).await {
+                                                                    let _ = msg_tx.send(NetMessage::Text(format!(">>> CollectResponse 發送失敗: {}\n", e), Vec::new())).await;
+                                                                    continue;
+                                                                }
+
+                                                                // Collect — 收集回應直到 prompt
+                                                                let mut collected_lines: Vec<String> = Vec::new();
+                                                                loop {
+                                                                    match tokio::time::timeout(
+                                                                        std::time::Duration::from_secs(5),
+                                                                        client.read_with_widths()
+                                                                    ).await {
+                                                                        Ok(Ok((text, widths))) if !text.is_empty() => {
+                                                                            let _ = msg_tx.send(NetMessage::Text(text.clone(), widths)).await;
+                                                                            ctx.request_repaint();
+
+                                                                            for line in text.split('\n') {
+                                                                                let clean = crate::ansi::strip_ansi(line);
+                                                                                let trimmed = clean.replace('\r', "");
+                                                                                let trimmed = trimmed.trim();
+                                                                                if !trimmed.is_empty() {
+                                                                                    collected_lines.push(trimmed.to_string());
                                                                                 }
-                                                                                Ok(Ok((more, w))) if !more.is_empty() => {
-                                                                                    // 有更多資料，繼續收集
-                                                                                    let _ = msg_tx.send(NetMessage::Text(more.clone(), w)).await;
-                                                                                    ctx.request_repaint();
-                                                                                    for line in more.split('\n') {
-                                                                                        let clean = crate::ansi::strip_ansi(line);
-                                                                                        let trimmed = clean.replace('\r', "");
-                                                                                        let trimmed = trimmed.trim();
-                                                                                        if !trimmed.is_empty() {
-                                                                                            collected_lines.push(trimmed.to_string());
+                                                                            }
+
+                                                                            if !text.ends_with('\n') {
+                                                                                match tokio::time::timeout(
+                                                                                    std::time::Duration::from_millis(50),
+                                                                                    client.read_with_widths()
+                                                                                ).await {
+                                                                                    Err(_) => {
+                                                                                        collected_lines.pop();
+                                                                                        break;
+                                                                                    }
+                                                                                    Ok(Ok((more, w))) if !more.is_empty() => {
+                                                                                        let _ = msg_tx.send(NetMessage::Text(more.clone(), w)).await;
+                                                                                        ctx.request_repaint();
+                                                                                        for line in more.split('\n') {
+                                                                                            let clean = crate::ansi::strip_ansi(line);
+                                                                                            let trimmed = clean.replace('\r', "");
+                                                                                            let trimmed = trimmed.trim();
+                                                                                            if !trimmed.is_empty() {
+                                                                                                collected_lines.push(trimmed.to_string());
+                                                                                            }
                                                                                         }
                                                                                     }
+                                                                                    _ => break,
                                                                                 }
-                                                                                _ => break,
                                                                             }
                                                                         }
+                                                                        _ => break,
                                                                     }
-                                                                    _ => break, // 超時或錯誤
                                                                 }
-                                                            }
 
-                                                            // === Phase 4: 發送收集結果 ===
-                                                            let _ = msg_tx.send(NetMessage::CollectedResponse {
-                                                                lines: collected_lines,
-                                                                callback_code,
-                                                            }).await;
-                                                            ctx.request_repaint();
+                                                                // 發送收集結果
+                                                                let _ = msg_tx.send(NetMessage::CollectedResponse {
+                                                                    lines: collected_lines,
+                                                                    callback_code: cb_code,
+                                                                }).await;
+                                                                ctx.request_repaint();
+                                                            }
                                                         }
                                                         SessionCommand::Disconnect => {
                                                             client.disconnect().await;

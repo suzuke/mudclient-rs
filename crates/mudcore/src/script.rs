@@ -407,6 +407,32 @@ impl ScriptEngine {
             })?;
             mud.set("collect_response", collect_response_fn)?;
 
+            // mud.send_chain(cmds, [callback_code]) 函數
+            // 依序發送多個指令，每個指令等待 server 回應後才發下一個
+            // cmds: table of strings, callback_code: 最後執行的 Lua code（可選）
+            // 內部展開為多個 collect_response，利用網路層的佇列串連
+            let send_chain_fn = scope.create_function(|lua, (cmds, callback_code): (mlua::Table, Option<String>)| {
+                let mud: mlua::Table = lua.globals().get("mud")?;
+                let collectors: mlua::Table = mud.get("response_collectors")?;
+                let cmd_count = cmds.len()?;
+
+                for i in 1..=cmd_count {
+                    let cmd: String = cmds.get(i)?;
+                    let base = collectors.len()? + 1;
+                    let entry = lua.create_table()?;
+                    entry.set(1, cmd)?;
+                    // 只有最後一個指令帶 callback，其餘用空字串（不執行 callback）
+                    if i == cmd_count {
+                        entry.set(2, callback_code.as_deref().unwrap_or(""))?;
+                    } else {
+                        entry.set(2, "")?;
+                    }
+                    collectors.set(base, entry)?;
+                }
+                Ok(())
+            })?;
+            mud.set("send_chain", send_chain_fn)?;
+
             // mud.ask_llm(prompt, callback_lua_code, [model])
             // 非同步呼叫 LLM，回覆後執行 callback（callback 中 $RESULT 被替換為回覆）
             let ask_llm_fn = scope.create_function(|lua, (prompt, callback_code, model): (String, String, Option<String>)| {

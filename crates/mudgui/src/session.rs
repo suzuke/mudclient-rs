@@ -1546,21 +1546,29 @@ impl Session {
         // 如果是房間敘述，且非出口行、非 Prompt、非 Echo，則進行標點轉換
         let is_exit_line = clean_text.contains("[出口:");
         
-        let final_text = text.to_string();
-        let mut final_widths = Vec::new();
-
-        // 預查原始寬度
-        if let Some(widths) = byte_widths {
-            final_widths = widths.to_vec();
+        // 房間敘述期間去除殘留 \r，避免複製貼上和 log 產生多餘空行
+        let (final_text, final_widths) = if self.in_room_description {
+            let stripped = text.trim_matches('\r');
+            let widths = if let Some(bw) = byte_widths {
+                // 去掉頭尾 \r 對應的寬度
+                let leading_cr = text.len() - text.trim_start_matches('\r').len();
+                let trailing_cr = text.len() - text.trim_end_matches('\r').len();
+                let char_count = bw.len();
+                let start = leading_cr.min(char_count);
+                let end = char_count.saturating_sub(trailing_cr).max(start);
+                bw[start..end].to_vec()
+            } else {
+                stripped.chars().map(|ch| if ch.is_ascii() { 1u8 } else { 2u8 }).collect()
+            };
+            (stripped.to_string(), widths)
         } else {
-            for ch in text.chars() {
-                if ch.is_ascii() {
-                    final_widths.push(1);
-                } else {
-                    final_widths.push(2);
-                }
-            }
-        }
+            let widths = if let Some(bw) = byte_widths {
+                bw.to_vec()
+            } else {
+                text.chars().map(|ch| if ch.is_ascii() { 1u8 } else { 2u8 }).collect()
+            };
+            (text.to_string(), widths)
+        };
 
         // 判定是否為指令回顯，並提取核心內容用於狀態判斷
         let (is_command_echo, detection_text) = if is_echo && clean_text.trim().starts_with('>') {
@@ -1581,7 +1589,7 @@ impl Session {
                 byte_widths: final_widths.clone(),
                 repeat_count: 1,
             };
-            
+
             self.window_manager.route_message_with_widths(
                 &target_id,
                 msg,
@@ -1705,8 +1713,8 @@ impl Session {
             self.screen_words.retain(|_, m| m.last_seen > cutoff);
         }
 
-        // 日誌記錄
-        let _ = self.logger.log(text);
+        // 日誌記錄（使用已處理過的 final_text）
+        let _ = self.logger.log(&final_text);
 
         // 推送純文字訊息到 API 共享狀態
         if !text.trim().is_empty() {
@@ -1722,6 +1730,12 @@ impl Session {
 
     /// 處理網路執行緒收集的指令回應
     pub fn execute_collected_response(&mut self, lines: Vec<String>, callback_code: String) {
+        // 沒有 callback 時不需要執行腳本（send_chain 的中間指令）
+        if callback_code.is_empty() {
+            tracing::debug!("CollectedResponse: {} lines, no callback (chain intermediate)", lines.len());
+            return;
+        }
+
         // 構建 Lua table 字串
         let mut lines_lua = String::from("{");
         for (i, line) in lines.iter().enumerate() {
@@ -1732,10 +1746,10 @@ impl Session {
             lines_lua.push('"');
         }
         lines_lua.push('}');
-        
+
         let code = format!("_G._collected_lines = {} \n {}", lines_lua, callback_code);
         tracing::info!("CollectedResponse: {} lines, executing callback", lines.len());
-        
+
         if let Ok(ctx) = self.script_engine.execute_inline(&code, "COLLECT_RESPONSE", &[], false) {
             self.apply_script_context(ctx);
         }
