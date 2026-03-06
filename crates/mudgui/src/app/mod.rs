@@ -16,6 +16,46 @@ use crate::api::{self, ApiStateManager};
 use crate::config::{GlobalConfig, ProfileManager};
 use crate::session::SessionManager;
 
+/// 根據主題調整 ANSI 前景色，確保在背景上可讀
+/// - 淺色主題：壓暗過亮的顏色
+/// - 深色主題：提亮過暗的顏色（如深藍、深紅等裝備顏色）
+fn adapt_fg_color(c: Color32, dark_mode: bool) -> Color32 {
+    let [r, g, b, a] = c.to_array();
+    // 感知亮度（ITU-R BT.601）
+    let luma = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
+
+    if dark_mode {
+        // 深色主題（背景 ~27）：亮度太低的前景提亮
+        if luma >= 50.0 {
+            return c;
+        }
+        if luma < 1.0 {
+            return Color32::from_rgba_unmultiplied(80, 80, 80, a);
+        }
+        let scale = 80.0 / luma;
+        Color32::from_rgba_unmultiplied(
+            (r as f32 * scale).min(255.0) as u8,
+            (g as f32 * scale).min(255.0) as u8,
+            (b as f32 * scale).min(255.0) as u8,
+            a,
+        )
+    } else {
+        // 淺色主題（背景 ~248）：壓暗前景確保對比度
+        // 閾值 60：luma 低於此值的深色不動（如紅、藍）
+        if luma < 60.0 {
+            return c;
+        }
+        // 目標 luma 50：確保與背景 248 有足夠對比（約 10:1）
+        let scale = 50.0 / luma;
+        Color32::from_rgba_unmultiplied(
+            (r as f32 * scale) as u8,
+            (g as f32 * scale) as u8,
+            (b as f32 * scale) as u8,
+            a,
+        )
+    }
+}
+
 
 /// MUD 客戶端 GUI 應用程式
 pub struct MudApp {
@@ -140,8 +180,9 @@ enum SidePanelTab {
 impl MudApp {
     /// 創建新的 MUD 客戶端應用程式
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        // 設定字型
-        Self::setup_fonts(&cc.egui_ctx);
+        // 載入設定並設定字型
+        let global_config = GlobalConfig::load();
+        Self::setup_fonts(&cc.egui_ctx, &global_config.ui.font_family);
 
         // 創建 Tokio 運行時
         let runtime = Runtime::new().expect("無法創建 Tokio 運行時");
@@ -156,7 +197,7 @@ impl MudApp {
             // 多帳號系統
             profile_manager: ProfileManager::new(),
             session_manager: SessionManager::new(),
-            global_config: GlobalConfig::load(),
+            global_config,
             show_profile_window: false,
             pending_connect_profile: None,
 
@@ -338,37 +379,120 @@ impl MudApp {
         }
     }
 
-    /// 初始化字型設定
-    fn setup_fonts(ctx: &egui::Context) {
+    /// 初始化字型設定（支援自訂字型家族）
+    fn setup_fonts(ctx: &egui::Context, font_family: &str) {
         let mut fonts = egui::FontDefinitions::default();
-        
-        // 內嵌常規與粗體字型
-        let reg_bytes = include_bytes!("../../assets/fonts/SarasaMonoTC-Regular.ttf");
-        let bold_bytes = include_bytes!("../../assets/fonts/SarasaMonoTC-Bold.ttf");
-        
-        // 1. 註冊常規體 (cjk)
-        fonts.font_data.insert(
-            "cjk".to_owned(),
-            std::sync::Arc::new(egui::FontData::from_owned(reg_bytes.to_vec())),
-        );
-        
+
+        // 嘗試載入使用者指定的系統字型
+        let custom_loaded = if !font_family.is_empty() {
+            Self::try_load_system_font(&mut fonts, font_family)
+        } else {
+            false
+        };
+
+        if !custom_loaded {
+            // 使用內建 Sarasa Mono TC
+            let reg_bytes = include_bytes!("../../assets/fonts/SarasaMonoTC-Regular.ttf");
+            let bold_bytes = include_bytes!("../../assets/fonts/SarasaMonoTC-Bold.ttf");
+
+            fonts.font_data.insert(
+                "cjk".to_owned(),
+                std::sync::Arc::new(egui::FontData::from_owned(reg_bytes.to_vec())),
+            );
+            fonts.font_data.insert(
+                "cjk_bold".to_owned(),
+                std::sync::Arc::new(egui::FontData::from_owned(bold_bytes.to_vec())),
+            );
+            tracing::info!("字型載入: 內建 SarasaMonoTC");
+        }
+
+        // 設定字型家族優先順序
         fonts.families.get_mut(&egui::FontFamily::Monospace)
             .map(|f| f.insert(0, "cjk".to_owned()));
         fonts.families.get_mut(&egui::FontFamily::Proportional)
             .map(|f| f.insert(0, "cjk".to_owned()));
-
-        // 2. 註冊真正的粗體 (cjk_bold)
-        fonts.font_data.insert(
-            "cjk_bold".to_owned(),
-            std::sync::Arc::new(egui::FontData::from_owned(bold_bytes.to_vec())),
-        );
         fonts.families.insert(
             egui::FontFamily::Name("cjk_bold".into()),
             vec!["cjk_bold".to_owned()],
         );
 
-        tracing::info!("字型載入狀態: 已內嵌 SarasaMonoTC Regular 與 Bold");
         ctx.set_fonts(fonts);
+    }
+
+    /// 嘗試從系統載入指定字型（Regular + Bold）
+    fn try_load_system_font(fonts: &mut egui::FontDefinitions, family_name: &str) -> bool {
+        use font_kit::source::SystemSource;
+        use font_kit::properties::{Properties, Weight};
+        use font_kit::family_name::FamilyName;
+
+        let source = SystemSource::new();
+        let family = [FamilyName::Title(family_name.to_string())];
+
+        // 載入 Regular
+        let reg_data = source.select_best_match(&family, &Properties::new())
+            .ok().and_then(|h| h.load().ok())
+            .and_then(|f| f.copy_font_data());
+
+        let Some(reg_data) = reg_data else {
+            tracing::warn!("無法載入系統字型: {}", family_name);
+            return false;
+        };
+
+        // Arc::try_unwrap 避免多餘的 Vec clone
+        let unwrap_arc = |arc: std::sync::Arc<Vec<u8>>| -> Vec<u8> {
+            std::sync::Arc::try_unwrap(arc).unwrap_or_else(|a| (*a).clone())
+        };
+
+        fonts.font_data.insert(
+            "cjk".to_owned(),
+            std::sync::Arc::new(egui::FontData::from_owned(unwrap_arc(reg_data))),
+        );
+
+        // 載入 Bold（失敗則以 Regular 替代）
+        let mut bold_props = Properties::new();
+        bold_props.weight = Weight::BOLD;
+        let bold_data = source.select_best_match(&family, &bold_props)
+            .ok().and_then(|h| h.load().ok())
+            .and_then(|f| f.copy_font_data());
+
+        if let Some(data) = bold_data {
+            fonts.font_data.insert(
+                "cjk_bold".to_owned(),
+                std::sync::Arc::new(egui::FontData::from_owned(unwrap_arc(data))),
+            );
+        } else if let Some(reg) = fonts.font_data.get("cjk") {
+            fonts.font_data.insert("cjk_bold".to_owned(), reg.clone());
+        }
+
+        tracing::info!("字型載入: 系統字型 {}", family_name);
+        true
+    }
+
+    /// 列出系統可用的等寬字型（含 CJK 支援檢測）
+    fn list_monospace_fonts() -> Vec<String> {
+        use font_kit::source::SystemSource;
+        let source = SystemSource::new();
+        let all = match source.all_families() {
+            Ok(f) => f,
+            Err(_) => return Vec::new(),
+        };
+
+        // 過濾出可能的等寬/CJK 字型（啟發式：名稱包含 mono/code/courier/consol 等關鍵字，或 CJK 字型）
+        let mono_keywords = ["mono", "code", "courier", "consol", "menlo", "fira", "hack",
+                             "iosevka", "jetbrains", "source han", "noto sans mono",
+                             "sarasa", "cascadia", "inconsolata", "dejavu sans mono",
+                             "liberation mono", "ubuntu mono", "sf mono", "andale",
+                             "等寬", "黑體", "gothic", "ming", "宋", "微軟正黑",
+                             "pingfang", "hiragino"];
+        let mut result: Vec<String> = all.into_iter()
+            .filter(|name| {
+                let lower = name.to_lowercase();
+                mono_keywords.iter().any(|kw| lower.contains(kw))
+            })
+            .collect();
+        result.sort();
+        result.dedup();
+        result
     }
 
     /// 從 Profile 建立連線
@@ -782,8 +906,8 @@ impl MudApp {
                 // font_size 由呼叫端傳入（來自 global_config.ui.font_size）
                 let font_id = FontId::monospace(font_size);
                 let bold_font_id = FontId::new(font_size, egui::FontFamily::Name("cjk_bold".into()));
-                
-                // 穩定測量：使用空格寬度作為 Mono 單元格寬度基準
+                let dark_mode = ui.visuals().dark_mode;
+
                 // 穩定測量：使用空格寬度作為 Mono 單元格寬度基準
                 let cell_w = ui.fonts(|f| f.glyph_width(&font_id, ' '));
 
@@ -827,6 +951,8 @@ impl MudApp {
                             } else {
                                 (span.fg_color, false)
                             };
+                            // 淺色主題：將過亮的前景色調暗以確保可讀性
+                            let render_color = adapt_fg_color(render_color, dark_mode);
                             // 判斷是否為真正的雙色字：fg_color_left 有值且 span 只有一個可見字元
                             // 多字元 span（如「紅龍護符」）→ 非雙色字，用 fg_color_left 為統一顏色
                             let visible_chars = span.text.chars().filter(|c| *c != '\n' && *c != '\r').count();
@@ -875,8 +1001,8 @@ impl MudApp {
                                     pending_trailing_space = next_trailing;
 
                                     // 多字元 span 有 fg_color_left：CJK 字元用 fg_color_left，ASCII 用 render_color
-                                    let char_color = if let Some(left_color) = span.fg_color_left {
-                                        if !ch.is_ascii() { left_color } else { render_color }
+                                    let char_color = if let Some(lc) = span.fg_color_left {
+                                        if !ch.is_ascii() { adapt_fg_color(lc, dark_mode) } else { render_color }
                                     } else {
                                         render_color
                                     };
@@ -949,8 +1075,9 @@ impl MudApp {
                                 };
 
                                 let section_idx = main_job.sections.len();
-                                if let Some(left_color) = span.fg_color_left {
+                                if let Some(lc) = span.fg_color_left {
                                     has_dual_color = true;
+                                    let left_color = adapt_fg_color(lc, dark_mode);
                                     section_color_map.insert(section_idx, (left_color, render_color));
                                     section_font_map.insert(section_idx, current_font_id.clone());
                                     
@@ -1604,8 +1731,13 @@ impl eframe::App for MudApp {
             ctx.request_repaint();
         }
 
-        // 設定暗黑模式
-        ctx.set_visuals(egui::Visuals::dark());
+        // 主題僅在變更時才設定（避免每幀建構 Visuals + Arc clone）
+        {
+            let want_dark = self.global_config.ui.dark_mode;
+            if ctx.style().visuals.dark_mode != want_dark {
+                ctx.set_visuals(if want_dark { egui::Visuals::dark() } else { egui::Visuals::light() });
+            }
+        }
 
         // 使用局部變數記錄
         let active_id = self.session_manager.active_id();

@@ -469,6 +469,11 @@ impl MudApp {
     pub(super) fn render_settings_window(&mut self, ctx: &egui::Context) {
         let mut should_close = false;
         let mut needs_save = false;
+        let mut font_changed = false;
+        lazy_static::lazy_static! {
+            static ref MONO_FONTS: Vec<String> = MudApp::list_monospace_fonts();
+        }
+        let mono_fonts = &*MONO_FONTS;
         
         egui::Window::new("⚙ 設定中心")
             .resizable(true)
@@ -1418,6 +1423,20 @@ impl MudApp {
                         ui.heading("一般設定");
                         ui.add_space(10.0);
 
+                        // === 主題切換 ===
+                        ui.horizontal(|ui| {
+                            ui.label("主題:");
+                            if ui.selectable_label(self.global_config.ui.dark_mode, "深色").clicked() {
+                                self.global_config.ui.dark_mode = true;
+                                needs_save = true;
+                            }
+                            if ui.selectable_label(!self.global_config.ui.dark_mode, "淺色").clicked() {
+                                self.global_config.ui.dark_mode = false;
+                                needs_save = true;
+                            }
+                        });
+                        ui.add_space(5.0);
+
                         // === 字型大小設定 ===
                         ui.horizontal(|ui| {
                             ui.label("字型大小:");
@@ -1433,7 +1452,45 @@ impl MudApp {
                             }
                         });
                         ui.label(
-                            RichText::new("💡 也可使用 ⌘+/⌘- 快速調整，⌘0 重置")
+                            RichText::new("也可使用 Cmd+/Cmd- 快速調整，Cmd+0 重置")
+                                .small()
+                                .color(Color32::GRAY)
+                        );
+                        ui.add_space(5.0);
+
+                        // === 字型家族設定 ===
+                        ui.horizontal(|ui| {
+                            ui.label("字型:");
+                            let current_display = if self.global_config.ui.font_family.is_empty() {
+                                "Sarasa Mono TC (內建)".to_string()
+                            } else {
+                                self.global_config.ui.font_family.clone()
+                            };
+                            egui::ComboBox::from_id_salt("font_family_combo")
+                                .selected_text(&current_display)
+                                .width(220.0)
+                                .show_ui(ui, |ui| {
+                                    if ui.selectable_label(self.global_config.ui.font_family.is_empty(), "Sarasa Mono TC (內建)").clicked()
+                                        && !self.global_config.ui.font_family.is_empty()
+                                    {
+                                        self.global_config.ui.font_family.clear();
+                                        needs_save = true;
+                                        font_changed = true;
+                                    }
+                                    ui.separator();
+                                    for name in mono_fonts.iter() {
+                                        if ui.selectable_label(self.global_config.ui.font_family == *name, name).clicked()
+                                            && self.global_config.ui.font_family != *name
+                                        {
+                                            self.global_config.ui.font_family = name.clone();
+                                            needs_save = true;
+                                            font_changed = true;
+                                        }
+                                    }
+                                });
+                        });
+                        ui.label(
+                            RichText::new("僅列出等寬/CJK 字型，切換後即時生效")
                                 .small()
                                 .color(Color32::GRAY)
                         );
@@ -1553,6 +1610,9 @@ impl MudApp {
         
         if needs_save {
             self.save_config();
+        }
+        if font_changed {
+            Self::setup_fonts(ctx, &self.global_config.ui.font_family);
         }
         if should_close {
             self.show_settings_window = false;

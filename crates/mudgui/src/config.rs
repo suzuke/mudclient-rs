@@ -285,6 +285,12 @@ pub struct UiConfig {
     /// 字型大小
     #[serde(default = "default_font_size")]
     pub font_size: f32,
+    /// 字型家族名稱（空字串 = 內建 Sarasa Mono TC）
+    #[serde(default)]
+    pub font_family: String,
+    /// 深色模式（true = 深色，false = 淺色）
+    #[serde(default = "default_true")]
+    pub dark_mode: bool,
     /// 自動重連
     #[serde(default = "default_true")]
     pub auto_reconnect: bool,
@@ -312,6 +318,8 @@ impl Default for UiConfig {
             window_width: default_window_width(),
             window_height: default_window_height(),
             font_size: default_font_size(),
+            font_family: String::new(),
+            dark_mode: true,
             auto_reconnect: true,
             reconnect_delay_secs: default_reconnect_delay(),
         }

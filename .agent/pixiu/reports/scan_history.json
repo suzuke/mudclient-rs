@@ -1,5 +1,23 @@
 [
   {
+    "timestamp": 1772683700103,
+    "issues": [],
+    "summary": {
+      "totalIssues": 0,
+      "todoCount": 0,
+      "durationMs": 61
+    }
+  },
+  {
+    "timestamp": 1772683699667,
+    "issues": [],
+    "summary": {
+      "totalIssues": 0,
+      "todoCount": 0,
+      "durationMs": 73
+    }
+  },
+  {
     "timestamp": 1772527362621,
     "issues": [],
     "summary": {
