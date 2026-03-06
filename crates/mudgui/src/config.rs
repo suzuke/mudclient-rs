@@ -297,6 +297,9 @@ pub struct UiConfig {
     /// 自動重連延遲（秒）
     #[serde(default = "default_reconnect_delay")]
     pub reconnect_delay_secs: u64,
+    /// 啟用文字閃爍效果
+    #[serde(default = "default_true")]
+    pub enable_blink: bool,
 }
 
 fn default_window_width() -> f32 {
@@ -322,6 +325,7 @@ impl Default for UiConfig {
             dark_mode: true,
             auto_reconnect: true,
             reconnect_delay_secs: default_reconnect_delay(),
+            enable_blink: true,
         }
     }
 }

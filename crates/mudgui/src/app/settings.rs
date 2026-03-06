@@ -1497,6 +1497,9 @@ impl MudApp {
                         ui.add_space(5.0);
 
                         ui.checkbox(&mut session.auto_scroll, "自動捲動畫面");
+                        if ui.checkbox(&mut self.global_config.ui.enable_blink, "啟用文字閃爍效果").changed() {
+                            needs_save = true;
+                        }
                         ui.add_space(5.0);
 
                         // === 自動重連延遲 ===

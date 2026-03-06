@@ -899,7 +899,7 @@ impl MudApp {
     }
 
     /// 繪製訊息顯示區（支援 ANSI 顏色）
-    fn render_message_area(ui: &mut egui::Ui, session: &mut crate::session::Session, active_window_id: &str, font_size: f32) {
+    fn render_message_area(ui: &mut egui::Ui, session: &mut crate::session::Session, active_window_id: &str, font_size: f32, enable_blink: bool) {
         let available_height = ui.available_height() - 40.0; // 保留輸入區空間
 
         // 檢查是否需要強制捲到底部
@@ -932,6 +932,11 @@ impl MudApp {
                 let mut section_font_map = std::collections::HashMap::new();
                 let mut section_fg_colors: Vec<Color32> = Vec::new(); // 記錄每個 section 的前景色
                 let mut has_dual_color = false;
+                let mut has_blink = false;
+                const BLINK_PERIOD: f64 = 1.0; // 閃爍週期（秒）
+                const BLINK_DUTY: f64 = 0.5; // 亮的比例
+                let blink_phase = ui.input(|i| i.time) % BLINK_PERIOD;
+                let blink_visible = !enable_blink || blink_phase < BLINK_PERIOD * BLINK_DUTY;
                 let mut pending_trailing_space: f32 = 0.0; // 用於置中對齊：記錄上一個字元的後半部間距
                 // 字型寬度快取 — 避免每個字元都查字型系統
                 let mut glyph_cache: std::collections::HashMap<(char, bool), f32> = std::collections::HashMap::new();
@@ -947,7 +952,11 @@ impl MudApp {
 
                          
                         for span in spans {
-                            let italics = span.blink;
+                            let is_blink = span.blink;
+                            if is_blink { has_blink = true; }
+                            let blink_color = |c: Color32| -> Color32 {
+                                if is_blink && !blink_visible { Color32::TRANSPARENT } else { c }
+                            };
                             let background = span.bg_color.unwrap_or(Color32::TRANSPARENT);
                             let mut current_font_id = font_id.clone();
                             
@@ -966,6 +975,7 @@ impl MudApp {
                             };
                             // 淺色主題：將過亮的前景色調暗以確保可讀性
                             let render_color = adapt_fg_color(render_color, dark_mode);
+                            let render_color = blink_color(render_color);
                             // 判斷是否為真正的雙色字：fg_color_left 有值且 span 只有一個可見字元
                             // 多字元 span（如「紅龍護符」）→ 非雙色字，用 fg_color_left 為統一顏色
                             let visible_chars = span.text.chars().filter(|c| *c != '\n' && *c != '\r').count();
@@ -975,7 +985,7 @@ impl MudApp {
                             if !is_real_dual_color {
                                 for (idx, ch) in span.text.chars().enumerate() {
                                     if ch == '\n' || ch == '\r' {
-                                        let fmt = egui::TextFormat { font_id: current_font_id.clone(), color: render_color, background, italics, line_height: Some(font_size + 4.0), ..Default::default() };
+                                        let fmt = egui::TextFormat { font_id: current_font_id.clone(), color: render_color, background, italics: false, line_height: Some(font_size + 4.0), ..Default::default() };
                                         section_fg_colors.push(render_color);
                                         char_buf.clear(); char_buf.push(ch);
                                         main_job.append(&char_buf, pending_trailing_space, fmt.clone());
@@ -1015,11 +1025,11 @@ impl MudApp {
                                     pending_trailing_space = next_trailing;
 
                                     // 多字元 span 有 fg_color_left：CJK 字元用 fg_color_left，ASCII 用 render_color
-                                    let char_color = if let Some(lc) = span.fg_color_left {
+                                    let char_color = blink_color(if let Some(lc) = span.fg_color_left {
                                         if !ch.is_ascii() { adapt_fg_color(lc, dark_mode) } else { render_color }
                                     } else {
                                         render_color
-                                    };
+                                    });
                                     let glyph_color = if ch >= '\u{2500}' && ch <= '\u{259f}' {
                                         Color32::TRANSPARENT
                                     } else {
@@ -1029,7 +1039,7 @@ impl MudApp {
                                         font_id: current_font_id.clone(),
                                         color: glyph_color,
                                         background,
-                                        italics,
+                                        italics: false,
                                         line_height: Some(font_size + 4.0),
                                         ..Default::default()
                                     };
@@ -1044,7 +1054,7 @@ impl MudApp {
                             // 雙色字逐字元網格對齊模式
                             for (idx, ch) in span.text.chars().enumerate() {
                                 if ch == '\n' || ch == '\r' {
-                                    let fmt = egui::TextFormat { font_id: current_font_id.clone(), color: render_color, background, italics, line_height: Some(font_size + 4.0), ..Default::default() };
+                                    let fmt = egui::TextFormat { font_id: current_font_id.clone(), color: render_color, background, italics: false, line_height: Some(font_size + 4.0), ..Default::default() };
                                     section_fg_colors.push(render_color);
                                     char_buf.clear(); char_buf.push(ch);
                                     main_job.append(&char_buf, pending_trailing_space, fmt.clone());
@@ -1085,7 +1095,7 @@ impl MudApp {
                                     font_id: current_font_id.clone(),
                                     color: render_color,
                                     background,
-                                    italics,
+                                    italics: false,
                                     line_height: Some(font_size + 4.0),
                                     ..Default::default()
                                 };
@@ -1093,7 +1103,7 @@ impl MudApp {
                                 let section_idx = main_job.sections.len();
                                 if let Some(lc) = span.fg_color_left {
                                     has_dual_color = true;
-                                    let left_color = adapt_fg_color(lc, dark_mode);
+                                    let left_color = blink_color(adapt_fg_color(lc, dark_mode));
                                     section_color_map.insert(section_idx, (left_color, render_color));
                                     section_font_map.insert(section_idx, current_font_id.clone());
                                     
@@ -1243,6 +1253,16 @@ impl MudApp {
                                     }
                                 }
                             }
+                        }
+
+                        // 有閃爍文字時在下一個切換點重繪
+                        if has_blink {
+                            let next_toggle = if blink_visible {
+                                BLINK_PERIOD * BLINK_DUTY - blink_phase
+                            } else {
+                                BLINK_PERIOD - blink_phase
+                            };
+                            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(next_toggle));
                         }
             });
 
@@ -1891,7 +1911,7 @@ impl eframe::App for MudApp {
             // === 中央：訊息區 ===
             egui::CentralPanel::default().show(ctx, |ui| {
                 if let Some(session) = self.session_manager.get_mut(id) {
-                    Self::render_message_area(ui, session, &active_window_id, self.global_config.ui.font_size);
+                    Self::render_message_area(ui, session, &active_window_id, self.global_config.ui.font_size, self.global_config.ui.enable_blink);
                 }
             });
 
