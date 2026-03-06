@@ -1130,11 +1130,19 @@ impl MudApp {
                         }
 
                         // 確保訊息之間有換行，並重置置中間距
-                        if !main_job.text.is_empty() && !main_job.text.ends_with('\n') {
+                        // 空訊息保留為空行（例如 prompt 前的空行），非空訊息補換行
+                        let nl_leading = if msg.content.is_empty() && !main_job.text.is_empty() {
+                            Some(0.0)
+                        } else if !main_job.text.is_empty() && !main_job.text.ends_with('\n') {
+                            Some(pending_trailing_space)
+                        } else {
+                            None
+                        };
+                        if let Some(leading) = nl_leading {
                             let nl_fmt = egui::TextFormat { font_id: font_id.clone(), line_height: Some(font_size + 4.0), ..Default::default() };
                             section_fg_colors.push(Color32::TRANSPARENT);
-                            main_job.append("\n", pending_trailing_space, nl_fmt.clone());
-                            overlay_job.append("\n", pending_trailing_space, egui::TextFormat { color: Color32::TRANSPARENT, ..nl_fmt });
+                            main_job.append("\n", leading, nl_fmt.clone());
+                            overlay_job.append("\n", leading, egui::TextFormat { color: Color32::TRANSPARENT, ..nl_fmt });
                             pending_trailing_space = 0.0;
                         }
                     }
