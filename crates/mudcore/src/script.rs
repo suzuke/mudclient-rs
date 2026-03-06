@@ -61,6 +61,13 @@ pub struct MudContext {
 
     /// LLM 請求佇列 (prompt, callback_lua_code, model)
     pub llm_requests: Vec<LlmRequest>,
+
+    /// Event handler registrations: (event_name, lua_code, priority, once)
+    pub event_registrations: Vec<(String, String, i32, bool)>,
+    /// Event handler removals: handler_id
+    pub event_removals: Vec<u64>,
+    /// Events to emit: (event_name, data_json)
+    pub event_emissions: Vec<(String, Option<String>)>,
 }
 
 /// LLM 非同步請求
@@ -293,6 +300,16 @@ impl ScriptEngine {
             let llm_requests = self.lua.create_table()?;
             mud.set("llm_requests", llm_requests)?;
 
+            // Event system tables
+            let event_registrations = self.lua.create_table()?;
+            mud.set("_event_registrations", event_registrations)?;
+
+            let event_removals = self.lua.create_table()?;
+            mud.set("_event_removals", event_removals)?;
+
+            let event_emissions = self.lua.create_table()?;
+            mud.set("_event_emissions", event_emissions)?;
+
             // gag 標記
             mud.set("gag", false)?;
 
@@ -491,7 +508,68 @@ impl ScriptEngine {
                 }
             })?;
             mud.set("get_current_room", get_current_room_fn)?;
-            
+
+            // mud.on(event_name, lua_code, [priority]) -> handler_id (placeholder)
+            let on_fn = scope.create_function_mut(|lua, (event_name, code, priority): (String, String, Option<i32>)| {
+                let mud: mlua::Table = lua.globals().get("mud")?;
+                let regs: mlua::Table = mud.get("_event_registrations")?;
+                let len = regs.len()? + 1;
+                let entry = lua.create_table()?;
+                entry.set(1, event_name)?;
+                entry.set(2, code)?;
+                entry.set(3, priority.unwrap_or(0))?;
+                entry.set(4, false)?; // once = false
+                regs.set(len, entry)?;
+                Ok(len) // placeholder ID
+            })?;
+            mud.set("on", on_fn)?;
+
+            // mud.once(event_name, lua_code, [priority]) -> handler_id (placeholder)
+            let once_fn = scope.create_function_mut(|lua, (event_name, code, priority): (String, String, Option<i32>)| {
+                let mud: mlua::Table = lua.globals().get("mud")?;
+                let regs: mlua::Table = mud.get("_event_registrations")?;
+                let len = regs.len()? + 1;
+                let entry = lua.create_table()?;
+                entry.set(1, event_name)?;
+                entry.set(2, code)?;
+                entry.set(3, priority.unwrap_or(0))?;
+                entry.set(4, true)?; // once = true
+                regs.set(len, entry)?;
+                Ok(len)
+            })?;
+            mud.set("once", once_fn)?;
+
+            // mud.off(handler_id)
+            let off_fn = scope.create_function_mut(|lua, handler_id: u64| {
+                let mud: mlua::Table = lua.globals().get("mud")?;
+                let removals: mlua::Table = mud.get("_event_removals")?;
+                let len = removals.len()? + 1;
+                removals.set(len, handler_id)?;
+                Ok(())
+            })?;
+            mud.set("off", off_fn)?;
+
+            // mud.emit(event_name, [data])
+            let emit_fn = scope.create_function_mut(|lua, (event_name, data): (String, Option<mlua::Value>)| {
+                let mud: mlua::Table = lua.globals().get("mud")?;
+                let emissions: mlua::Table = mud.get("_event_emissions")?;
+                let len = emissions.len()? + 1;
+                let entry = lua.create_table()?;
+                entry.set(1, event_name)?;
+                let json_str: Option<String> = match data {
+                    Some(ref v @ mlua::Value::Table(_)) => {
+                        let json_val = ScriptEngine::lua_value_to_json(v);
+                        Some(serde_json::to_string(&json_val).unwrap_or_default())
+                    }
+                    Some(mlua::Value::String(s)) => Some(s.to_str()?.to_string()),
+                    _ => None,
+                };
+                entry.set(2, json_str)?;
+                emissions.set(len, entry)?;
+                Ok(())
+            })?;
+            mud.set("emit", emit_fn)?;
+
             // 設置全局變數
             self.lua.globals().set("mud", mud)?;
             self.lua.globals().set("message", message)?;
@@ -686,6 +764,43 @@ impl ScriptEngine {
                 }
             }
 
+            // 收集 event_registrations
+            if let Ok(regs) = mud.get::<mlua::Table>("_event_registrations") {
+                for pair in regs.pairs::<i64, mlua::Table>() {
+                    if let Ok((_, entry)) = pair {
+                        if let (Ok(name), Ok(code), Ok(priority), Ok(once)) = (
+                            entry.get::<String>(1),
+                            entry.get::<String>(2),
+                            entry.get::<i32>(3),
+                            entry.get::<bool>(4),
+                        ) {
+                            context.event_registrations.push((name, code, priority, once));
+                        }
+                    }
+                }
+            }
+
+            // 收集 event_removals
+            if let Ok(removals) = mud.get::<mlua::Table>("_event_removals") {
+                for pair in removals.pairs::<i64, u64>() {
+                    if let Ok((_, id)) = pair {
+                        context.event_removals.push(id);
+                    }
+                }
+            }
+
+            // 收集 event_emissions
+            if let Ok(emissions) = mud.get::<mlua::Table>("_event_emissions") {
+                for pair in emissions.pairs::<i64, mlua::Table>() {
+                    if let Ok((_, entry)) = pair {
+                        if let Ok(name) = entry.get::<String>(1) {
+                            let data = entry.get::<Option<String>>(2).unwrap_or(None);
+                            context.event_emissions.push((name, data));
+                        }
+                    }
+                }
+            }
+
             Ok::<_, mlua::Error>(eval_res_str)
         })?;
 
@@ -855,5 +970,31 @@ end
         // Non-existent hook
         let result3 = engine.invoke_hook("on_nonexistent", "", "", false).unwrap();
         assert!(result3.is_none());
+    }
+
+    #[test]
+    fn test_event_api() {
+        let engine = ScriptEngine::new();
+        let result = engine.execute_inline(
+            r#"
+            mud.on("combat_end", "mud.send('loot')")
+            mud.once("connected", "mud.send('look')", 10)
+            mud.emit("custom_event", {key = "value"})
+            mud.off(1)
+            "#,
+            "",
+            &[],
+            false,
+        ).unwrap();
+
+        assert_eq!(result.event_registrations.len(), 2);
+        assert_eq!(result.event_registrations[0].0, "combat_end");
+        assert!(!result.event_registrations[0].3); // not once
+        assert_eq!(result.event_registrations[1].0, "connected");
+        assert!(result.event_registrations[1].3); // once
+        assert_eq!(result.event_registrations[1].2, 10); // priority
+        assert_eq!(result.event_removals.len(), 1);
+        assert_eq!(result.event_emissions.len(), 1);
+        assert_eq!(result.event_emissions[0].0, "custom_event");
     }
 }
