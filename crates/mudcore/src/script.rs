@@ -68,6 +68,9 @@ pub struct MudContext {
     pub event_removals: Vec<u64>,
     /// Events to emit: (event_name, data_json)
     pub event_emissions: Vec<(String, Option<String>)>,
+
+    /// Trigger group updates: (group_name, enabled)
+    pub group_updates: Vec<(String, bool)>,
 }
 
 /// LLM 非同步請求
@@ -310,6 +313,10 @@ impl ScriptEngine {
             let event_emissions = self.lua.create_table()?;
             mud.set("_event_emissions", event_emissions)?;
 
+            // Group updates table
+            let group_updates = self.lua.create_table()?;
+            mud.set("_group_updates", group_updates)?;
+
             // gag 標記
             mud.set("gag", false)?;
 
@@ -419,6 +426,19 @@ impl ScriptEngine {
                 Ok(())
             })?;
             mud.set("enable_trigger", enable_trigger_fn)?;
+
+            // mud.enable_group(group_name, enabled) 函數 - 啟用/禁用觸發器群組
+            let enable_group_fn = scope.create_function_mut(|lua, (group, enabled): (String, bool)| {
+                let mud: mlua::Table = lua.globals().get("mud")?;
+                let updates: mlua::Table = mud.get("_group_updates")?;
+                let len = updates.len()? + 1;
+                let entry = lua.create_table()?;
+                entry.set(1, group)?;
+                entry.set(2, enabled)?;
+                updates.set(len, entry)?;
+                Ok(())
+            })?;
+            mud.set("enable_group", enable_group_fn)?;
 
             // mud.collect_response(cmd, callback_code) 函數
             // 發送指令並收集所有回應行直到 prompt（網路層指令佇列化）
@@ -732,6 +752,17 @@ impl ScriptEngine {
                     if let Ok((_, tbl)) = pair {
                         if let (Ok(name), Ok(enabled)) = (tbl.get::<String>(1), tbl.get::<bool>(2)) {
                             context.trigger_updates.push((name, enabled));
+                        }
+                    }
+                }
+            }
+
+            // 收集 group_updates
+            if let Ok(updates) = mud.get::<mlua::Table>("_group_updates") {
+                for pair in updates.pairs::<i64, mlua::Table>() {
+                    if let Ok((_, entry)) = pair {
+                        if let (Ok(group), Ok(enabled)) = (entry.get::<String>(1), entry.get::<bool>(2)) {
+                            context.group_updates.push((group, enabled));
                         }
                     }
                 }

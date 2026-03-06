@@ -353,6 +353,7 @@ impl MudApp {
                                     is_script: *trigger_edit_is_script,
                                     enabled: true,
                                     pattern_type: config_pattern_type,
+                                    group: None,
                                 });
                                 *needs_save_flag = true;
                             }
@@ -1263,6 +1264,7 @@ impl MudApp {
                                         }
                                         new_trigger.enabled = t.enabled;
                                         new_trigger.category = t.category.clone();
+                                        new_trigger.group = t.group.clone();
                                         session.trigger_manager.add(new_trigger);
                                         needs_save = true;
                                     }
@@ -1295,6 +1297,7 @@ impl MudApp {
                                             is_script,
                                             enabled: t.enabled,
                                             pattern_type,
+                                            group: t.group.clone(),
                                         };
 
                                         if let Some(existing) = self.global_config.global_triggers.iter_mut().find(|gt| gt.name == name) {

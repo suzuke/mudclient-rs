@@ -554,6 +554,9 @@ impl Session {
 
         trigger.category = config.category.clone();
         trigger.enabled = config.enabled;
+        if let Some(ref g) = config.group {
+            trigger = trigger.with_group(g.clone());
+        }
         Some(trigger)
     }
 
@@ -1258,7 +1261,15 @@ impl Session {
                 tracing::info!("Script updated trigger '{}' enabled: {}", name, enabled);
             }
         }
-        
+
+        // 6b. Trigger group updates
+        for (group, enabled) in context.group_updates {
+            let count = self.trigger_manager.enable_group(&group, enabled);
+            if count > 0 {
+                tracing::info!("Script updated trigger group '{}' enabled={}: {} triggers affected", group, enabled, count);
+            }
+        }
+
         // 7. 日誌控制
         if let Some(control) = context.log_control {
             match control {

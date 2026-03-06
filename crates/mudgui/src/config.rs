@@ -61,6 +61,9 @@ pub struct TriggerConfig {
     /// 匹配類型: "auto", "contains", "startswith", "endswith", "regex"
     #[serde(default)]
     pub pattern_type: Option<String>,
+    /// 觸發器群組
+    #[serde(default)]
+    pub group: Option<String>,
 }
 
 /// 路徑設定（可序列化版本）

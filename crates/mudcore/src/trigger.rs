@@ -48,6 +48,8 @@ pub struct Trigger {
     pub actions: Vec<TriggerAction>,
     /// 是否啟用
     pub enabled: bool,
+    /// 觸發器群組
+    pub group: Option<String>,
     /// 編譯後的正則（內部使用）
     compiled_regex: Option<Regex>,
 }
@@ -66,6 +68,7 @@ impl Trigger {
             pattern,
             actions: Vec::new(),
             enabled: true,
+            group: None,
             compiled_regex: compiled,
         }
     }
@@ -73,6 +76,12 @@ impl Trigger {
     /// 設定分類
     pub fn with_category(mut self, category: impl Into<String>) -> Self {
         self.category = Some(category.into());
+        self
+    }
+
+    /// 設定群組
+    pub fn with_group(mut self, group: impl Into<String>) -> Self {
+        self.group = Some(group.into());
         self
     }
 
@@ -257,6 +266,29 @@ impl TriggerManager {
         self.should_gag_pre_stripped(&stripped)
     }
 
+    /// Enable or disable all triggers in a group. Returns count affected.
+    pub fn enable_group(&mut self, group: &str, enabled: bool) -> usize {
+        let mut count = 0;
+        for trigger in self.triggers.values_mut() {
+            if trigger.group.as_deref() == Some(group) {
+                trigger.enabled = enabled;
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// List all unique group names
+    pub fn groups(&self) -> Vec<String> {
+        let mut groups: Vec<String> = self.triggers.values()
+            .filter_map(|t| t.group.clone())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        groups.sort();
+        groups
+    }
+
     /// 檢查訊息是否應該被抑制（已去除 ANSI 碼版本）
     pub fn should_gag_pre_stripped(&self, stripped: &str) -> bool {
         for (trigger, _) in self.process_pre_stripped(stripped) {
@@ -395,6 +427,37 @@ mod tests {
         let stripped = "這是一則廣告訊息";
         assert!(manager.should_gag_pre_stripped(stripped));
         assert!(!manager.should_gag_pre_stripped("正常訊息"));
+    }
+
+    #[test]
+    fn test_trigger_groups() {
+        let mut mgr = TriggerManager::new();
+        let t1 = Trigger::new("t1", TriggerPattern::Contains("a".into())).with_group("combat");
+        let t2 = Trigger::new("t2", TriggerPattern::Contains("b".into())).with_group("combat");
+        let t3 = Trigger::new("t3", TriggerPattern::Contains("c".into()));
+        mgr.add(t1);
+        mgr.add(t2);
+        mgr.add(t3);
+
+        assert_eq!(mgr.enable_group("combat", false), 2);
+        assert!(!mgr.get("t1").unwrap().enabled);
+        assert!(!mgr.get("t2").unwrap().enabled);
+        assert!(mgr.get("t3").unwrap().enabled);
+
+        assert_eq!(mgr.enable_group("combat", true), 2);
+        assert!(mgr.get("t1").unwrap().enabled);
+    }
+
+    #[test]
+    fn test_groups_list() {
+        let mut mgr = TriggerManager::new();
+        mgr.add(Trigger::new("t1", TriggerPattern::Contains("a".into())).with_group("combat"));
+        mgr.add(Trigger::new("t2", TriggerPattern::Contains("b".into())).with_group("explore"));
+        mgr.add(Trigger::new("t3", TriggerPattern::Contains("c".into())));
+        let groups = mgr.groups();
+        assert_eq!(groups.len(), 2);
+        assert!(groups.contains(&"combat".to_string()));
+        assert!(groups.contains(&"explore".to_string()));
     }
 
     #[test]

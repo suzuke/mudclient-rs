@@ -334,6 +334,7 @@ impl MudApp {
                              is_script,
                              enabled: t.enabled,
                              pattern_type,
+                             group: t.group.clone(),
                          });
                      }
                  }
