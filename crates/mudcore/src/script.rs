@@ -631,7 +631,7 @@ impl ScriptEngine {
             mud.set("emit", emit_fn)?;
 
             // mud.state_machine(name, definition)
-            // definition = { initial = "state", states = { state = { enter = "code", exit = "code", timeout = {seconds=N, goto="state"} } }, transitions = { {from=, event=, to=} } }
+            // definition = { initial = "state", states = { state = { enter = "code", exit = "code", timeout = {seconds=N, target="state"} } }, transitions = { {from=, event=, to=} } }
             let sm_fn = scope.create_function_mut(|lua, (name, def): (String, mlua::Table)| {
                 let mud: mlua::Table = lua.globals().get("mud")?;
                 let defs: mlua::Table = mud.get("_sm_defs")?;
@@ -647,7 +647,7 @@ impl ScriptEngine {
                     if let Ok(enter) = state_def.get::<String>("enter") { obj.insert("enter".into(), serde_json::Value::String(enter)); }
                     if let Ok(exit) = state_def.get::<String>("exit") { obj.insert("exit".into(), serde_json::Value::String(exit)); }
                     if let Ok(timeout) = state_def.get::<mlua::Table>("timeout") {
-                        if let (Ok(secs), Ok(goto)) = (timeout.get::<f64>("seconds"), timeout.get::<String>("goto")) {
+                        if let (Ok(secs), Ok(goto)) = (timeout.get::<f64>("seconds"), timeout.get::<String>("target").or_else(|_| timeout.get::<String>("goto"))) {
                             obj.insert("timeout_secs".into(), serde_json::json!(secs));
                             obj.insert("timeout_goto".into(), serde_json::Value::String(goto));
                         }

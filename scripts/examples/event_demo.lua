@@ -20,11 +20,11 @@ mud.state_machine("grinder", {
         fighting = {
             enter = "mud.enable_group('combat', true); mud.echo('[Bot] Combat mode!')",
             exit = "mud.enable_group('combat', false)",
-            timeout = { seconds = 120, goto = "idle" },
+            timeout = { seconds = 120, target = "idle" },
         },
         looting = {
             enter = "mud.send('get all from corpse'); mud.echo('[Bot] Looting...')",
-            timeout = { seconds = 10, goto = "idle" },
+            timeout = { seconds = 10, target = "idle" },
         },
     },
     transitions = {

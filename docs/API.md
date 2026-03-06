@@ -235,7 +235,7 @@ mud.state_machine("bot", {
         },
         fighting = {
             enter = "mud.send('kill monster')",
-            timeout = { seconds = 60, goto = "idle" },  -- 超時自動轉換
+            timeout = { seconds = 60, target = "idle" },  -- 超時自動轉換
         },
     },
     transitions = {
