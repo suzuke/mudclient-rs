@@ -14,7 +14,7 @@
     "4fb97df64e0e7e58146e59cb8625d25cad1a1cc17d7ee8df6f59b14a61dd573d": {
       "id": "4fb97df64e0e7e58146e59cb8625d25cad1a1cc17d7ee8df6f59b14a61dd573d",
       "name": "精靈路",
-      "visited": 1,
+      "visited": 2,
       "first_visit": 1772765239,
       "exits": [
         "北",
@@ -64,7 +64,7 @@
     "e913d4e99d70ba89895dab53d22aa6669d5c585ffb066eb241cb2abedace31b3": {
       "id": "e913d4e99d70ba89895dab53d22aa6669d5c585ffb066eb241cb2abedace31b3",
       "name": "吉雅尼斯城",
-      "visited": 34,
+      "visited": 35,
       "first_visit": 1772676315,
       "exits": [
         "北",
@@ -236,7 +236,7 @@
     "40c1444dbe7141883300b604d0ac9d00f5db0d804cece5cd45f69f9a722383c8": {
       "id": "40c1444dbe7141883300b604d0ac9d00f5db0d804cece5cd45f69f9a722383c8",
       "name": "路易士大道",
-      "visited": 1,
+      "visited": 3,
       "first_visit": 1772765232,
       "exits": [
         "北",
@@ -580,7 +580,7 @@
     "39c3e39f966473c8885a82929cc83c3968cd373399c4f0be532289ae64a51783": {
       "id": "39c3e39f966473c8885a82929cc83c3968cd373399c4f0be532289ae64a51783",
       "name": "凱旋門外",
-      "visited": 1,
+      "visited": 2,
       "first_visit": 1772765234,
       "exits": [
         "北",
@@ -621,7 +621,7 @@
     "97f8fe848f5492717e2b12e0538552c62937548236d20a028f7cc1ebaedb18b8": {
       "id": "97f8fe848f5492717e2b12e0538552c62937548236d20a028f7cc1ebaedb18b8",
       "name": "博物館入口",
-      "visited": 40,
+      "visited": 41,
       "first_visit": 1772645579,
       "exits": [
         "西"
@@ -1009,7 +1009,7 @@
     "be433515f3c200a18ba3e0b4163f0917135d6049962b221d3670c9c71aef986e": {
       "id": "be433515f3c200a18ba3e0b4163f0917135d6049962b221d3670c9c71aef986e",
       "name": "精靈路",
-      "visited": 1,
+      "visited": 2,
       "first_visit": 1772765240,
       "exits": [
         "東",
@@ -1116,7 +1116,7 @@
     "c0348ea713d2483b1367b6a78778784c5f96f9fe48bf79bce7be10ae52728190": {
       "id": "c0348ea713d2483b1367b6a78778784c5f96f9fe48bf79bce7be10ae52728190",
       "name": "朦朧小徑",
-      "visited": 1,
+      "visited": 2,
       "first_visit": 1772765236,
       "exits": [
         "北",
@@ -1256,7 +1256,7 @@
     "eef1fdd15511ea3c48793299ca947aa4de44be5a095cd7194a4e103740fc2e2c": {
       "id": "eef1fdd15511ea3c48793299ca947aa4de44be5a095cd7194a4e103740fc2e2c",
       "name": "主要廣場",
-      "visited": 45,
+      "visited": 46,
       "first_visit": 1772676316,
       "exits": [
         "北",
@@ -1391,7 +1391,7 @@
     "50a22db9a87764ca981e43fbc5cb75dee65779235d3aa7bcf9cc88ff775236be": {
       "id": "50a22db9a87764ca981e43fbc5cb75dee65779235d3aa7bcf9cc88ff775236be",
       "name": "精靈路",
-      "visited": 1,
+      "visited": 2,
       "first_visit": 1772765240,
       "exits": [
         "北",
@@ -1507,7 +1507,7 @@
     "349965591ea7cea0ca7de23a02a1cdc517fe5d1617867d0cb8d4623c72af7dbd": {
       "id": "349965591ea7cea0ca7de23a02a1cdc517fe5d1617867d0cb8d4623c72af7dbd",
       "name": "和平大道",
-      "visited": 80,
+      "visited": 81,
       "first_visit": 1772644577,
       "exits": [
         "北",
@@ -1947,7 +1947,7 @@
     "4f00af7bdc40acdf7ea8fe3e5506b3cedbd9ef72945f957c6043929d4ec78866": {
       "id": "4f00af7bdc40acdf7ea8fe3e5506b3cedbd9ef72945f957c6043929d4ec78866",
       "name": "朦朧小徑",
-      "visited": 1,
+      "visited": 2,
       "first_visit": 1772765235,
       "exits": [
         "北",
@@ -1957,7 +1957,7 @@
     "c3b396f50a7b573eebf84e6560082e93990a23fbc476bb29a6b35bf18d10aa87": {
       "id": "c3b396f50a7b573eebf84e6560082e93990a23fbc476bb29a6b35bf18d10aa87",
       "name": "精靈路",
-      "visited": 1,
+      "visited": 2,
       "first_visit": 1772765238,
       "exits": [
         "北",
@@ -1969,7 +1969,7 @@
     "8e4e50781e003f6028aa3c447258bed59aaf9bb98eb4f26ce38b9a2dc5c5cecc": {
       "id": "8e4e50781e003f6028aa3c447258bed59aaf9bb98eb4f26ce38b9a2dc5c5cecc",
       "name": "藍色小精靈村的入口",
-      "visited": 1,
+      "visited": 2,
       "first_visit": 1772765238,
       "exits": [
         "北",
@@ -2080,7 +2080,7 @@
     "314bd5656517c827bebea9e72a871802325927e2241ee17c5f4ed37b420f39a6": {
       "id": "314bd5656517c827bebea9e72a871802325927e2241ee17c5f4ed37b420f39a6",
       "name": "和平大道",
-      "visited": 67,
+      "visited": 69,
       "first_visit": 1772645499,
       "exits": [
         "北",
@@ -2152,7 +2152,7 @@
     "5530f4e241b3cd903a4cc158d4732764c974e1bcb554ce97169140eecda97a85": {
       "id": "5530f4e241b3cd903a4cc158d4732764c974e1bcb554ce97169140eecda97a85",
       "name": "文化街尾",
-      "visited": 72,
+      "visited": 73,
       "first_visit": 1772645576,
       "exits": [
         "北",
@@ -2207,7 +2207,7 @@
     "eb3b8cc507550045b461d3809589e03f146910cfa384fd1be60f05aa13899079": {
       "id": "eb3b8cc507550045b461d3809589e03f146910cfa384fd1be60f05aa13899079",
       "name": "朦朧小徑",
-      "visited": 1,
+      "visited": 2,
       "first_visit": 1772765237,
       "exits": [
         "北",
@@ -2279,7 +2279,7 @@
     "582cf9bb9b3444959f6ac8882c7e6f6174599a42efa746ccad882be7bfd8bfaa": {
       "id": "582cf9bb9b3444959f6ac8882c7e6f6174599a42efa746ccad882be7bfd8bfaa",
       "name": "文化街",
-      "visited": 57,
+      "visited": 58,
       "first_visit": 1772645502,
       "exits": [
         "北",
@@ -2400,7 +2400,7 @@
     "2bf8aeca7b7a21202a480f423ca83fefe77e077241ed90c2b3de23ae4680f5cf": {
       "id": "2bf8aeca7b7a21202a480f423ca83fefe77e077241ed90c2b3de23ae4680f5cf",
       "name": "凱旋門",
-      "visited": 1,
+      "visited": 3,
       "first_visit": 1772765234,
       "exits": [
         "北",
@@ -2533,7 +2533,7 @@
     "4e9c9dd2418fa5c52e762d52985dfca6fe1d77cd111c87536d3211df7cf5ca2e": {
       "id": "4e9c9dd2418fa5c52e762d52985dfca6fe1d77cd111c87536d3211df7cf5ca2e",
       "name": "市中心",
-      "visited": 237,
+      "visited": 238,
       "first_visit": 1772644573,
       "exits": [
         "北",
@@ -2703,7 +2703,7 @@
     "478ffe9f12a30d704186f327ca56a85531b46db421602509b46fe58eb6c267c5": {
       "id": "478ffe9f12a30d704186f327ca56a85531b46db421602509b46fe58eb6c267c5",
       "name": "和平大道",
-      "visited": 81,
+      "visited": 83,
       "first_visit": 1772644576,
       "exits": [
         "北",
@@ -2800,7 +2800,7 @@
     "abb36845bf95781a402ab98bf42ac1beabbb03bd158d2029172d0a2b37beec2f": {
       "id": "abb36845bf95781a402ab98bf42ac1beabbb03bd158d2029172d0a2b37beec2f",
       "name": "精靈路",
-      "visited": 1,
+      "visited": 2,
       "first_visit": 1772765239,
       "exits": [
         "北",
@@ -2823,7 +2823,7 @@
     "f79b44310ffd065dbcdc9b6b1fb4c6a540fef2d5e48fc4fea5affa3c6fc01f54": {
       "id": "f79b44310ffd065dbcdc9b6b1fb4c6a540fef2d5e48fc4fea5affa3c6fc01f54",
       "name": "醫生協會",
-      "visited": 7,
+      "visited": 10,
       "first_visit": 1772644556,
       "exits": [
         "北"
@@ -3144,7 +3144,7 @@
     "b370fe0b35b66d61dd7c1b38070c1dbcea24550aabad37e266148b7244204459": {
       "id": "b370fe0b35b66d61dd7c1b38070c1dbcea24550aabad37e266148b7244204459",
       "name": "文化街",
-      "visited": 65,
+      "visited": 66,
       "first_visit": 1772645503,
       "exits": [
         "北",
@@ -3156,7 +3156,7 @@
     "b1fcff32e3ed004a9d9ecf8e88a940c17245d38b03b2a9e07282259fb4d822bf": {
       "id": "b1fcff32e3ed004a9d9ecf8e88a940c17245d38b03b2a9e07282259fb4d822bf",
       "name": "路易士大道",
-      "visited": 1,
+      "visited": 2,
       "first_visit": 1772765233,
       "exits": [
         "北",

@@ -284,7 +284,9 @@ impl MudApp {
                     if ui.button("💾 儲存").clicked() {
                         // 驗證輸入
                         if self.profile_edit_name.is_empty() {
-                            // TODO: 顯示錯誤
+                            self.toast_message = Some(("Profile 名稱不可為空".to_string(), Instant::now()));
+                        } else if self.profile_edit_host.is_empty() || self.profile_edit_port.is_empty() {
+                            self.toast_message = Some(("主機和埠號不可為空".to_string(), Instant::now()));
                         } else {
                             let mut profile = if let Some(ref original_name) = self.editing_profile_original_name {
                                 if let Some(existing) = self.profile_manager.get(original_name) {
@@ -322,6 +324,7 @@ impl MudApp {
                             // 儲存
                             if let Err(e) = self.profile_manager.save(profile) {
                                 tracing::error!("Failed to save profile: {}", e);
+                                self.toast_message = Some((format!("儲存失敗: {}", e), Instant::now()));
                             }
 
                             self.show_profile_edit_window = false;

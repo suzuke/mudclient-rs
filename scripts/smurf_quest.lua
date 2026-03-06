@@ -266,7 +266,6 @@ function step_handlers.get_wand(rid)
         if not MudUtils.check_run(new_rid) then return end
         MudLoot.process_loot({
             items = {"wand"},
-            fallback_blind = true,
             sac = false
         }, function()
             signal("get_wand")

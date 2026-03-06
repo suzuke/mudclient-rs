@@ -2124,7 +2124,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-server"
-version = "0.1.0"
+version = "0.8.0"
 dependencies = [
  "reqwest",
  "rmcp",
@@ -2248,7 +2248,7 @@ dependencies = [
 
 [[package]]
 name = "mudcore"
-version = "0.1.0"
+version = "0.8.0"
 dependencies = [
  "bytes",
  "encoding_rs",
@@ -2266,7 +2266,7 @@ dependencies = [
 
 [[package]]
 name = "mudgui"
-version = "0.1.0"
+version = "0.8.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
