@@ -81,6 +81,11 @@ pub struct MudContext {
 
     /// Key binding updates: (key_combo, Some(lua_code) = bind, None = unbind)
     pub key_binding_updates: Vec<(String, Option<String>)>,
+
+    /// Route rule additions: (name, pattern, window, gag)
+    pub route_additions: Vec<(String, String, String, bool)>,
+    /// Route rule removals: name
+    pub route_removals: Vec<String>,
 }
 
 /// LLM 非同步請求
@@ -340,6 +345,12 @@ impl ScriptEngine {
             // Key binding table
             let key_binding_updates = self.lua.create_table()?;
             mud.set("_key_binding_updates", key_binding_updates)?;
+
+            // Route rule tables
+            let route_additions = self.lua.create_table()?;
+            mud.set("_route_additions", route_additions)?;
+            let route_removals = self.lua.create_table()?;
+            mud.set("_route_removals", route_removals)?;
 
             // gag 標記
             mud.set("gag", false)?;
@@ -723,6 +734,32 @@ impl ScriptEngine {
             })?;
             mud.set("unbind_key", unbind_key_fn)?;
 
+            // mud.add_route(definition_table)
+            // definition_table = { name = "chat", pattern = "【閒聊】", window = "chat", gag = false }
+            let add_route_fn = scope.create_function_mut(|lua, def: mlua::Table| {
+                let mud: mlua::Table = lua.globals().get("mud")?;
+                let additions: mlua::Table = mud.get("_route_additions")?;
+                let len = additions.len()? + 1;
+                let entry = lua.create_table()?;
+                entry.set(1, def.get::<String>("name")?)?;
+                entry.set(2, def.get::<String>("pattern")?)?;
+                entry.set(3, def.get::<String>("window")?)?;
+                entry.set(4, def.get::<bool>("gag").unwrap_or(false))?;
+                additions.set(len, entry)?;
+                Ok(())
+            })?;
+            mud.set("add_route", add_route_fn)?;
+
+            // mud.remove_route(name)
+            let remove_route_fn = scope.create_function_mut(|lua, name: String| {
+                let mud: mlua::Table = lua.globals().get("mud")?;
+                let removals: mlua::Table = mud.get("_route_removals")?;
+                let len = removals.len()? + 1;
+                removals.set(len, name)?;
+                Ok(())
+            })?;
+            mud.set("remove_route", remove_route_fn)?;
+
             // 設置全局變數
             self.lua.globals().set("mud", mud)?;
             self.lua.globals().set("message", message)?;
@@ -995,6 +1032,29 @@ impl ScriptEngine {
                 for pair in resets.pairs::<i64, String>() {
                     if let Ok((_, name)) = pair {
                         context.state_machine_resets.push(name);
+                    }
+                }
+            }
+
+            // 收集 route_additions
+            if let Ok(additions) = mud.get::<mlua::Table>("_route_additions") {
+                for pair in additions.pairs::<i64, mlua::Table>() {
+                    if let Ok((_, entry)) = pair {
+                        if let (Ok(name), Ok(pattern), Ok(window)) = (
+                            entry.get::<String>(1), entry.get::<String>(2), entry.get::<String>(3),
+                        ) {
+                            let gag = entry.get::<bool>(4).unwrap_or(false);
+                            context.route_additions.push((name, pattern, window, gag));
+                        }
+                    }
+                }
+            }
+
+            // 收集 route_removals
+            if let Ok(removals) = mud.get::<mlua::Table>("_route_removals") {
+                for pair in removals.pairs::<i64, String>() {
+                    if let Ok((_, name)) = pair {
+                        context.route_removals.push(name);
                     }
                 }
             }

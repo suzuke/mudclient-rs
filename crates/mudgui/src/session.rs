@@ -24,6 +24,30 @@ use crate::api::SharedApiState;
 use crate::config::{AliasConfig, Profile, TriggerConfig};
 use lazy_static::lazy_static;
 
+/// 訊息路由規則
+pub struct RouteRule {
+    pub name: String,
+    pub pattern: String,
+    pub window: String,
+    pub gag: bool,
+    compiled_regex: Option<regex::Regex>,
+}
+
+impl RouteRule {
+    pub fn new(name: String, pattern: String, window: String, gag: bool) -> Self {
+        let compiled_regex = regex::Regex::new(&pattern).ok();
+        Self { name, pattern, window, gag, compiled_regex }
+    }
+
+    pub fn matches(&self, text: &str) -> bool {
+        if let Some(ref re) = self.compiled_regex {
+            re.is_match(text)
+        } else {
+            text.contains(&self.pattern)
+        }
+    }
+}
+
 lazy_static! {
     static ref ANSI_STRIP_RE: regex::Regex = regex::Regex::new(r"\x1b\[[0-9;]*[mK]").unwrap();
     static ref MOB_BRACKET_RE: regex::Regex = regex::Regex::new(r"\(([^)]+)\)").unwrap();
@@ -269,6 +293,9 @@ pub struct Session {
     /// 自訂快捷鍵綁定: key_combo -> lua_code
     pub key_bindings: std::collections::HashMap<String, String>,
 
+    /// 訊息路由規則
+    pub route_rules: Vec<RouteRule>,
+
     /// 內建地圖資料庫（Rust 原生 MudMapper）
     pub map_database: MapDatabase,
     /// 上次自動儲存時的 map data_version
@@ -502,6 +529,7 @@ impl Session {
             event_bus: mudcore::EventBus::new(),
             state_machines: mudcore::StateMachineManager::new(),
             key_bindings: std::collections::HashMap::new(),
+            route_rules: Vec::new(),
             map_database: {
                 let map_path = std::path::Path::new("data/mapper_data.json");
                 if map_path.exists() {
@@ -1392,7 +1420,21 @@ impl Session {
             }
         }
 
-        // 16. Key binding updates
+        // 16. Route rule additions
+        for (name, pattern, window, gag) in context.route_additions {
+            // Remove existing rule with same name first
+            self.route_rules.retain(|r| r.name != name);
+            tracing::info!("Route rule added: {} -> window '{}' (gag={})", name, window, gag);
+            self.route_rules.push(RouteRule::new(name, pattern, window, gag));
+        }
+
+        // 17. Route rule removals
+        for name in context.route_removals {
+            self.route_rules.retain(|r| r.name != name);
+            tracing::info!("Route rule removed: {}", name);
+        }
+
+        // 18. Key binding updates
         for (key, code) in context.key_binding_updates {
             match code {
                 Some(lua_code) => {
@@ -1703,6 +1745,36 @@ impl Session {
                         gagged = true;
                     }
                     self.apply_script_context(context);
+                }
+            }
+        }
+
+        // Check route rules (after triggers, before final window routing)
+        for rule in &self.route_rules {
+            if rule.matches(&clean_text) {
+                // Create or ensure target window exists
+                if self.window_manager.get(&rule.window).is_none() {
+                    self.window_manager.add_window(
+                        mudcore::SubWindow::new(rule.window.clone(), rule.window.clone())
+                    );
+                }
+                // Route message to target window
+                let route_widths = if let Some(bw) = byte_widths {
+                    bw.to_vec()
+                } else {
+                    text.chars().map(|ch| if ch.is_ascii() { 1u8 } else { 2u8 }).collect()
+                };
+                self.window_manager.route_message_with_widths(
+                    &rule.window,
+                    WindowMessage {
+                        content: text.to_string(),
+                        preserve_ansi: true,
+                        byte_widths: route_widths,
+                        repeat_count: 1,
+                    },
+                );
+                if rule.gag {
+                    gagged = true;
                 }
             }
         }
