@@ -152,6 +152,11 @@ impl ScriptEngine {
         self.scripts.remove(name).is_some()
     }
 
+    /// Get a snapshot of persistent variables
+    pub fn get_persistent_vars(&self) -> std::collections::HashMap<String, String> {
+        self.persistent_vars.borrow().clone()
+    }
+
     /// 展開變數 (將 $var 替換為變數值)
     pub fn expand_variables(&self, text: &str) -> String {
         if !text.contains('$') {

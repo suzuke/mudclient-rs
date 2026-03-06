@@ -24,6 +24,7 @@ impl MudApp {
                     ui.selectable_value(&mut self.side_panel_tab, SidePanelTab::Notes, "📝 筆記");
                     ui.selectable_value(&mut self.side_panel_tab, SidePanelTab::Map, "🗺️ 地圖");
                     ui.selectable_value(&mut self.side_panel_tab, SidePanelTab::Terminal, "💻 終端");
+                    ui.selectable_value(&mut self.side_panel_tab, SidePanelTab::Debug, "🔧 Debug");
                 });
                 ui.separator();
 
@@ -48,6 +49,9 @@ impl MudApp {
                     }
                     SidePanelTab::Terminal => {
                         self.render_terminal_tab(ui);
+                    }
+                    SidePanelTab::Debug => {
+                        self.render_debug_tab(ui);
                     }
                 }
             });
@@ -206,6 +210,232 @@ impl MudApp {
                  ui.label("請先連線以使用筆記功能");
              });
          }
+    }
+
+    /// 繪製 Script Debug 面板
+    fn render_debug_tab(&mut self, ui: &mut egui::Ui) {
+        let font_size = self.global_config.ui.font_size;
+
+        let Some(session) = self.session_manager.active_session_mut() else {
+            ui.label("No active session");
+            return;
+        };
+
+        // Snapshot data from session before rendering to avoid borrow issues
+        let vars = session.script_engine.get_persistent_vars();
+        let machines: Vec<(String, String)> = session
+            .state_machines
+            .machines
+            .iter()
+            .map(|(name, sm)| (name.clone(), sm.current_state().to_string()))
+            .collect();
+        let key_bindings: Vec<(String, String)> = {
+            let mut sorted: Vec<_> = session
+                .key_bindings
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            sorted.sort_by(|a, b| a.0.cmp(&b.0));
+            sorted
+        };
+        let route_rules: Vec<(String, String, String, bool)> = session
+            .route_rules
+            .iter()
+            .map(|r| (r.name.clone(), r.pattern.clone(), r.window.clone(), r.gag))
+            .collect();
+        let event_log: Vec<(std::time::Instant, String, Option<String>)> = session
+            .event_bus
+            .event_log()
+            .iter()
+            .map(|(t, name, data)| (*t, name.clone(), data.clone()))
+            .collect();
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            // === Lua Console ===
+            ui.heading("Lua Console");
+            ui.horizontal(|ui| {
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut self.debug_lua_input)
+                        .font(egui::FontId::monospace(font_size))
+                        .desired_width(ui.available_width() - 50.0)
+                        .hint_text("Lua code..."),
+                );
+                if ui.button("Run").clicked()
+                    || (response.lost_focus()
+                        && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                {
+                    let code = self.debug_lua_input.clone();
+                    if !code.is_empty() {
+                        if let Some(session) = self.session_manager.active_session_mut() {
+                            // First get the return value
+                            let result = session
+                                .script_engine
+                                .execute_inline_with_result(&code, "", &[]);
+                            // Then execute for side effects
+                            match session.script_engine.execute_inline(&code, "", &[], false) {
+                                Ok(ctx) => session.apply_script_context(ctx),
+                                Err(_) => {}
+                            }
+                            match result {
+                                Ok(r) => self.debug_lua_result = Some(r),
+                                Err(e) => {
+                                    self.debug_lua_result = Some(format!("Error: {}", e))
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+            if let Some(ref result) = self.debug_lua_result {
+                ui.add(egui::Label::new(
+                    egui::RichText::new(result).monospace().size(font_size - 1.0),
+                ));
+            }
+            ui.separator();
+
+            // === Variables ===
+            ui.heading("Variables");
+            if vars.is_empty() {
+                ui.label("(none)");
+            } else {
+                let mut sorted_vars: Vec<_> = vars.iter().collect();
+                sorted_vars.sort_by_key(|(k, _)| (*k).clone());
+                for (key, value) in sorted_vars {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!("${}", key))
+                                .monospace()
+                                .strong()
+                                .size(font_size - 1.0),
+                        );
+                        ui.label(
+                            egui::RichText::new(format!("= {}", value))
+                                .monospace()
+                                .size(font_size - 1.0),
+                        );
+                    });
+                }
+            }
+            ui.separator();
+
+            // === State Machines ===
+            ui.heading("State Machines");
+            if machines.is_empty() {
+                ui.label("(none)");
+            } else {
+                for (name, state) in &machines {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(name)
+                                .monospace()
+                                .strong()
+                                .size(font_size - 1.0),
+                        );
+                        ui.label(
+                            egui::RichText::new(format!("→ {}", state))
+                                .monospace()
+                                .size(font_size - 1.0),
+                        );
+                    });
+                }
+            }
+            ui.separator();
+
+            // === Key Bindings ===
+            ui.heading("Key Bindings");
+            if key_bindings.is_empty() {
+                ui.label("(none)");
+            } else {
+                for (key, code) in &key_bindings {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(key)
+                                .monospace()
+                                .strong()
+                                .size(font_size - 1.0),
+                        );
+                        let display = if code.len() > 40 {
+                            format!("{}...", &code[..40])
+                        } else {
+                            code.clone()
+                        };
+                        ui.label(
+                            egui::RichText::new(format!("→ {}", display))
+                                .monospace()
+                                .size(font_size - 1.0),
+                        );
+                    });
+                }
+            }
+            ui.separator();
+
+            // === Route Rules ===
+            ui.heading("Route Rules");
+            if route_rules.is_empty() {
+                ui.label("(none)");
+            } else {
+                for (name, pattern, window, gag) in &route_rules {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(name)
+                                .monospace()
+                                .strong()
+                                .size(font_size - 1.0),
+                        );
+                        let gag_str = if *gag { " [gag]" } else { "" };
+                        ui.label(
+                            egui::RichText::new(format!("→ {} ({}{})", window, pattern, gag_str))
+                                .monospace()
+                                .size(font_size - 1.0),
+                        );
+                    });
+                }
+            }
+            ui.separator();
+
+            // === Event Log ===
+            ui.heading("Event Log");
+            if event_log.is_empty() {
+                ui.label("(no events yet)");
+            } else {
+                // Show most recent first, limit to 20
+                for (instant, name, data) in event_log.iter().rev().take(20) {
+                    let elapsed = instant.elapsed();
+                    let time_str = if elapsed.as_secs() < 60 {
+                        format!("{}s ago", elapsed.as_secs())
+                    } else {
+                        format!("{}m ago", elapsed.as_secs() / 60)
+                    };
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(&time_str)
+                                .monospace()
+                                .weak()
+                                .size(font_size - 2.0),
+                        );
+                        ui.label(
+                            egui::RichText::new(name)
+                                .monospace()
+                                .strong()
+                                .size(font_size - 1.0),
+                        );
+                        if let Some(ref d) = data {
+                            let display = if d.len() > 30 {
+                                format!("{}...", &d[..30])
+                            } else {
+                                d.clone()
+                            };
+                            ui.label(
+                                egui::RichText::new(display)
+                                    .monospace()
+                                    .weak()
+                                    .size(font_size - 2.0),
+                            );
+                        }
+                    });
+                }
+            }
+        });
     }
 
     /// 繪製地圖分頁

@@ -149,6 +149,11 @@ pub struct MudApp {
 
     /// Toast 訊息 (文字, 建立時間)
     toast_message: Option<(String, Instant)>,
+
+    /// Debug panel: Lua console input
+    debug_lua_input: String,
+    /// Debug panel: last Lua result
+    debug_lua_result: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,6 +180,7 @@ enum SidePanelTab {
     Notes,
     Map,
     Terminal,
+    Debug,
 }
 
 impl MudApp {
@@ -255,6 +261,9 @@ impl MudApp {
             terminal_manager: crate::terminal::TerminalManager::new(),
 
             toast_message: None,
+
+            debug_lua_input: String::new(),
+            debug_lua_result: None,
         }
     }
 
