@@ -4,7 +4,7 @@
 //! JSON 格式與 Lua MudMapper 完全相容。
 
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::time::Instant;
 
@@ -120,30 +120,45 @@ impl MapDatabase {
         }
     }
 
-    /// BFS 尋路，回傳方向序列
+    /// BFS 尋路，回傳方向序列（使用 parent pointer 避免路徑 clone）
     pub fn find_path(&self, from: &str, to: &str) -> Option<Vec<String>> {
         if from == to {
             return Some(Vec::new());
         }
 
-        let mut visited = HashSet::new();
-        let mut queue: VecDeque<(String, Vec<String>)> = VecDeque::new();
+        // parent[node_index] = (parent_index, direction)
+        let mut visited: HashMap<String, usize> = HashMap::new();
+        let mut parents: Vec<(usize, String)> = Vec::new(); // (parent_idx, direction)
+        let mut nodes: Vec<String> = Vec::new(); // index → node_id
+        let mut queue: VecDeque<usize> = VecDeque::new();
 
-        visited.insert(from.to_string());
-        queue.push_back((from.to_string(), Vec::new()));
+        let start_idx = 0;
+        nodes.push(from.to_string());
+        parents.push((0, String::new())); // sentinel for start node
+        visited.insert(from.to_string(), start_idx);
+        queue.push_back(start_idx);
 
-        while let Some((current_id, path)) = queue.pop_front() {
-            if let Some(exits) = self.moves.get(&current_id) {
+        while let Some(current_idx) = queue.pop_front() {
+            if let Some(exits) = self.moves.get(&nodes[current_idx]) {
                 for (dir, next_id) in exits {
-                    if !visited.contains(next_id) {
-                        visited.insert(next_id.clone());
-                        let mut new_path = path.clone();
-                        new_path.push(dir.clone());
+                    if !visited.contains_key(next_id) {
+                        let next_idx = nodes.len();
+                        nodes.push(next_id.clone());
+                        parents.push((current_idx, dir.clone()));
+                        visited.insert(next_id.clone(), next_idx);
 
                         if next_id == to {
-                            return Some(new_path);
+                            // 回溯建構路徑
+                            let mut path = Vec::new();
+                            let mut idx = next_idx;
+                            while idx != start_idx {
+                                path.push(parents[idx].1.clone());
+                                idx = parents[idx].0;
+                            }
+                            path.reverse();
+                            return Some(path);
                         }
-                        queue.push_back((next_id.clone(), new_path));
+                        queue.push_back(next_idx);
                     }
                 }
             }
@@ -349,5 +364,52 @@ mod tests {
         db.disable();
         db.on_room_detected("room1", "大廳", &[]);
         assert!(db.rooms.is_empty());
+    }
+
+    #[test]
+    fn test_bfs_longer_path() {
+        let mut db = MapDatabase::new();
+        // a -n-> b -e-> c -s-> d -w-> e
+        db.on_room_detected("a", "A", &[]);
+        db.record_last_direction("n");
+        db.on_room_detected("b", "B", &[]);
+        db.record_last_direction("e");
+        db.on_room_detected("c", "C", &[]);
+        db.record_last_direction("s");
+        db.on_room_detected("d", "D", &[]);
+        db.record_last_direction("w");
+        db.on_room_detected("e", "E", &[]);
+
+        let path = db.find_path("a", "e").unwrap();
+        assert_eq!(path, vec!["n", "e", "s", "w"]);
+
+        // Same node
+        let path = db.find_path("a", "a").unwrap();
+        assert!(path.is_empty());
+    }
+
+    #[test]
+    fn test_bfs_finds_shortest_path() {
+        let mut db = MapDatabase::new();
+        // Create a graph with two paths from a to c:
+        // a -n-> b -e-> c (length 2)
+        // a -e-> d -n-> e -w-> c (length 3)
+        db.on_room_detected("a", "A", &[]);
+        db.record_last_direction("n");
+        db.on_room_detected("b", "B", &[]);
+        db.record_last_direction("e");
+        db.on_room_detected("c", "C", &[]);
+
+        // Reset to a for second path
+        db.on_room_detected("a", "A", &[]);
+        db.record_last_direction("e");
+        db.on_room_detected("d", "D", &[]);
+        db.record_last_direction("n");
+        db.on_room_detected("e2", "E", &[]);
+        db.record_last_direction("w");
+        db.on_room_detected("c", "C", &[]);
+
+        let path = db.find_path("a", "c").unwrap();
+        assert_eq!(path.len(), 2); // Should find the shorter path
     }
 }

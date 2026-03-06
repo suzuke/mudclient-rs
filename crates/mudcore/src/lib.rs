@@ -20,6 +20,7 @@ pub mod script;
 pub mod speedwalk;
 pub mod telnet;
 pub mod trigger;
+pub mod util;
 pub mod window;
 
 pub use alias::{Alias, AliasManager};
@@ -32,4 +33,5 @@ pub use script::{LlmRequest, MudContext, ScriptEngine};
 pub use telnet::{GmcpMessage, TelnetClient};
 pub use trigger::{Trigger, TriggerAction, TriggerManager, TriggerPattern};
 pub use map::MapDatabase;
+pub use util::strip_ansi;
 pub use window::{SubWindow, WindowManager, WindowMessage};

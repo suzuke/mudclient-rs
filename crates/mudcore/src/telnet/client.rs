@@ -82,11 +82,14 @@ pub struct TelnetClient {
     _decoder: encoding_rs::Decoder,
     /// GMCP 訊息佇列（每次 read 後由呼叫者取走）
     gmcp_queue: Vec<GmcpMessage>,
+    /// 持久的 TCP read buffer（避免每次 read 重新分配）
+    read_buffer: Vec<u8>,
 }
 
 impl TelnetClient {
     /// 創建新的 Telnet 客戶端
     pub fn new(config: TelnetConfig) -> Self {
+        let read_buf_size = config.read_buffer_size;
         Self {
             stream: None,
             config,
@@ -98,6 +101,7 @@ impl TelnetClient {
             ansi_buffer: Vec::new(),
             _decoder: encoding_rs::BIG5.new_decoder(),
             gmcp_queue: Vec::new(),
+            read_buffer: vec![0u8; read_buf_size],
         }
     }
 
@@ -213,15 +217,14 @@ impl TelnetClient {
     pub async fn read_with_widths(&mut self) -> Result<(String, Vec<u8>), TelnetError> {
         let stream = self.stream.as_mut().ok_or(TelnetError::NotConnected)?;
 
-        let mut buffer = vec![0u8; self.config.read_buffer_size];
-        let n = stream.read(&mut buffer).await?;
+        let n = stream.read(&mut self.read_buffer).await?;
 
         if n == 0 {
             self.state = ConnectionState::Disconnected;
             return Err(TelnetError::NotConnected);
         }
 
-        self.raw_buffer.extend_from_slice(&buffer[..n]);
+        self.raw_buffer.extend_from_slice(&self.read_buffer[..n]);
 
         // 防止惡意伺服器造成 raw_buffer 無限增長
         if self.raw_buffer.len() > MAX_RAW_BUFFER {

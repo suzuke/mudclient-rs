@@ -209,29 +209,9 @@ impl Logger {
         Ok(())
     }
 
-    /// 移除 ANSI 轉義碼
+    /// 移除 ANSI 轉義碼（委託至 crate::util::strip_ansi）
     fn strip_ansi(input: &str) -> String {
-        let mut result = String::with_capacity(input.len());
-        let mut chars = input.chars().peekable();
-
-        while let Some(c) = chars.next() {
-            if c == '\x1b' {
-                // 跳過 CSI 序列
-                if chars.peek() == Some(&'[') {
-                    chars.next();
-                    while let Some(&ch) = chars.peek() {
-                        chars.next();
-                        if ch.is_ascii_alphabetic() {
-                            break;
-                        }
-                    }
-                }
-            } else {
-                result.push(c);
-            }
-        }
-
-        result
+        crate::util::strip_ansi(input)
     }
 
     /// 將 ANSI 轉換為 HTML

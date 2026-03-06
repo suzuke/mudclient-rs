@@ -199,7 +199,7 @@ pub struct Session {
     pub input: String,
     
     /// 輸入歷史
-    pub input_history: Vec<String>,
+    pub input_history: std::collections::VecDeque<String>,
     
     /// 歷史索引
     pub history_index: Option<usize>,
@@ -470,7 +470,7 @@ impl Session {
             window_manager: WindowManager::new(),
             logger,
             input: String::new(),
-            input_history: Vec::new(),
+            input_history: std::collections::VecDeque::new(),
             history_index: None,
             tab_completion_prefix: None,
             tab_completion_index: 0,
@@ -677,7 +677,7 @@ impl Session {
             ApiQuery::GetHistory { count } => {
                 let total = self.input_history.len();
                 let start = total.saturating_sub(count);
-                let history: Vec<&str> = self.input_history[start..].iter().map(|s| s.as_str()).collect();
+                let history: Vec<&str> = self.input_history.iter().skip(start).map(|s| s.as_str()).collect();
                 serde_json::json!({ "history": history, "total": total })
             }
             ApiQuery::GetMapStats => {
@@ -1293,13 +1293,7 @@ impl Session {
     fn dispatch_llm_request(&self, req: mudcore::LlmRequest) {
         let api_state = self.api_state.clone();
 
-        // 在 tokio runtime 中非同步呼叫 Anthropic API
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build();
-            let Ok(rt) = rt else { return };
-            rt.block_on(async move {
+        let llm_future = async move {
                 let api_key = match std::env::var("ANTHROPIC_API_KEY") {
                     Ok(k) if !k.is_empty() => k,
                     _ => {
@@ -1374,8 +1368,21 @@ impl Session {
                 if let Ok(mut s) = api_state.lock() {
                     s.pending_lua.push_back(lua_code);
                 }
+        };
+
+        // 優先使用現有 tokio runtime，避免每次建立新 thread + runtime
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(llm_future);
+        } else {
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build();
+                if let Ok(rt) = rt {
+                    rt.block_on(llm_future);
+                }
             });
-        });
+        }
     }
 
     /// 處理接收到的文字與觸發器
@@ -1469,9 +1476,8 @@ impl Session {
         }
 
         if !is_echo {
-            // 提取單字用於自動補齊與狀態判斷
-            // 處理觸發器
-            let triggers = self.trigger_manager.process(text);
+            // 處理觸發器（使用已 strip ANSI 的 clean_text 避免重複 strip）
+            let triggers = self.trigger_manager.process_pre_stripped(&clean_text);
             
             // 暫存要執行的動作，避免借用衝突
             let mut pending_scripts = Vec::new();
@@ -1582,17 +1588,16 @@ impl Session {
                           "northwest", "northeast", "southwest", "southeast"].contains(&trim_detection.as_str());
 
         // 路由到視窗
-        for target_id in targets {
-            let msg = WindowMessage {
-                content: final_text.clone(),
-                preserve_ansi: !is_echo,
-                byte_widths: final_widths.clone(),
-                repeat_count: 1,
-            };
-
+        let preserve_ansi = !is_echo;
+        for target_id in &targets {
             self.window_manager.route_message_with_widths(
-                &target_id,
-                msg,
+                target_id,
+                WindowMessage {
+                    content: final_text.clone(),
+                    preserve_ansi,
+                    byte_widths: final_widths.clone(),
+                    repeat_count: 1,
+                },
             );
         }
 

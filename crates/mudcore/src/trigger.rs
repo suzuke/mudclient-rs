@@ -202,14 +202,17 @@ impl TriggerManager {
 
     /// 處理訊息，返回所有匹配的觸發器及其動作
     pub fn process(&self, message: &str) -> Vec<(&Trigger, TriggerMatch)> {
-        let mut matches = Vec::new();
-        
-        // 剝離 ANSI 控制碼以支援純文字模式匹配帶色訊息
         let stripped = Self::strip_ansi(message);
+        self.process_pre_stripped(&stripped)
+    }
+
+    /// 處理已去除 ANSI 碼的訊息（避免重複 strip）
+    pub fn process_pre_stripped(&self, stripped: &str) -> Vec<(&Trigger, TriggerMatch)> {
+        let mut matches = Vec::new();
 
         for name in &self.order {
             if let Some(trigger) = self.triggers.get(name) {
-                if let Some(m) = trigger.try_match(&stripped) {
+                if let Some(m) = trigger.try_match(stripped) {
                     matches.push((trigger, m));
                 }
             }
@@ -218,40 +221,25 @@ impl TriggerManager {
         matches
     }
 
-    /// 移除 ANSI 轉義碼
-    fn strip_ansi(input: &str) -> String {
-        let mut result = String::with_capacity(input.len());
-        let mut chars = input.chars().peekable();
-
-        while let Some(c) = chars.next() {
-            if c == '\x1b' {
-                // 跳過 CSI 序列
-                if chars.peek() == Some(&'[') {
-                    chars.next();
-                    while let Some(&ch) = chars.peek() {
-                        chars.next();
-                        if ch.is_ascii_alphabetic() {
-                            break;
-                        }
-                    }
-                }
-            } else {
-                result.push(c);
-            }
-        }
-
-        result
+    /// 移除 ANSI 轉義碼（委託至 crate::util::strip_ansi）
+    pub fn strip_ansi(input: &str) -> String {
+        crate::util::strip_ansi(input)
     }
 
     /// 收集需要發送的命令
     pub fn collect_commands(&self, message: &str) -> Vec<String> {
+        let stripped = Self::strip_ansi(message);
+        self.collect_commands_pre_stripped(&stripped)
+    }
+
+    /// 收集需要發送的命令（已去除 ANSI 碼版本）
+    pub fn collect_commands_pre_stripped(&self, stripped: &str) -> Vec<String> {
         let mut commands = Vec::new();
 
-        for (trigger, m) in self.process(message) {
+        for (trigger, m) in self.process_pre_stripped(stripped) {
             for action in &trigger.actions {
                 if let TriggerAction::SendCommand(cmd) = action {
                     let mut expanded = cmd.clone();
-                    // 替換捕獲群組
                     for (i, cap) in m.captures.iter().enumerate() {
                         expanded = expanded.replace(&format!("${}", i + 1), cap);
                     }
@@ -265,7 +253,13 @@ impl TriggerManager {
 
     /// 檢查訊息是否應該被抑制（Gag）
     pub fn should_gag(&self, message: &str) -> bool {
-        for (trigger, _) in self.process(message) {
+        let stripped = Self::strip_ansi(message);
+        self.should_gag_pre_stripped(&stripped)
+    }
+
+    /// 檢查訊息是否應該被抑制（已去除 ANSI 碼版本）
+    pub fn should_gag_pre_stripped(&self, stripped: &str) -> bool {
+        for (trigger, _) in self.process_pre_stripped(stripped) {
             for action in &trigger.actions {
                 if matches!(action, TriggerAction::Gag) {
                     return true;
@@ -338,11 +332,81 @@ mod tests {
     #[test]
     fn test_multiple_triggers() {
         let mut manager = TriggerManager::new();
-        
+
         manager.add(Trigger::new("a", TriggerPattern::Contains("你".to_string())));
         manager.add(Trigger::new("b", TriggerPattern::Contains("金".to_string())));
 
         let matches = manager.process("你獲得金幣");
         assert_eq!(matches.len(), 2);
+    }
+
+    #[test]
+    fn test_process_with_ansi_codes() {
+        let mut manager = TriggerManager::new();
+        manager.add(
+            Trigger::new("hp", TriggerPattern::Contains("你受傷了".to_string()))
+                .add_action(TriggerAction::SendCommand("heal".to_string())),
+        );
+
+        // ANSI colored text should still match after stripping
+        let ansi_text = "\x1b[31m你受傷了\x1b[0m！";
+        let matches = manager.process(ansi_text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].1.trigger_name, "hp");
+    }
+
+    #[test]
+    fn test_process_pre_stripped() {
+        let mut manager = TriggerManager::new();
+        manager.add(
+            Trigger::new("gold", TriggerPattern::Regex(r"獲得\s*(\d+)\s*金".to_string()))
+                .add_action(TriggerAction::SendCommand("echo $1".to_string())),
+        );
+        manager.add(
+            Trigger::new("gag", TriggerPattern::Contains("廣告".to_string()))
+                .add_action(TriggerAction::Gag),
+        );
+
+        // Pre-stripped text should produce same results as process()
+        let ansi_text = "\x1b[33m你獲得 50 金幣\x1b[0m";
+        let stripped = TriggerManager::strip_ansi(ansi_text);
+        let matches_normal = manager.process(ansi_text);
+        let matches_pre = manager.process_pre_stripped(&stripped);
+        assert_eq!(matches_normal.len(), matches_pre.len());
+        assert_eq!(matches_normal[0].1.captures, matches_pre[0].1.captures);
+    }
+
+    #[test]
+    fn test_strip_ansi() {
+        assert_eq!(TriggerManager::strip_ansi("\x1b[31mRed\x1b[0m"), "Red");
+        assert_eq!(TriggerManager::strip_ansi("No ANSI"), "No ANSI");
+        assert_eq!(TriggerManager::strip_ansi("\x1b[1;33m粗體黃\x1b[0m"), "粗體黃");
+        assert_eq!(TriggerManager::strip_ansi(""), "");
+    }
+
+    #[test]
+    fn test_should_gag_pre_stripped() {
+        let mut manager = TriggerManager::new();
+        manager.add(
+            Trigger::new("gag_spam", TriggerPattern::Contains("廣告".to_string()))
+                .add_action(TriggerAction::Gag),
+        );
+
+        let stripped = "這是一則廣告訊息";
+        assert!(manager.should_gag_pre_stripped(stripped));
+        assert!(!manager.should_gag_pre_stripped("正常訊息"));
+    }
+
+    #[test]
+    fn test_collect_commands_pre_stripped() {
+        let mut manager = TriggerManager::new();
+        manager.add(
+            Trigger::new("gold", TriggerPattern::Regex(r"獲得\s*(\d+)\s*金".to_string()))
+                .add_action(TriggerAction::SendCommand("echo $1 gold".to_string())),
+        );
+
+        let stripped = "你獲得 50 金幣";
+        let commands = manager.collect_commands_pre_stripped(stripped);
+        assert_eq!(commands, vec!["echo 50 gold"]);
     }
 }

@@ -754,8 +754,8 @@ impl MudApp {
                     if Instant::now() >= until {
                         to_reconnect.push(session.id);
                     } else {
-                        // 持續刷新 UI 以更新倒數顯示
-                        ctx.request_repaint();
+                        // 每秒刷新一次以更新倒數顯示，避免 CPU 空轉
+                        ctx.request_repaint_after(std::time::Duration::from_secs(1));
                     }
                 }
             }
@@ -859,9 +859,13 @@ impl MudApp {
                 continue;
             }
 
-            // 找到對應的 Session 並執行
+            // 找到對應的 Session 並執行（直接用數值比較，避免 String 分配）
+            let session_id_num: u64 = match session_key.parse() {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
             let session = self.session_manager.sessions_mut().iter_mut()
-                .find(|s| s.id.value().to_string() == session_key);
+                .find(|s| s.id.value() == session_id_num);
             
             if let Some(session) = session {
                 for cmd in commands {
@@ -931,6 +935,7 @@ impl MudApp {
                 let mut pending_trailing_space: f32 = 0.0; // 用於置中對齊：記錄上一個字元的後半部間距
                 // 字型寬度快取 — 避免每個字元都查字型系統
                 let mut glyph_cache: std::collections::HashMap<(char, bool), f32> = std::collections::HashMap::new();
+                let mut char_buf = String::with_capacity(4); // 重用 buffer 避免每字元分配
 
                 if let Some(window) = session.window_manager.get(active_window_id) {
                     // 只渲染最近 N 條訊息以避免效能問題
@@ -972,8 +977,9 @@ impl MudApp {
                                     if ch == '\n' || ch == '\r' {
                                         let fmt = egui::TextFormat { font_id: current_font_id.clone(), color: render_color, background, italics, line_height: Some(font_size + 4.0), ..Default::default() };
                                         section_fg_colors.push(render_color);
-                                        main_job.append(&ch.to_string(), pending_trailing_space, fmt.clone());
-                                        overlay_job.append(&ch.to_string(), pending_trailing_space, egui::TextFormat { color: Color32::TRANSPARENT, background: Color32::TRANSPARENT, ..fmt });
+                                        char_buf.clear(); char_buf.push(ch);
+                                        main_job.append(&char_buf, pending_trailing_space, fmt.clone());
+                                        overlay_job.append(&char_buf, pending_trailing_space, egui::TextFormat { color: Color32::TRANSPARENT, background: Color32::TRANSPARENT, ..fmt });
                                         pending_trailing_space = 0.0;
                                         continue;
                                     }
@@ -1028,8 +1034,9 @@ impl MudApp {
                                         ..Default::default()
                                     };
                                     section_fg_colors.push(char_color);
-                                    main_job.append(&ch.to_string(), current_leading, fmt.clone());
-                                    overlay_job.append(&ch.to_string(), current_leading, egui::TextFormat { color: Color32::TRANSPARENT, background: Color32::TRANSPARENT, ..fmt });
+                                    char_buf.clear(); char_buf.push(ch);
+                                    main_job.append(&char_buf, current_leading, fmt.clone());
+                                    overlay_job.append(&char_buf, current_leading, egui::TextFormat { color: Color32::TRANSPARENT, background: Color32::TRANSPARENT, ..fmt });
                                 }
                                 continue;
                             }
@@ -1039,8 +1046,9 @@ impl MudApp {
                                 if ch == '\n' || ch == '\r' {
                                     let fmt = egui::TextFormat { font_id: current_font_id.clone(), color: render_color, background, italics, line_height: Some(font_size + 4.0), ..Default::default() };
                                     section_fg_colors.push(render_color);
-                                    main_job.append(&ch.to_string(), pending_trailing_space, fmt.clone());
-                                    overlay_job.append(&ch.to_string(), pending_trailing_space, egui::TextFormat { color: Color32::TRANSPARENT, background: Color32::TRANSPARENT, ..fmt });
+                                    char_buf.clear(); char_buf.push(ch);
+                                    main_job.append(&char_buf, pending_trailing_space, fmt.clone());
+                                    overlay_job.append(&char_buf, pending_trailing_space, egui::TextFormat { color: Color32::TRANSPARENT, background: Color32::TRANSPARENT, ..fmt });
                                     pending_trailing_space = 0.0;
                                     continue;
                                 }
@@ -1095,16 +1103,18 @@ impl MudApp {
                                     overlay_fmt.background = Color32::TRANSPARENT;
                                     
                                     section_fg_colors.push(render_color);
-                                    main_job.append(&ch.to_string(), current_leading, format);
-                                    overlay_job.append(&ch.to_string(), current_leading, overlay_fmt);
+                                    char_buf.clear(); char_buf.push(ch);
+                                    main_job.append(&char_buf, current_leading, format);
+                                    overlay_job.append(&char_buf, current_leading, overlay_fmt);
                                 } else {
                                     let mut overlay_fmt = format.clone();
                                     overlay_fmt.color = Color32::TRANSPARENT;
                                     overlay_fmt.background = Color32::TRANSPARENT;
-                                    
+
                                     section_fg_colors.push(render_color);
-                                    main_job.append(&ch.to_string(), current_leading, format);
-                                    overlay_job.append(&ch.to_string(), current_leading, overlay_fmt);
+                                    char_buf.clear(); char_buf.push(ch);
+                                    main_job.append(&char_buf, current_leading, format);
+                                    overlay_job.append(&char_buf, current_leading, overlay_fmt);
                                 }
                             }
                         }
@@ -1182,7 +1192,7 @@ impl MudApp {
                             clipped.text(
                                 egui::pos2(x + w * 0.5, y + h * 0.5),
                                 egui::Align2::CENTER_CENTER,
-                                ch.to_string(),
+                                ch,
                                 box_font.clone(),
                                 fg_color,
                             );
@@ -1286,9 +1296,9 @@ impl MudApp {
 
                 // 記錄歷史 (原始輸入)
                 if !raw_input.is_empty() {
-                    session.input_history.push(raw_input.clone());
+                    session.input_history.push_back(raw_input.clone());
                     if session.input_history.len() > 1000 {
-                        session.input_history.remove(0);
+                        session.input_history.pop_front();
                     }
                 }
                 session.history_index = None;

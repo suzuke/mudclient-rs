@@ -1,7 +1,7 @@
 use mlua::Lua;
 use std::collections::HashMap;
 use thiserror::Error;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 /// 腳本執行錯誤
 #[derive(Debug, Error)]
@@ -89,6 +89,8 @@ pub struct ScriptEngine {
     scripts_dir: Option<String>,
     /// 當前房間 (Thread-local storage concept within engine)
     current_room: RefCell<Option<crate::map::Room>>,
+    /// dofile/package.path 是否已設定（避免每次 run_code 重複執行）
+    dofile_initialized: Cell<bool>,
 }
 
 impl ScriptEngine {
@@ -101,6 +103,7 @@ impl ScriptEngine {
             persistent_vars: RefCell::new(HashMap::new()),
             scripts_dir: None,
             current_room: RefCell::new(None),
+            dofile_initialized: Cell::new(false),
         }
     }
 
@@ -126,15 +129,22 @@ impl ScriptEngine {
 
     /// 展開變數 (將 $var 替換為變數值)
     pub fn expand_variables(&self, text: &str) -> String {
-        let mut result = text.to_string();
+        if !text.contains('$') {
+            return text.to_string();
+        }
         let vars = self.persistent_vars.borrow();
+        if vars.is_empty() {
+            return text.to_string();
+        }
+        let mut result = text.to_string();
         // 按 key 長度降序排列，避免 $hp 先於 $hp_max 被替換
         let mut sorted_vars: Vec<_> = vars.iter().collect();
         sorted_vars.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
         for (key, value) in sorted_vars {
             let placeholder = format!("${}", key);
-            if result.contains(&placeholder) {
-                result = result.replace(&placeholder, value);
+            // replace 會在無匹配時直接返回原字串的 clone，故先 contains 檢查避免無謂分配
+            if result.contains(placeholder.as_str()) {
+                result = result.replace(placeholder.as_str(), value);
             }
         }
         result
@@ -494,57 +504,55 @@ impl ScriptEngine {
             }
             self.lua.globals().set("captures", captures_table)?;
 
-            // 覆寫 dofile：支援從 scripts_dir 查找腳本
-            if let Some(dir) = &self.scripts_dir {
-                self.lua.globals().set("__scripts_dir", dir.as_str())?;
-                
-                // 更新 package.path 以支援 require
-                let update_path = self.lua.load(r#"
-                    local path_sep = package.config:sub(1,1)
-                    local scripts_path = __scripts_dir .. path_sep .. "?.lua"
-                    local scripts_init = __scripts_dir .. path_sep .. "?" .. path_sep .. "init.lua"
-                    
-                    if not string.find(package.path, scripts_path, 1, true) then
-                        package.path = package.path .. ";" .. scripts_path .. ";" .. scripts_init
-                    end
-                "#).exec();
-                if let Err(e) = update_path {
-                    tracing::warn!("Failed to update package.path: {}", e);
-                }
+            // 覆寫 dofile：支援從 scripts_dir 查找腳本（僅首次設定）
+            if !self.dofile_initialized.get() {
+                if let Some(dir) = &self.scripts_dir {
+                    self.lua.globals().set("__scripts_dir", dir.as_str())?;
 
-                let custom_dofile = self.lua.load(r#"
-                    local original_dofile = dofile
-                    function dofile(path)
-                        -- 如果檔案已存在，直接執行
-                        local f = io.open(path, "r")
-                        if f then
-                            f:close()
-                            return original_dofile(path)
+                    let update_path = self.lua.load(r#"
+                        local path_sep = package.config:sub(1,1)
+                        local scripts_path = __scripts_dir .. path_sep .. "?.lua"
+                        local scripts_init = __scripts_dir .. path_sep .. "?" .. path_sep .. "init.lua"
+
+                        if not string.find(package.path, scripts_path, 1, true) then
+                            package.path = package.path .. ";" .. scripts_path .. ";" .. scripts_init
                         end
-                        -- 嘗試從 scripts_dir 查找
-                        local full = __scripts_dir .. "/" .. path
-                        f = io.open(full, "r")
-                        if f then
-                            f:close()
-                            return original_dofile(full)
-                        end
-                        -- 嘗試只用檔名 (basename)
-                        local basename = path:match("([^/\\]+)$") or path
-                        if basename ~= path then
-                            full = __scripts_dir .. "/" .. basename
+                    "#).exec();
+                    if let Err(e) = update_path {
+                        tracing::warn!("Failed to update package.path: {}", e);
+                    }
+
+                    let custom_dofile = self.lua.load(r#"
+                        local original_dofile = dofile
+                        function dofile(path)
+                            local f = io.open(path, "r")
+                            if f then
+                                f:close()
+                                return original_dofile(path)
+                            end
+                            local full = __scripts_dir .. "/" .. path
                             f = io.open(full, "r")
                             if f then
                                 f:close()
                                 return original_dofile(full)
                             end
+                            local basename = path:match("([^/\\]+)$") or path
+                            if basename ~= path then
+                                full = __scripts_dir .. "/" .. basename
+                                f = io.open(full, "r")
+                                if f then
+                                    f:close()
+                                    return original_dofile(full)
+                                end
+                            end
+                            return original_dofile(path)
                         end
-                        -- 回退到原始 dofile（會拋出錯誤）
-                        return original_dofile(path)
-                    end
-                "#).exec();
-                if let Err(e) = custom_dofile {
-                    tracing::warn!("Failed to override dofile: {}", e);
+                    "#).exec();
+                    if let Err(e) = custom_dofile {
+                        tracing::warn!("Failed to override dofile: {}", e);
+                    }
                 }
+                self.dofile_initialized.set(true);
             }
             
             // 執行腳本
@@ -754,11 +762,98 @@ end
     #[test]
     fn test_script_validation() {
         let engine = ScriptEngine::new();
-        
-        // 有效語法
+
         assert!(engine.validate("local x = 1 + 2").is_ok());
-        
-        // 無效語法
         assert!(engine.validate("function broken(").is_err());
+    }
+
+    #[test]
+    fn test_persistent_vars_across_calls() {
+        let engine = ScriptEngine::new();
+
+        // First call: set a variable
+        let ctx1 = engine.execute_inline(
+            r#"mud.variables.hp = "100""#,
+            "", &[], false,
+        ).unwrap();
+        assert_eq!(ctx1.variables.get("hp").unwrap(), "100");
+
+        // Second call: variable should persist
+        let ctx2 = engine.execute_inline(
+            r#"mud.send(mud.variables.hp)"#,
+            "", &[], false,
+        ).unwrap();
+        assert_eq!(ctx2.commands, vec!["100"]);
+    }
+
+    #[test]
+    fn test_expand_variables() {
+        let engine = ScriptEngine::new();
+
+        // Set variables
+        engine.execute_inline(
+            r#"mud.variables.target = "dragon"; mud.variables.target_id = "mob123""#,
+            "", &[], false,
+        ).unwrap();
+
+        // Longer key should be replaced first ($target_id before $target)
+        let result = engine.expand_variables("kill $target_id then $target");
+        assert_eq!(result, "kill mob123 then dragon");
+    }
+
+    #[test]
+    fn test_dofile_setup_cached() {
+        let mut engine = ScriptEngine::new();
+        engine.set_scripts_dir("/tmp/test_scripts");
+
+        // Execute twice — should not fail even with missing scripts_dir
+        let r1 = engine.execute_inline("local x = 1", "", &[], false);
+        assert!(r1.is_ok());
+        let r2 = engine.execute_inline("local y = 2", "", &[], false);
+        assert!(r2.is_ok());
+    }
+
+    #[test]
+    fn test_multiple_rapid_executions() {
+        let engine = ScriptEngine::new();
+
+        // Simulate rapid trigger firing
+        for i in 0..100 {
+            let code = format!(r#"mud.send("cmd_{}")"#, i);
+            let ctx = engine.execute_inline(&code, "test message", &[], false).unwrap();
+            assert_eq!(ctx.commands.len(), 1);
+            assert_eq!(ctx.commands[0], format!("cmd_{}", i));
+        }
+    }
+
+    #[test]
+    fn test_invoke_hook() {
+        let engine = ScriptEngine::new();
+
+        // Define a hook
+        engine.execute_inline(
+            r#"function on_server_message(msg, clean, is_echo)
+                if string.find(clean, "gold") then
+                    mud.send("count gold")
+                end
+            end"#,
+            "", &[], false,
+        ).unwrap();
+
+        // Invoke hook
+        let result = engine.invoke_hook("on_server_message", "You got gold!", "You got gold!", false).unwrap();
+        assert!(result.is_some());
+        let ctx = result.unwrap();
+        assert_eq!(ctx.commands, vec!["count gold"]);
+
+        // Non-matching hook
+        let result2 = engine.invoke_hook("on_server_message", "hello", "hello", false).unwrap();
+        assert!(result2.is_some());
+        let ctx2 = result2.unwrap();
+        assert!(ctx2.commands.is_empty());
+
+        // Non-existent hook
+        let result3 = engine.invoke_hook("on_nonexistent", "", "", false).unwrap();
+        assert!(result3.is_none());
     }
 }
