@@ -13,6 +13,7 @@
 pub mod alias;
 pub mod buffer;
 pub mod encoding;
+pub mod event;
 pub mod logger;
 pub mod map;
 pub mod paths;
@@ -24,6 +25,7 @@ pub mod util;
 pub mod window;
 
 pub use alias::{Alias, AliasManager};
+pub use event::EventBus;
 pub use buffer::MessageBuffer;
 pub use encoding::{decode_big5, encode_big5};
 pub use logger::{LogFormat, Logger};
