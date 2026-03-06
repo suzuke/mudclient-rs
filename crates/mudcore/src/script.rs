@@ -71,6 +71,13 @@ pub struct MudContext {
 
     /// Trigger group updates: (group_name, enabled)
     pub group_updates: Vec<(String, bool)>,
+
+    /// State machine definitions: (name, initial, states_json, transitions_json)
+    pub state_machine_defs: Vec<(String, String, String, String)>,
+    /// State machine manual transitions: (machine_name, event_name)
+    pub state_machine_transitions: Vec<(String, String)>,
+    /// State machine resets: machine_name
+    pub state_machine_resets: Vec<String>,
 }
 
 /// LLM 非同步請求
@@ -316,6 +323,16 @@ impl ScriptEngine {
             // Group updates table
             let group_updates = self.lua.create_table()?;
             mud.set("_group_updates", group_updates)?;
+
+            // State machine tables
+            let sm_defs = self.lua.create_table()?;
+            mud.set("_sm_defs", sm_defs)?;
+            let sm_transitions = self.lua.create_table()?;
+            mud.set("_sm_transitions", sm_transitions)?;
+            let sm_resets = self.lua.create_table()?;
+            mud.set("_sm_resets", sm_resets)?;
+            let sm_states = self.lua.create_table()?;
+            mud.set("_sm_states", sm_states)?;
 
             // gag 標記
             mud.set("gag", false)?;
@@ -590,6 +607,89 @@ impl ScriptEngine {
             })?;
             mud.set("emit", emit_fn)?;
 
+            // mud.state_machine(name, definition)
+            // definition = { initial = "state", states = { state = { enter = "code", exit = "code", timeout = {seconds=N, goto="state"} } }, transitions = { {from=, event=, to=} } }
+            let sm_fn = scope.create_function_mut(|lua, (name, def): (String, mlua::Table)| {
+                let mud: mlua::Table = lua.globals().get("mud")?;
+                let defs: mlua::Table = mud.get("_sm_defs")?;
+
+                let initial: String = def.get("initial")?;
+                let states_table: mlua::Table = def.get("states")?;
+
+                // Serialize states to JSON
+                let mut states_map = serde_json::Map::new();
+                for pair in states_table.pairs::<String, mlua::Table>() {
+                    let (state_name, state_def) = pair?;
+                    let mut obj = serde_json::Map::new();
+                    if let Ok(enter) = state_def.get::<String>("enter") { obj.insert("enter".into(), serde_json::Value::String(enter)); }
+                    if let Ok(exit) = state_def.get::<String>("exit") { obj.insert("exit".into(), serde_json::Value::String(exit)); }
+                    if let Ok(timeout) = state_def.get::<mlua::Table>("timeout") {
+                        if let (Ok(secs), Ok(goto)) = (timeout.get::<f64>("seconds"), timeout.get::<String>("goto")) {
+                            obj.insert("timeout_secs".into(), serde_json::json!(secs));
+                            obj.insert("timeout_goto".into(), serde_json::Value::String(goto));
+                        }
+                    }
+                    states_map.insert(state_name, serde_json::Value::Object(obj));
+                }
+
+                // Serialize transitions
+                let trans_table: mlua::Table = def.get("transitions")?;
+                let mut trans_arr = Vec::new();
+                for i in 1..=trans_table.len()? {
+                    let t: mlua::Table = trans_table.get(i)?;
+                    trans_arr.push(serde_json::json!({
+                        "from": t.get::<String>("from")?,
+                        "event": t.get::<String>("event")?,
+                        "to": t.get::<String>("to")?,
+                    }));
+                }
+
+                let len = defs.len()? + 1;
+                let entry = lua.create_table()?;
+                entry.set(1, name.clone())?;
+                entry.set(2, initial)?;
+                entry.set(3, serde_json::Value::Object(states_map).to_string())?;
+                entry.set(4, serde_json::Value::Array(trans_arr).to_string())?;
+                defs.set(len, entry)?;
+                Ok(name)
+            })?;
+            mud.set("state_machine", sm_fn)?;
+
+            // mud.sm_current(name) -> state string or nil
+            let sm_current_fn = scope.create_function(|lua, name: String| {
+                let mud: mlua::Table = lua.globals().get("mud")?;
+                if let Ok(states) = mud.get::<mlua::Table>("_sm_states") {
+                    let state: Option<String> = states.get(name).ok();
+                    Ok(state)
+                } else {
+                    Ok(None)
+                }
+            })?;
+            mud.set("sm_current", sm_current_fn)?;
+
+            // mud.sm_transition(name, event)
+            let sm_trans_fn = scope.create_function_mut(|lua, (name, event): (String, String)| {
+                let mud: mlua::Table = lua.globals().get("mud")?;
+                let transitions: mlua::Table = mud.get("_sm_transitions")?;
+                let len = transitions.len()? + 1;
+                let entry = lua.create_table()?;
+                entry.set(1, name)?;
+                entry.set(2, event)?;
+                transitions.set(len, entry)?;
+                Ok(())
+            })?;
+            mud.set("sm_transition", sm_trans_fn)?;
+
+            // mud.sm_reset(name)
+            let sm_reset_fn = scope.create_function_mut(|lua, name: String| {
+                let mud: mlua::Table = lua.globals().get("mud")?;
+                let resets: mlua::Table = mud.get("_sm_resets")?;
+                let len = resets.len()? + 1;
+                resets.set(len, name)?;
+                Ok(())
+            })?;
+            mud.set("sm_reset", sm_reset_fn)?;
+
             // 設置全局變數
             self.lua.globals().set("mud", mud)?;
             self.lua.globals().set("message", message)?;
@@ -828,6 +928,40 @@ impl ScriptEngine {
                             let data = entry.get::<Option<String>>(2).unwrap_or(None);
                             context.event_emissions.push((name, data));
                         }
+                    }
+                }
+            }
+
+            // 收集 state machine definitions
+            if let Ok(defs) = mud.get::<mlua::Table>("_sm_defs") {
+                for pair in defs.pairs::<i64, mlua::Table>() {
+                    if let Ok((_, entry)) = pair {
+                        if let (Ok(name), Ok(initial), Ok(states_json), Ok(trans_json)) = (
+                            entry.get::<String>(1), entry.get::<String>(2),
+                            entry.get::<String>(3), entry.get::<String>(4),
+                        ) {
+                            context.state_machine_defs.push((name, initial, states_json, trans_json));
+                        }
+                    }
+                }
+            }
+
+            // 收集 state machine transitions
+            if let Ok(transitions) = mud.get::<mlua::Table>("_sm_transitions") {
+                for pair in transitions.pairs::<i64, mlua::Table>() {
+                    if let Ok((_, entry)) = pair {
+                        if let (Ok(name), Ok(event)) = (entry.get::<String>(1), entry.get::<String>(2)) {
+                            context.state_machine_transitions.push((name, event));
+                        }
+                    }
+                }
+            }
+
+            // 收集 state machine resets
+            if let Ok(resets) = mud.get::<mlua::Table>("_sm_resets") {
+                for pair in resets.pairs::<i64, String>() {
+                    if let Ok((_, name)) = pair {
+                        context.state_machine_resets.push(name);
                     }
                 }
             }

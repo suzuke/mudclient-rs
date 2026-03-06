@@ -263,6 +263,9 @@ pub struct Session {
     /// 事件匯流排
     pub event_bus: mudcore::EventBus,
 
+    /// 狀態機管理器
+    pub state_machines: mudcore::StateMachineManager,
+
     /// 內建地圖資料庫（Rust 原生 MudMapper）
     pub map_database: MapDatabase,
     /// 上次自動儲存時的 map data_version
@@ -494,6 +497,7 @@ impl Session {
             server_buffer: std::collections::VecDeque::with_capacity(40),
             api_state,
             event_bus: mudcore::EventBus::new(),
+            state_machines: mudcore::StateMachineManager::new(),
             map_database: {
                 let map_path = std::path::Path::new("data/mapper_data.json");
                 if map_path.exists() {
@@ -1104,6 +1108,12 @@ impl Session {
                 }
             }
         }
+
+        // Check state machine timeouts
+        let timeout_results = self.state_machines.check_timeouts();
+        for (machine_name, result) in timeout_results {
+            self.execute_transition_callbacks(&machine_name, result);
+        }
     }
 
     /// 載入並執行 scripts/ 目錄下的所有 .lua 腳本
@@ -1321,6 +1331,62 @@ impl Session {
         for (name, data) in context.event_emissions {
             self.emit_event(&name, data);
         }
+
+        // 13. State machine definitions
+        for (name, initial, states_json, trans_json) in context.state_machine_defs {
+            if let (Ok(states_val), Ok(trans_val)) = (
+                serde_json::from_str::<serde_json::Value>(&states_json),
+                serde_json::from_str::<serde_json::Value>(&trans_json),
+            ) {
+                let mut states = HashMap::new();
+                if let Some(obj) = states_val.as_object() {
+                    for (sname, sdef) in obj {
+                        states.insert(sname.clone(), mudcore::state_machine::State {
+                            name: sname.clone(),
+                            enter_code: sdef.get("enter").and_then(|v| v.as_str()).map(String::from),
+                            exit_code: sdef.get("exit").and_then(|v| v.as_str()).map(String::from),
+                            timeout_secs: sdef.get("timeout_secs").and_then(|v| v.as_f64()),
+                            timeout_goto: sdef.get("timeout_goto").and_then(|v| v.as_str()).map(String::from),
+                        });
+                    }
+                }
+                let mut transitions = Vec::new();
+                if let Some(arr) = trans_val.as_array() {
+                    for t in arr {
+                        if let (Some(from), Some(event), Some(to)) = (
+                            t.get("from").and_then(|v| v.as_str()),
+                            t.get("event").and_then(|v| v.as_str()),
+                            t.get("to").and_then(|v| v.as_str()),
+                        ) {
+                            transitions.push(mudcore::state_machine::Transition {
+                                from: from.to_string(), event: event.to_string(), to: to.to_string(),
+                            });
+                        }
+                    }
+                }
+                let sm = mudcore::StateMachine::new(name.clone(), initial, states, transitions);
+                tracing::info!("State machine '{}' created, initial state: '{}'", name, sm.current_state());
+                self.state_machines.add(sm);
+            }
+        }
+
+        // 14. State machine manual transitions
+        for (name, event) in context.state_machine_transitions {
+            if let Some(sm) = self.state_machines.get_mut(&name) {
+                if let Some(result) = sm.handle_event(&event) {
+                    self.execute_transition_callbacks(&name, result);
+                }
+            }
+        }
+
+        // 15. State machine resets
+        for name in context.state_machine_resets {
+            if let Some(sm) = self.state_machines.get_mut(&name) {
+                if let Some(result) = sm.reset() {
+                    self.execute_transition_callbacks(&name, result);
+                }
+            }
+        }
     }
 
     /// 觸發事件並執行所有 handler
@@ -1341,6 +1407,40 @@ impl Session {
                 }
             }
         }
+
+        // Broadcast to state machines (skip state_changed to avoid infinite loop)
+        if event_name != "state_changed" {
+            let transitions = self.state_machines.handle_event(event_name);
+            for (machine_name, result) in transitions {
+                self.execute_transition_callbacks(&machine_name, result);
+            }
+        }
+    }
+
+    /// Execute state machine transition callbacks (exit then enter)
+    fn execute_transition_callbacks(&mut self, machine_name: &str, result: mudcore::state_machine::TransitionResult) {
+        tracing::info!("[SM:{}] {} -> {}", machine_name, result.old_state, result.new_state);
+
+        // Execute exit callback
+        if let Some(code) = result.exit_code {
+            match self.script_engine.execute_inline(&code, "", &[], false) {
+                Ok(ctx) => self.apply_script_context(ctx),
+                Err(e) => tracing::error!("[SM:{}] exit callback error: {}", machine_name, e),
+            }
+        }
+
+        // Execute enter callback
+        if let Some(code) = result.enter_code {
+            match self.script_engine.execute_inline(&code, "", &[], false) {
+                Ok(ctx) => self.apply_script_context(ctx),
+                Err(e) => tracing::error!("[SM:{}] enter callback error: {}", machine_name, e),
+            }
+        }
+
+        // Emit state_changed event
+        let data = format!(r#"{{"machine":"{}","old":"{}","new":"{}"}}"#,
+            machine_name, result.old_state, result.new_state);
+        self.emit_event("state_changed", Some(data));
     }
 
     /// 派發 LLM 請求：透過 api_state 排入 pending_lua，由 tokio 非同步執行
