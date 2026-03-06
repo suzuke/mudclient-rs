@@ -807,6 +807,7 @@ impl MudApp {
                                     let info = text.replace(">>> 已連線到 ", "").replace("\n", "");
                                     session.status = SessionStatus::Connected(info.clone());
                                     session.connected_at = Some(Instant::now());
+                                    session.emit_event("connected", Some(format!(r#"{{"server":"{}"}}"#, info)));
                                     if let Ok(mut api) = session.api_state.lock() {
                                         api.connection_status = format!("connected:{}", info);
                                     }
@@ -821,6 +822,7 @@ impl MudApp {
                                         }
                                     } else {
                                         session.status = SessionStatus::Disconnected;
+                                        session.emit_event("disconnected", None);
                                         if let Ok(mut api) = session.api_state.lock() {
                                             api.connection_status = "disconnected".to_string();
                                         }

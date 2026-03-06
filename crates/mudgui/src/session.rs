@@ -260,6 +260,9 @@ pub struct Session {
     /// API 共享狀態（供 HTTP API 使用）
     pub api_state: SharedApiState,
 
+    /// 事件匯流排
+    pub event_bus: mudcore::EventBus,
+
     /// 內建地圖資料庫（Rust 原生 MudMapper）
     pub map_database: MapDatabase,
     /// 上次自動儲存時的 map data_version
@@ -490,6 +493,7 @@ impl Session {
             line_buffer: std::collections::VecDeque::with_capacity(20),
             server_buffer: std::collections::VecDeque::with_capacity(40),
             api_state,
+            event_bus: mudcore::EventBus::new(),
             map_database: {
                 let map_path = std::path::Path::new("data/mapper_data.json");
                 if map_path.exists() {
@@ -1059,6 +1063,10 @@ impl Session {
             }
         }
 
+        // Emit room_changed event
+        let event_data = format!(r#"{{"id":"{}","name":"{}"}}"#, id, name.replace('"', "\\\""));
+        self.emit_event("room_changed", Some(event_data));
+
         // [結構性修復] 偵測成功後清空 server_buffer，保留出口行作為下次的錨點
         // 這樣出口之後的 NPC/玩家行不會殘留在 buffer 中，汙染下次房間偵測
         self.server_buffer.clear();
@@ -1286,6 +1294,41 @@ impl Session {
         // 9. LLM 請求（非同步呼叫 Anthropic API）
         for req in context.llm_requests {
             self.dispatch_llm_request(req);
+        }
+
+        // 10. Event handler registrations
+        for (name, code, priority, once) in context.event_registrations {
+            self.event_bus.on(&name, code, priority, once);
+        }
+
+        // 11. Event handler removals
+        for id in context.event_removals {
+            self.event_bus.off(id);
+        }
+
+        // 12. Event emissions
+        for (name, data) in context.event_emissions {
+            self.emit_event(&name, data);
+        }
+    }
+
+    /// 觸發事件並執行所有 handler
+    pub fn emit_event(&mut self, event_name: &str, data: Option<String>) {
+        let handlers = self.event_bus.emit(event_name, data.clone());
+        for (_id, lua_code) in handlers {
+            // Set event_data global before executing handler
+            let setup = if let Some(ref d) = data {
+                format!("event_data = [==[{}]==]", d)
+            } else {
+                "event_data = nil".to_string()
+            };
+            let full_code = format!("{}\n{}", setup, lua_code);
+            match self.script_engine.execute_inline(&full_code, "", &[], false) {
+                Ok(ctx) => self.apply_script_context(ctx),
+                Err(e) => {
+                    tracing::error!("Event handler error for '{}': {}", event_name, e);
+                }
+            }
         }
     }
 
@@ -2261,6 +2304,10 @@ impl Session {
             if let Ok(Some(context)) = self.script_engine.invoke_hook("on_command", &input, &input, false) {
                  self.apply_script_context(context);
             }
+
+            // Emit command_sent event
+            let event_data = format!(r#"{{"command":"{}"}}"#, input.replace('\\', "\\\\").replace('"', "\\\""));
+            self.emit_event("command_sent", Some(event_data));
 
             let _ = tx.blocking_send(crate::session::Command::Send(input.to_string()));
             tracing::info!("[DEBUG] Command sent to channel: '{}'", input);
