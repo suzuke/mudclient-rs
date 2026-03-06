@@ -626,9 +626,10 @@ impl MudApp {
 
                                                             // === Phase 1: Drain — 讀盡管線中所有待處理的回應 ===
                                                             // 所有前序指令已發送，等待它們的回應全部到達
+                                                            // 使用 500ms timeout 確保高延遲網路下也能完整 drain
                                                             loop {
                                                                 match tokio::time::timeout(
-                                                                    std::time::Duration::from_millis(300),
+                                                                    std::time::Duration::from_millis(500),
                                                                     client.read_with_widths()
                                                                 ).await {
                                                                     Ok(Ok((text, widths))) if !text.is_empty() => {

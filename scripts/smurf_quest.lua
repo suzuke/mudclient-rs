@@ -38,6 +38,9 @@ local CONSTANTS = {
     TIMER_RETRY_SUMMON = 3.0,
     TIMER_WATCHDOG_CHECK = 30.0,
     TIMER_LOOP_RESTART = 10.0,
+    TIMER_COMBAT_ROUND = 4.0,
+    COMBAT_V_THRESHOLD = 120,   -- 大地之斬所需移動力
+    COMBAT_MA_REFRESH = 40,     -- refresh 所需法力
 }
 
 -- ===== 正則表達式 =====
@@ -76,7 +79,7 @@ local QUEST_STEPS = {
     {name="summon_papa_1",  cmds={},          expect="__SIGNAL__:summon_papa_1"},
     {name="talk_papa_yes",  cmds={"ta papa yes"}, expect=PATTERNS.PAPA_GIVE_KEY},
     {name="go_castle_gate", cmds={"n"},       expect="賈不妙的城堡外"},
-    {name="enter_castle",   cmds={},          expect="賈不妙的城堡"},
+    {name="enter_castle",   cmds={},          expect="他的大鍋放在房間的中央"},
     {name="kill_gargamel",  cmds={},          expect="__SIGNAL__:kill_gargamel"},
     {name="get_wand",       cmds={},          expect="__SIGNAL__:get_wand"},
     {name="summon_papa_2",  cmds={},          expect="__SIGNAL__:summon_papa_2"},
@@ -108,6 +111,7 @@ function _G.SmurfQuest.reset_state()
     s.watchdog_enabled = false
     s.loop_mode = preserve_loop
     s.step_completed = false
+    s.combat_finished = false
     s.corpse_count = 0
     s.looting_active = false
     s.check_targets = {}
@@ -121,6 +125,14 @@ end
 
 function _G.SmurfQuest.update_activity()
     _G.SmurfQuest.state.last_activity = os.time()
+end
+
+local function cleanup_state()
+    local s = _G.SmurfQuest.state
+    s.running = false
+    s.watchdog_enabled = false
+    MudNav.state.walking = false
+    MudUtils.stop_log()
 end
 
 -- ===== 核心輔助 =====
@@ -234,35 +246,70 @@ function step_handlers.kill_gargamel(rid)
     local s = _G.SmurfQuest.state
     _G.SmurfQuest.echo("⚔️ 準備戰鬥：偵測賈不妙是否在場...")
     s.combat_target = "gargamel"
+    s.current_v = 0
+    s.current_ma = 0
     mud.send("l")
-    
+
     MudUtils.safe_timer(1.0, function(new_rid)
         if not MudUtils.check_run(new_rid) then return end
         if not s.target_found then
             _G.SmurfQuest.echo("❌ 賈不妙不在城堡內！停止任務。")
             _G.SmurfQuest.stop()
         else
-            _G.SmurfQuest.echo("💥 賈不妙在場，發動攻擊！")
-            mud.send("c sa")
+            _G.SmurfQuest.echo("💥 賈不妙在場，開始戰鬥！")
             mud.send("kill gargamel")
-            
-            -- 技能循環：每 4 秒施放一次，死亡時 expect 會觸發信號推進
-            local function combat_loop(loop_rid)
-                if not MudUtils.check_run(loop_rid) or not _G.SmurfQuest.state.running then return end
-                local current_step = QUEST_STEPS[_G.SmurfQuest.state.step_index]
-                if not current_step or current_step.name ~= "kill_gargamel" then return end
-                if _G.SmurfQuest.state.step_completed then return end  -- 已擊殺，停止循環
-                mud.send("ear gargamel")
-                MudUtils.safe_timer(4.0, combat_loop)
-            end
-            combat_loop(new_rid)
+            -- 先用 collect_response 查狀態，再決定首輪行動
+            _G.SmurfQuest._combat_round()
+        end
+    end)
+end
+
+-- 戰鬥回合：collect_response("report") → 解析狀態 → 決策 → 排下一輪
+function _G.SmurfQuest._combat_round()
+    local s = _G.SmurfQuest.state
+    if not s.running or s.combat_finished then return end
+    local current_step = QUEST_STEPS[s.step_index]
+    if not current_step or current_step.name ~= "kill_gargamel" then return end
+
+    mud.collect_response("report", "_G.SmurfQuest._on_combat_report()")
+end
+
+function _G.SmurfQuest._on_combat_report()
+    local s = _G.SmurfQuest.state
+    if not s.running or s.combat_finished then return end
+    local current_step = QUEST_STEPS[s.step_index]
+    if not current_step or current_step.name ~= "kill_gargamel" then return end
+
+    -- 解析 report 回應
+    local lines = _G._collected_lines or {}
+    for _, line in ipairs(lines) do
+        if line:find("你報告自己的狀況", 1, true) then
+            local ma = line:match("(%d+)/%d+ 精神力")
+            local v  = line:match("(%d+)/%d+ 移動力")
+            if ma then s.current_ma = tonumber(ma) end
+            if v  then s.current_v  = tonumber(v)  end
+        end
+    end
+
+    -- 根據狀態決策
+    if s.current_v >= CONSTANTS.COMBAT_V_THRESHOLD then
+        mud.send("ear gargamel")
+    elseif s.current_ma >= CONSTANTS.COMBAT_MA_REFRESH then
+        mud.send("c ref")
+    end
+    -- V 和 MA 都不夠時不做動作，等自然恢復後下一輪再判斷
+
+    -- 排下一輪
+    MudUtils.safe_timer(CONSTANTS.TIMER_COMBAT_ROUND, function(loop_rid)
+        if MudUtils.check_run(loop_rid) then
+            _G.SmurfQuest._combat_round()
         end
     end)
 end
 
 function step_handlers.get_wand(rid)
-    _G.SmurfQuest.echo("💰 戰利品階段，等待掉落結算...")
-    MudUtils.safe_timer(1.0, function(new_rid)
+    _G.SmurfQuest.echo("💰 戰利品階段，等待管線清空...")
+    MudUtils.safe_timer(3.0, function(new_rid)
         if not MudUtils.check_run(new_rid) then return end
         MudLoot.process_loot({
             items = {"wand"},
@@ -280,6 +327,7 @@ function _G.SmurfQuest.run_step(rid)
     if not step then return end
 
     _G.SmurfQuest.state.step_completed = false
+    _G.SmurfQuest.state.combat_finished = false
     _G.SmurfQuest.state.target_found = false
     _G.SmurfQuest.echo("📋 執行步驟: " .. step.name)
     _G.SmurfQuest.update_activity()
@@ -336,11 +384,10 @@ end
 
 function _G.SmurfQuest.quest_complete(rid)
     _G.SmurfQuest.echo("🎉 藍色小精靈任務完成！")
-    MudUtils.stop_log()
+    local loop = _G.SmurfQuest.state.loop_mode
+    cleanup_state()
     mud.send("recall")
-    _G.SmurfQuest.state.running = false
-    
-    if _G.SmurfQuest.state.loop_mode then
+    if loop then
         _G.SmurfQuest.echo("🔄 循環模式：10秒後重新啟動...")
         MudUtils.safe_timer(CONSTANTS.TIMER_LOOP_RESTART, _G.SmurfQuest.init)
     end
@@ -394,11 +441,6 @@ function _G.SmurfQuest.on_server_message(clean_line)
          _G.SmurfQuest.update_activity()
     end
 
-    -- 戰鬥時若移動力不足，自動嘗試施展恢復技能
-    if clean_line:find("移動力不足") or clean_line:find("精疲力竭") then
-        mud.send("c ref")
-    end
-
     -- 非預期戰鬥：自動逃跑並終止任務
     local step = QUEST_STEPS[s.step_index]
     if step and step.name ~= "kill_gargamel" then
@@ -413,8 +455,9 @@ function _G.SmurfQuest.on_server_message(clean_line)
         end
     end
 
-    -- 偵測賈不妙死亡 → 發送信號
+    -- 偵測賈不妙死亡 → 立即停止戰鬥循環，再發送信號
     if clean_line:find(PATTERNS.GARGAMEL_DIE, 1, true) then
+        s.combat_finished = true
         signal("kill_gargamel")
     end
 
@@ -487,11 +530,21 @@ function _G.SmurfQuest.start()
 end
 
 function _G.SmurfQuest.stop()
-    _G.SmurfQuest.state.running = false
-    _G.SmurfQuest.state.watchdog_enabled = false
-    MudNav.state.walking = false -- Stop nav as well
+    local was_running = _G.SmurfQuest.state.running
+    cleanup_state()
     _G.SmurfQuest.echo("🛑 任務已停止")
-    MudUtils.stop_log()
+
+    -- 任務失敗時清除 MUD 端任務狀態
+    if was_running then
+        _G.SmurfQuest.echo("🧹 清除任務狀態...")
+        mud.send("recall")
+        MudUtils.safe_timer(2.0, function()
+            MudNav.walk("w;w;w;s;s;s;w", function()
+                mud.send("quests clear")
+                _G.SmurfQuest.echo("✅ 任務狀態已清除")
+            end)
+        end)
+    end
 end
 
 -- ===== 自動執行 =====
