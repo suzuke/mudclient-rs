@@ -170,6 +170,11 @@ impl Logger {
         // 移除尾部換行，避免 writeln! 產生多餘空行
         let message = message.trim_end_matches(['\n', '\r']);
 
+        // 跳過空白行，避免房間敘述間產生多餘空行
+        if message.trim().is_empty() {
+            return Ok(());
+        }
+
         // 檢查是否與上一條訊息相同
         if let Some(last) = &self.last_message {
             if last == message {
