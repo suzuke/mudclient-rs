@@ -266,6 +266,9 @@ pub struct Session {
     /// 狀態機管理器
     pub state_machines: mudcore::StateMachineManager,
 
+    /// 自訂快捷鍵綁定: key_combo -> lua_code
+    pub key_bindings: std::collections::HashMap<String, String>,
+
     /// 內建地圖資料庫（Rust 原生 MudMapper）
     pub map_database: MapDatabase,
     /// 上次自動儲存時的 map data_version
@@ -498,6 +501,7 @@ impl Session {
             api_state,
             event_bus: mudcore::EventBus::new(),
             state_machines: mudcore::StateMachineManager::new(),
+            key_bindings: std::collections::HashMap::new(),
             map_database: {
                 let map_path = std::path::Path::new("data/mapper_data.json");
                 if map_path.exists() {
@@ -1384,6 +1388,20 @@ impl Session {
             if let Some(sm) = self.state_machines.get_mut(&name) {
                 if let Some(result) = sm.reset() {
                     self.execute_transition_callbacks(&name, result);
+                }
+            }
+        }
+
+        // 16. Key binding updates
+        for (key, code) in context.key_binding_updates {
+            match code {
+                Some(lua_code) => {
+                    tracing::info!("Key binding set: {} -> {}", key, &lua_code[..lua_code.len().min(50)]);
+                    self.key_bindings.insert(key, lua_code);
+                }
+                None => {
+                    tracing::info!("Key binding removed: {}", key);
+                    self.key_bindings.remove(&key);
                 }
             }
         }

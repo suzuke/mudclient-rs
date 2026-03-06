@@ -1526,21 +1526,94 @@ impl MudApp {
         }
     }
 
+    /// 將 egui 按鍵事件轉換為 key combo 字串格式
+    fn egui_key_to_combo(key: egui::Key, modifiers: &egui::Modifiers) -> String {
+        let mut parts = Vec::new();
+        if modifiers.ctrl || modifiers.mac_cmd {
+            parts.push("ctrl".to_string());
+        }
+        if modifiers.alt {
+            parts.push("alt".to_string());
+        }
+        if modifiers.shift {
+            parts.push("shift".to_string());
+        }
+
+        let key_name = match key {
+            egui::Key::F1 => "f1", egui::Key::F2 => "f2", egui::Key::F3 => "f3",
+            egui::Key::F4 => "f4", egui::Key::F5 => "f5", egui::Key::F6 => "f6",
+            egui::Key::F7 => "f7", egui::Key::F8 => "f8", egui::Key::F9 => "f9",
+            egui::Key::F10 => "f10", egui::Key::F11 => "f11", egui::Key::F12 => "f12",
+            egui::Key::Num0 => "0", egui::Key::Num1 => "1", egui::Key::Num2 => "2",
+            egui::Key::Num3 => "3", egui::Key::Num4 => "4", egui::Key::Num5 => "5",
+            egui::Key::Num6 => "6", egui::Key::Num7 => "7", egui::Key::Num8 => "8",
+            egui::Key::Num9 => "9",
+            egui::Key::A => "a", egui::Key::B => "b", egui::Key::C => "c",
+            egui::Key::D => "d", egui::Key::E => "e", egui::Key::F => "f",
+            egui::Key::G => "g", egui::Key::H => "h", egui::Key::I => "i",
+            egui::Key::J => "j", egui::Key::K => "k", egui::Key::L => "l",
+            egui::Key::M => "m", egui::Key::N => "n", egui::Key::O => "o",
+            egui::Key::P => "p", egui::Key::Q => "q", egui::Key::R => "r",
+            egui::Key::S => "s", egui::Key::T => "t", egui::Key::U => "u",
+            egui::Key::V => "v", egui::Key::W => "w", egui::Key::X => "x",
+            egui::Key::Y => "y", egui::Key::Z => "z",
+            egui::Key::Space => "space",
+            egui::Key::Escape => "escape",
+            egui::Key::Tab => "tab",
+            _ => return String::new(),
+        };
+        parts.push(key_name.to_string());
+        parts.join("+")
+    }
+
     /// 處理快捷鍵
     fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context, pending_action: &mut Option<PendingAction>) {
+        // Collect key press events for Lua key binding check
+        let key_events: Vec<(egui::Key, egui::Modifiers)> = ctx.input(|i| {
+            i.events.iter().filter_map(|e| {
+                if let egui::Event::Key { key, pressed: true, modifiers, .. } = e {
+                    Some((*key, *modifiers))
+                } else {
+                    None
+                }
+            }).collect()
+        });
+
+        // Check custom Lua key bindings (takes priority over built-in shortcuts)
+        let mut consumed_combos = std::collections::HashSet::new();
+        if let Some(session) = self.session_manager.active_session_mut() {
+            if !session.key_bindings.is_empty() {
+                for (key, modifiers) in &key_events {
+                    let combo = Self::egui_key_to_combo(*key, modifiers);
+                    if !combo.is_empty() {
+                        if let Some(code) = session.key_bindings.get(&combo).cloned() {
+                            match session.script_engine.execute_inline(&code, "", &[], false) {
+                                Ok(ctx_result) => session.apply_script_context(ctx_result),
+                                Err(e) => tracing::error!("Key binding '{}' error: {}", combo, e),
+                            }
+                            consumed_combos.insert(combo);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Built-in shortcuts (skip keys consumed by Lua bindings)
         ctx.input(|i| {
-            // F1-F5 功能鍵
-            if i.key_pressed(egui::Key::F2) || i.key_pressed(egui::Key::F3) || i.key_pressed(egui::Key::F4) {
-                self.show_settings_window = true;
+            // F2-F4 功能鍵
+            if !consumed_combos.contains("f2") && !consumed_combos.contains("f3") && !consumed_combos.contains("f4") {
+                if i.key_pressed(egui::Key::F2) || i.key_pressed(egui::Key::F3) || i.key_pressed(egui::Key::F4) {
+                    self.show_settings_window = true;
+                }
             }
 
             // Ctrl+L 清除畫面
-            if i.modifiers.ctrl && i.key_pressed(egui::Key::L) {
+            if !consumed_combos.contains("ctrl+l") && i.modifiers.ctrl && i.key_pressed(egui::Key::L) {
                 *pending_action = Some(PendingAction::ClearActiveWindow);
             }
 
             // Escape 關閉所有彈出視窗
-            if i.key_pressed(egui::Key::Escape) {
+            if !consumed_combos.contains("escape") && i.key_pressed(egui::Key::Escape) {
                 self.show_settings_window = false;
                 self.show_alias_window = false;
                 self.show_trigger_window = false;
@@ -1561,7 +1634,8 @@ impl MudApp {
                     egui::Key::Num7, egui::Key::Num8, egui::Key::Num9,
                 ];
                 for (idx, key) in num_keys.iter().enumerate() {
-                    if i.key_pressed(*key) {
+                    let combo = Self::egui_key_to_combo(*key, &i.modifiers);
+                    if !consumed_combos.contains(&combo) && i.key_pressed(*key) {
                         *pending_action = Some(PendingAction::SwitchTab(idx));
                     }
                 }
@@ -1576,7 +1650,7 @@ impl MudApp {
                 }
 
                 // Cmd+T 開啟連線管理
-                if i.key_pressed(egui::Key::T) {
+                if !consumed_combos.contains("ctrl+t") && i.key_pressed(egui::Key::T) {
                     self.show_profile_window = true;
                 }
 
@@ -1591,7 +1665,7 @@ impl MudApp {
                     self.save_config();
                 }
                 // Cmd+0 重置字型大小
-                if i.key_pressed(egui::Key::Num0) {
+                if !consumed_combos.contains("ctrl+0") && i.key_pressed(egui::Key::Num0) {
                     self.global_config.ui.font_size = 14.0;
                     self.save_config();
                 }

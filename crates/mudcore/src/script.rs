@@ -78,6 +78,9 @@ pub struct MudContext {
     pub state_machine_transitions: Vec<(String, String)>,
     /// State machine resets: machine_name
     pub state_machine_resets: Vec<String>,
+
+    /// Key binding updates: (key_combo, Some(lua_code) = bind, None = unbind)
+    pub key_binding_updates: Vec<(String, Option<String>)>,
 }
 
 /// LLM 非同步請求
@@ -333,6 +336,10 @@ impl ScriptEngine {
             mud.set("_sm_resets", sm_resets)?;
             let sm_states = self.lua.create_table()?;
             mud.set("_sm_states", sm_states)?;
+
+            // Key binding table
+            let key_binding_updates = self.lua.create_table()?;
+            mud.set("_key_binding_updates", key_binding_updates)?;
 
             // gag 標記
             mud.set("gag", false)?;
@@ -690,6 +697,32 @@ impl ScriptEngine {
             })?;
             mud.set("sm_reset", sm_reset_fn)?;
 
+            // mud.bind_key(key_combo, lua_code)
+            let bind_key_fn = scope.create_function_mut(|lua, (key, code): (String, String)| {
+                let mud: mlua::Table = lua.globals().get("mud")?;
+                let updates: mlua::Table = mud.get("_key_binding_updates")?;
+                let len = updates.len()? + 1;
+                let entry = lua.create_table()?;
+                entry.set(1, key.to_lowercase())?;
+                entry.set(2, code)?;
+                updates.set(len, entry)?;
+                Ok(())
+            })?;
+            mud.set("bind_key", bind_key_fn)?;
+
+            // mud.unbind_key(key_combo)
+            let unbind_key_fn = scope.create_function_mut(|lua, key: String| {
+                let mud: mlua::Table = lua.globals().get("mud")?;
+                let updates: mlua::Table = mud.get("_key_binding_updates")?;
+                let len = updates.len()? + 1;
+                let entry = lua.create_table()?;
+                entry.set(1, key.to_lowercase())?;
+                // No second value = unbind
+                updates.set(len, entry)?;
+                Ok(())
+            })?;
+            mud.set("unbind_key", unbind_key_fn)?;
+
             // 設置全局變數
             self.lua.globals().set("mud", mud)?;
             self.lua.globals().set("message", message)?;
@@ -962,6 +995,18 @@ impl ScriptEngine {
                 for pair in resets.pairs::<i64, String>() {
                     if let Ok((_, name)) = pair {
                         context.state_machine_resets.push(name);
+                    }
+                }
+            }
+
+            // 收集 key_binding_updates
+            if let Ok(updates) = mud.get::<mlua::Table>("_key_binding_updates") {
+                for pair in updates.pairs::<i64, mlua::Table>() {
+                    if let Ok((_, entry)) = pair {
+                        if let Ok(key) = entry.get::<String>(1) {
+                            let code: Option<String> = entry.get::<String>(2).ok();
+                            context.key_binding_updates.push((key, code));
+                        }
                     }
                 }
             }
