@@ -90,6 +90,47 @@ package.loaded["MudNav"] = _G.MudNav
 -- Reload QuestEngine to re-register the navigate handler (earlier tests overwrite it)
 dofile("scripts/modules/QuestEngine.lua")
 
+-- Load remaining modules for hunt tests
+dofile("scripts/modules/MudExplorer.lua")
+package.loaded["scripts.modules.MudExplorer"] = _G.MudExplorer
+package.loaded["modules.MudExplorer"] = _G.MudExplorer
+package.loaded["MudExplorer"] = _G.MudExplorer
+
+dofile("scripts/modules/MudCombat.lua")
+package.loaded["scripts.modules.MudCombat"] = _G.MudCombat
+package.loaded["modules.MudCombat"] = _G.MudCombat
+package.loaded["MudCombat"] = _G.MudCombat
+
+dofile("scripts/modules/MudLoot.lua")
+package.loaded["scripts.modules.MudLoot"] = _G.MudLoot
+package.loaded["modules.MudLoot"] = _G.MudLoot
+package.loaded["MudLoot"] = _G.MudLoot
+
+-- Reload QuestEngine to pick up hunt handler with all deps available
+dofile("scripts/modules/QuestEngine.lua")
+
+describe("QuestEngine Hunt", function()
+    it("should configure MudExplorer and start exploration", function()
+        mock.sent = {}
+        mock.logs = {}
+        MudUtils.run_id = 0
+        MudUtils.callbacks = {}
+        MudUtils.callback_id = 0
+
+        QuestEngine.define("hunt_test", {
+            steps = {
+                {type="hunt", name="find_mob",
+                 target="Goblin", attack_cmd="kill goblin",
+                 loot={items={"gold"}, sac=true}},
+            }
+        })
+        QuestEngine.run("hunt_test")
+
+        assert_equal("Goblin", MudExplorer.config.target, "Explorer target should be set")
+        assert_equal(true, MudExplorer.state.exploring, "Explorer should be active")
+    end)
+end)
+
 describe("QuestEngine Navigate", function()
     it("should call MudNav.walk with the path", function()
         -- Reset state

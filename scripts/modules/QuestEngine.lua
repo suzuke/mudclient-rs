@@ -175,6 +175,88 @@ function QuestEngine.on_server_message(line, clean_line, is_echo)
             QuestEngine.advance()
         end
     end
+
+    -- Hunt: combat detection (only during hunt phases)
+    if s.hunt_step and (s.phase == "finding" or s.phase == "fighting" or s.phase == "clearing" or s.phase == "looting") then
+        local MudCombat = require_module("MudCombat")
+
+        -- Detect kills
+        if s.phase == "fighting" and string.find(text, "魂歸西天了") then
+            if string.find(text, s.hunt_step.target, 1, true) then
+                s.hunt_kills = s.hunt_kills + 1
+                mud.echo("[QuestEngine] Kill #" .. s.hunt_kills)
+                s.phase = "clearing"
+                s.clear_checks = 0
+                MudUtils.safe_timer(1.0, function() QuestEngine._check_combat_clear() end)
+                return
+            end
+        end
+
+        -- Detect item pickup
+        if s.hunt_step.loot and s.hunt_step.loot.items then
+            for _, item in ipairs(s.hunt_step.loot.items) do
+                if string.find(text, item, 1, true) and
+                   (string.find(text, "拿出") or string.find(text, "獲得")) then
+                    s.hunt_got_item = true
+                    mud.echo("[QuestEngine] Got item: " .. item)
+                end
+            end
+        end
+
+        -- Non-target combat detection
+        if MudCombat.on_server_message(text) then
+            local is_killing_blow = string.find(text, "魂歸西天") or string.find(text, "氣絕")
+            if not is_killing_blow and s.phase == "finding" then
+                s.non_target_combat = not string.find(text, s.hunt_step.target, 1, true)
+                s.phase = "fighting"
+                QuestEngine._combat_heartbeat()
+            end
+        end
+
+        -- Flee success
+        if s.non_target_combat and string.find(text, "你逃離了戰鬥") then
+            s.non_target_combat = false
+            s.phase = "finding"
+            local MudExplorer = require_module("MudExplorer")
+            MudExplorer.explore(s.hunt_explore_cb)
+            return
+        end
+
+        -- Recovery
+        if s.phase == "fighting" then
+            if string.find(text, "移動力不足") or string.find(text, "法力不足") then
+                if not s.recovering then
+                    s.recovering = true
+                    mud.send("c ref")
+                    MudUtils.safe_timer(5.0, function()
+                        if s.running and s.recovering then s.recovering = false end
+                    end)
+                end
+            end
+            if string.find(text, "體力逐漸地恢復") then
+                s.recovering = false
+            end
+
+            -- Target fled
+            if s.hunt_step.target and string.find(text, s.hunt_step.target, 1, true) and string.find(text, "離開了") then
+                mud.echo("[QuestEngine] Target fled! Resuming exploration...")
+                s.recovering = false
+                s.phase = "finding"
+                local MudExplorer = require_module("MudExplorer")
+                MudExplorer.resume(s.hunt_explore_cb)
+                return
+            end
+        end
+
+        -- Body in combat detection
+        if string.find(text, "身陷戰鬥中") then
+            MudCombat.active()
+            if s.phase ~= "fighting" then
+                s.phase = "fighting"
+                QuestEngine._combat_heartbeat()
+            end
+        end
+    end
 end
 
 -- Register hook via MudUtils
@@ -220,6 +302,128 @@ QuestEngine.handlers["navigate"] = function(step)
             QuestEngine.advance()
         end
     end)
+end
+
+-- ===== Hunt Handler =====
+-- Flow: explore -> find target -> fight -> loot -> backtrack -> advance
+QuestEngine.handlers["hunt"] = function(step)
+    local MudExplorer = require_module("MudExplorer")
+    local s = QuestEngine.state
+
+    -- Configure explorer
+    MudExplorer.config.target = step.target
+    MudExplorer.config.max_laps = step.max_laps or 5
+    MudExplorer.config.disable_open_doors = step.disable_open_doors or false
+    MudExplorer.config.debug = step.debug or false
+
+    s.phase = "finding"
+    s.hunt_step = step
+    s.hunt_kills = 0
+    s.hunt_got_item = false
+    s.non_target_combat = false
+    s.recovering = false
+
+    mud.send("wa")
+
+    local function on_explore_done(found, target_line)
+        if not s.running or not MudUtils.check_run(s.run_id) then return end
+
+        if found then
+            mud.echo("[QuestEngine] Target found! Fighting...")
+            s.phase = "fighting"
+            s.non_target_combat = false
+            mud.send("wa")
+            MudUtils.safe_timer(0.5, function()
+                if not s.running then return end
+                mud.send(step.attack_cmd)
+                QuestEngine._combat_heartbeat()
+            end)
+        else
+            mud.echo("[QuestEngine] Exploration complete, target not found.")
+            QuestEngine.stop(false)
+        end
+    end
+
+    s.hunt_explore_cb = on_explore_done
+    MudExplorer.explore(on_explore_done)
+end
+
+function QuestEngine._combat_heartbeat()
+    local s = QuestEngine.state
+    if not s.running or s.phase ~= "fighting" then return end
+
+    if not s.recovering and s.hunt_step then
+        if s.non_target_combat then
+            mud.send("flee")
+        else
+            mud.send(s.hunt_step.attack_cmd)
+        end
+    end
+
+    MudUtils.safe_timer(2.5, function()
+        QuestEngine._combat_heartbeat()
+    end)
+end
+
+function QuestEngine._check_combat_clear()
+    local s = QuestEngine.state
+    if not s.running or s.phase ~= "clearing" then return end
+
+    s.clear_checks = (s.clear_checks or 0) + 1
+    local MudCombat = require_module("MudCombat")
+    if not MudCombat.is_fighting() or s.clear_checks >= 10 then
+        s.clear_checks = 0
+        QuestEngine._handle_hunt_loot()
+    else
+        MudUtils.safe_timer(1.0, function() QuestEngine._check_combat_clear() end)
+    end
+end
+
+function QuestEngine._handle_hunt_loot()
+    local s = QuestEngine.state
+    if not s.running then return end
+    local MudLoot = require_module("MudLoot")
+
+    local loot = s.hunt_step.loot or {}
+    s.phase = "looting"
+
+    MudLoot.process_loot({
+        items = loot.items or {"all"},
+        loot_ground = loot.loot_ground ~= false,
+        sac = loot.sac or false,
+        fallback_blind = loot.fallback_blind ~= false,
+    }, function()
+        QuestEngine._handle_hunt_after_loot()
+    end)
+end
+
+function QuestEngine._handle_hunt_after_loot()
+    local s = QuestEngine.state
+    if not s.running then return end
+    local MudExplorer = require_module("MudExplorer")
+    local MudNav = require_module("MudNav")
+
+    if s.hunt_got_item then
+        -- Done hunting, backtrack and advance
+        local backtrack = MudExplorer.get_path_to_start()
+        MudExplorer.stop()
+
+        if backtrack and backtrack ~= "" then
+            mud.echo("[QuestEngine] Backtracking to start...")
+            s.phase = "backtracking"
+            MudNav.walk(backtrack, function()
+                if not s.running then return end
+                QuestEngine.advance()
+            end)
+        else
+            QuestEngine.advance()
+        end
+    else
+        -- Continue exploring
+        mud.echo("[QuestEngine] No target item yet, resuming exploration...")
+        s.phase = "finding"
+        MudExplorer.resume(s.hunt_explore_cb)
+    end
 end
 
 return QuestEngine
