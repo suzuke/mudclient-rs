@@ -1,6 +1,6 @@
 -- Test QuestEngine
 package.path = "scripts/?.lua;scripts/?/init.lua;" .. package.path
-dofile("scripts/tests/test_runner.lua")
+if not _G.describe then dofile("scripts/tests/test_runner.lua") end
 local MockMud = dofile("scripts/tests/mock_mud.lua")
 local mock = MockMud.new()
 _G.mud = mock
