@@ -425,6 +425,8 @@ function M.start(job, merged_resources, on_done, on_failed)
         states = states,
         transitions = transitions,
     })
+    -- SM creation doesn't run initial state's enter callback, reset to trigger it
+    mud.sm_reset("itemfarm_engage")
 end
 
 -------------------------------------------------------------------------------

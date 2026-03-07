@@ -243,6 +243,9 @@ function _G.ItemFarm.start()
     MudUtils.start_inventory_check(function()
         _G.ItemFarm.echo("Inventory check passed, starting scheduler...")
         create_scheduler_sm()
+        -- SM creation doesn't run initial state's enter callback,
+        -- so reset to trigger it
+        mud.sm_reset("itemfarm_scheduler")
     end)
 end
 

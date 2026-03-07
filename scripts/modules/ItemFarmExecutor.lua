@@ -155,12 +155,13 @@ function M.start(job, defaults, on_done)
     -- Register event handlers
     M.register_event_handlers(job)
 
-    -- Create SM
+    -- Create SM (reset triggers initial state's enter callback)
     mud.state_machine("itemfarm_job", {
         initial = "searching",
         states = states,
         transitions = transitions,
     })
+    mud.sm_reset("itemfarm_job")
 end
 
 function M.register_event_handlers(job)
