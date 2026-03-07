@@ -189,10 +189,12 @@ function QuestEngine.on_server_message(line, clean_line, is_echo)
     -- Hunt: combat detection (only during hunt phases)
     if s.hunt_step and (s.phase == "finding" or s.phase == "fighting" or s.phase == "clearing" or s.phase == "looting") then
         local MudCombat = require_module("MudCombat")
+        local lower_text = string.lower(text)
+        local lower_target = string.lower(s.hunt_step.target)
 
         -- Detect kills
         if s.phase == "fighting" and string.find(text, "魂歸西天了") then
-            if string.find(text, s.hunt_step.target, 1, true) then
+            if string.find(lower_text, lower_target, 1, true) then
                 s.hunt_kills = s.hunt_kills + 1
                 mud.echo("[QuestEngine] Kill #" .. s.hunt_kills)
                 s.phase = "clearing"
@@ -217,7 +219,7 @@ function QuestEngine.on_server_message(line, clean_line, is_echo)
         if MudCombat.on_server_message(text) then
             local is_killing_blow = string.find(text, "魂歸西天") or string.find(text, "氣絕")
             if not is_killing_blow and s.phase == "finding" then
-                s.non_target_combat = not string.find(text, s.hunt_step.target, 1, true)
+                s.non_target_combat = not string.find(lower_text, lower_target, 1, true)
                 s.phase = "fighting"
                 QuestEngine._combat_heartbeat()
             end
@@ -248,7 +250,7 @@ function QuestEngine.on_server_message(line, clean_line, is_echo)
             end
 
             -- Target fled
-            if s.hunt_step.target and string.find(text, s.hunt_step.target, 1, true) and string.find(text, "離開了") then
+            if s.hunt_step.target and string.find(lower_text, lower_target, 1, true) and string.find(text, "離開了") then
                 mud.echo("[QuestEngine] Target fled! Resuming exploration...")
                 s.recovering = false
                 s.phase = "finding"
