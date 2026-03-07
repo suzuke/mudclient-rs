@@ -18,15 +18,40 @@ end
 local QuestEngine = require_module("QuestEngine")
 local MudUtils = require_module("MudUtils")
 
+-- Custom: wait for sleep teleport at frozen mountain top
+local function wait_for_teleport(step, engine)
+    QuestEngine.set_expect("紙路", 30.0, "Teleport")
+end
+
+-- Hook: detect wake-up and send look to trigger expect
+MudUtils.register_hook("PokerQuestV2", function(line, clean_line)
+    if not QuestEngine.state.running then return end
+    if QuestEngine.state.quest_name ~= "poker_quest" then return end
+    local text = clean_line or line
+    local step = QuestEngine.quests["poker_quest"].steps[QuestEngine.state.step_index]
+    if step and step.name == "enter_poker_kingdom" then
+        if string.find(text, "你從睡夢中醒來並站了起來", 1, true) then
+            MudUtils.safe_timer(1.0, function()
+                if QuestEngine.state.running then
+                    mud.send("l")
+                end
+            end)
+        end
+    end
+end)
+
 QuestEngine.define("poker_quest", {
     recall_cmd = "recall",
+    log_name = "poker",
     steps = {
-        -- 1. Navigate to Poker Kingdom (via frozen mountain top)
-        {type="navigate", name="enter_poker_kingdom",
-         path={
-             "s", "s", "s", "s", "s", "s", "e", "e", "u", "u", "u",
-             {cmd="u", id="20ce628eff898093aae8aea12ce15043ad2c599a254804579c1956afff2b4bef"},
-         }},
+        -- 1. Navigate to frozen mountain top
+        {type="navigate", name="go_mountain_top",
+         path="6s;2e;4u"},
+
+        -- 2. Wait for sleep teleport to poker kingdom
+        {type="custom", name="enter_poker_kingdom",
+         expect="紙路",
+         fn=wait_for_teleport},
 
         -- 2. Hunt Spade mobs for yellow stone
         {type="hunt", name="hunt_spade",

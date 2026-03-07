@@ -64,6 +64,7 @@ function QuestEngine.run(name)
         step_index = 1,
         run_id = rid,
         phase = "running",
+        expect_id = 0,
     }
 
     -- Register with MudUtils so halt_all_quests can stop us
@@ -135,6 +136,24 @@ function QuestEngine.advance()
     end)
 end
 
+--- Set up an expect with timeout guard using expect_id
+--- @param expect string Expected text pattern
+--- @param timeout number Timeout in seconds (default 30)
+--- @param label string Label for timeout message
+function QuestEngine.set_expect(expect, timeout, label)
+    local s = QuestEngine.state
+    s.expect_id = (s.expect_id or 0) + 1
+    s.phase = "waiting_response"
+    s.current_expect = expect
+    local saved_eid = s.expect_id
+    MudUtils.safe_timer(timeout or 30.0, function()
+        if s.running and s.phase == "waiting_response" and s.expect_id == saved_eid then
+            mud.echo("[QuestEngine] " .. (label or "Expect") .. " timeout (eid=" .. saved_eid .. "): " .. expect)
+            QuestEngine.stop(false)
+        end
+    end)
+end
+
 --- Execute the current step
 function QuestEngine.execute_step()
     if not QuestEngine.state.running then return end
@@ -182,6 +201,7 @@ function QuestEngine.on_server_message(line, clean_line, is_echo)
         if string.find(text, s.current_expect, 1, true) then
             mud.echo("[QuestEngine] Matched: " .. s.current_expect)
             s.current_expect = nil
+            s.expect_id = (s.expect_id or 0) + 1  -- invalidate pending timeout
             QuestEngine.advance()
         end
     end
@@ -302,14 +322,9 @@ QuestEngine.handlers["navigate"] = function(step)
 
         -- If expect pattern specified, wait for server response
         if step.expect then
-            s.phase = "waiting_response"
-            s.current_expect = step.expect
-            MudUtils.safe_timer(10.0, function()
-                if s.running and s.phase == "waiting_response" then
-                    mud.echo("[QuestEngine] Timeout waiting for: " .. step.expect)
-                    QuestEngine.stop(false)
-                end
-            end)
+            QuestEngine.set_expect(step.expect, step.timeout or 30.0, "Navigate")
+            -- Re-trigger room description so expect can match arrival room
+            if not step.cmds then mud.send("l") end
         else
             QuestEngine.advance()
         end
@@ -347,7 +362,6 @@ QuestEngine.handlers["hunt"] = function(step)
             mud.send("wa")
             MudUtils.safe_timer(0.5, function()
                 if not s.running then return end
-                mud.send(step.attack_cmd)
                 QuestEngine._combat_heartbeat()
             end)
         else
@@ -364,15 +378,31 @@ function QuestEngine._combat_heartbeat()
     local s = QuestEngine.state
     if not s.running or s.phase ~= "fighting" then return end
 
-    if not s.recovering and s.hunt_step then
-        if s.non_target_combat then
-            mud.send("flee")
-        else
-            mud.send(s.hunt_step.attack_cmd)
-        end
+    if s.recovering then
+        MudUtils.safe_timer(2.5, function()
+            QuestEngine._combat_heartbeat()
+        end)
+        return
     end
 
-    MudUtils.safe_timer(2.5, function()
+    if s.non_target_combat then
+        mud.send("flee")
+        MudUtils.safe_timer(2.5, function()
+            QuestEngine._combat_heartbeat()
+        end)
+        return
+    end
+
+    -- Send attack via collect_response; next round only fires if target still alive
+    mud.collect_response(s.hunt_step.attack_cmd, "_G._quest_on_combat_round()")
+end
+
+_G._quest_on_combat_round = function()
+    local s = QuestEngine.state
+    -- If target died, on_server_message already changed phase to "clearing"
+    if not s.running or s.phase ~= "fighting" then return end
+    -- Target still alive, schedule next attack
+    MudUtils.safe_timer(2.0, function()
         QuestEngine._combat_heartbeat()
     end)
 end
@@ -444,14 +474,7 @@ QuestEngine.handlers["give"] = function(step)
     mud.send("gi " .. step.item .. " " .. step.npc)
 
     if step.expect then
-        s.phase = "waiting_response"
-        s.current_expect = step.expect
-        MudUtils.safe_timer(10.0, function()
-            if s.running and s.phase == "waiting_response" then
-                mud.echo("[QuestEngine] Give timeout: " .. step.expect)
-                QuestEngine.stop(false)
-            end
-        end)
+        QuestEngine.set_expect(step.expect, step.timeout or 30.0, "Give")
     else
         MudUtils.safe_timer(1.0, function() QuestEngine.advance() end)
     end
@@ -468,14 +491,7 @@ QuestEngine.handlers["say"] = function(step)
     mud.send(cmd)
 
     if step.expect then
-        s.phase = "waiting_response"
-        s.current_expect = step.expect
-        MudUtils.safe_timer(10.0, function()
-            if s.running and s.phase == "waiting_response" then
-                mud.echo("[QuestEngine] Say timeout: " .. step.expect)
-                QuestEngine.stop(false)
-            end
-        end)
+        QuestEngine.set_expect(step.expect, step.timeout or 30.0, "Say")
     else
         MudUtils.safe_timer(1.0, function() QuestEngine.advance() end)
     end
@@ -492,21 +508,423 @@ QuestEngine.handlers["interact"] = function(step)
     end
 
     if step.expect then
+        s.expect_id = (s.expect_id or 0) + 1
         s.phase = "waiting_response"
         s.current_expect = step.expect
-        MudUtils.safe_timer(step.timeout or 10.0, function()
-            if s.running and s.phase == "waiting_response" then
+        local saved_eid = s.expect_id
+        MudUtils.safe_timer(step.timeout or 30.0, function()
+            if s.running and s.phase == "waiting_response" and s.expect_id == saved_eid then
                 if step.retry and (s.interact_retries or 0) < step.retry then
                     s.interact_retries = (s.interact_retries or 0) + 1
                     QuestEngine.execute_step()
                 else
-                    mud.echo("[QuestEngine] Interact timeout: " .. step.expect)
+                    mud.echo("[QuestEngine] Interact timeout (eid=" .. saved_eid .. "): " .. step.expect)
                     QuestEngine.stop(false)
                 end
             end
         end)
     else
         MudUtils.safe_timer(1.0, function() QuestEngine.advance() end)
+    end
+end
+
+-- ===== Summon Handler =====
+-- Uses MudCombat.safe_summon, then optionally sends cmds and waits for expect
+QuestEngine.handlers["summon"] = function(step)
+    local MudCombat = require_module("MudCombat")
+    local s = QuestEngine.state
+
+    s.phase = "summoning"
+
+    -- Optional pre-navigate
+    if step.path then
+        local MudNav = require_module("MudNav")
+        MudNav.walk(step.path, function(success)
+            if not s.running then return end
+            if not success then
+                QuestEngine.stop(false)
+                return
+            end
+            QuestEngine._do_summon(step)
+        end)
+    else
+        QuestEngine._do_summon(step)
+    end
+end
+
+function QuestEngine._do_summon(step)
+    local MudCombat = require_module("MudCombat")
+    local s = QuestEngine.state
+
+    -- First check if target is already in room via 'l'
+    mud.collect_response("l", "_G._quest_summon_check()")
+end
+
+-- Callback: check if summon target is already in room
+_G._quest_summon_check = function()
+    local MudCombat = require_module("MudCombat")
+    local s = QuestEngine.state
+    if not s.running then return end
+
+    local step = QuestEngine.quests[s.quest_name].steps[s.step_index]
+    local lines = _G._collected_lines or {}
+    local target_found = false
+
+    for _, line in ipairs(lines) do
+        if string.find(line, step.target, 1, true) then
+            target_found = true
+            break
+        end
+    end
+
+    if target_found then
+        mud.echo("[QuestEngine] Target already here: " .. step.target)
+        QuestEngine._summon_success(step)
+    else
+        QuestEngine._start_summon(step)
+    end
+end
+
+function QuestEngine._summon_success(step)
+    local s = QuestEngine.state
+    if not s.running then return end
+
+    if step.cmds then
+        for _, cmd in ipairs(step.cmds) do mud.send(cmd) end
+    end
+
+    if step.expect then
+        QuestEngine.set_expect(step.expect, step.timeout or 30.0, "Summon")
+    else
+        QuestEngine.advance()
+    end
+end
+
+function QuestEngine._start_summon(step)
+    local MudCombat = require_module("MudCombat")
+    local s = QuestEngine.state
+
+    MudCombat.safe_summon(
+        step.target,
+        step.summon_cmd,
+        {
+            max_retries = step.max_retries or 5,
+            retry_delay = step.retry_delay or 3.0,
+            verify_delay = step.verify_delay or 2.0,
+        },
+        function() -- success
+            if not s.running then return end
+            mud.echo("[QuestEngine] Summon success: " .. step.target)
+            QuestEngine._summon_success(step)
+        end,
+        function() -- fail
+            if not s.running then return end
+            mud.echo("[QuestEngine] Summon failed: " .. step.target)
+            QuestEngine.stop(false)
+        end
+    )
+end
+
+-- ===== Wait For Mob Handler =====
+-- Navigate to location, poll with 'l' until target appears, then send cmds
+QuestEngine.handlers["wait_for_mob"] = function(step)
+    local s = QuestEngine.state
+
+    local function start_polling()
+        if not s.running then return end
+        s.phase = "waiting_for_mob"
+        s.wait_target = step.target
+        s.wait_target_alias = step.target_alias
+        s.wait_step = step
+        mud.echo("[QuestEngine] Waiting for: " .. (step.target_alias or step.target))
+        mud.send("l")
+        QuestEngine._wait_poll()
+
+        -- Optional timeout with fallback
+        if step.wait_timeout then
+            local saved_step = s.step_index
+            MudUtils.safe_timer(step.wait_timeout, function()
+                if not s.running or s.phase ~= "waiting_for_mob" or s.step_index ~= saved_step then return end
+                mud.echo("[QuestEngine] Wait timeout, using fallback")
+                s.phase = "acting"
+                if step.timeout_cmds then
+                    for _, cmd in ipairs(step.timeout_cmds) do mud.send(cmd) end
+                end
+                if step.timeout_skip then
+                    -- Skip N steps forward
+                    s.step_index = s.step_index + step.timeout_skip
+                    MudUtils.safe_timer(1.0, function()
+                        if s.running then QuestEngine.execute_step() end
+                    end)
+                else
+                    QuestEngine.advance()
+                end
+            end)
+        end
+    end
+
+    if step.path then
+        local MudNav = require_module("MudNav")
+        s.phase = "navigating"
+        MudNav.walk(step.path, function(success)
+            if not s.running then return end
+            if not success then
+                QuestEngine.stop(false)
+                return
+            end
+            MudUtils.safe_timer(0.5, start_polling)
+        end)
+    else
+        start_polling()
+    end
+end
+
+function QuestEngine._wait_poll()
+    local s = QuestEngine.state
+    if not s.running or s.phase ~= "waiting_for_mob" then return end
+
+    MudUtils.safe_timer(5.0, function()
+        if not s.running or s.phase ~= "waiting_for_mob" then return end
+        mud.send("l")
+
+        -- Optional: attempt summon every other poll cycle
+        local step = s.wait_step
+        if step and step.summon_cmd then
+            s._summon_poll_count = (s._summon_poll_count or 0) + 1
+            -- Try summon every 2nd poll (every ~10s)
+            if s._summon_poll_count % 2 == 0 then
+                MudUtils.safe_timer(1.0, function()
+                    if not s.running or s.phase ~= "waiting_for_mob" then return end
+                    mud.send(step.summon_cmd)
+                end)
+            end
+        end
+
+        QuestEngine._wait_poll()
+    end)
+end
+
+-- ===== Custom Handler =====
+-- Runs an inline function: step.fn(step, QuestEngine)
+-- If step.expect is defined, set it up before calling fn
+QuestEngine.handlers["custom"] = function(step)
+    if step.expect then
+        QuestEngine.set_expect(step.expect, step.timeout or 30.0, "Custom")
+    end
+    if step.fn then
+        step.fn(step, QuestEngine)
+    else
+        mud.echo("[QuestEngine] Custom step missing fn")
+        QuestEngine.stop(false)
+    end
+end
+
+-- ===== Precheck Support =====
+-- Quest-level precheck: list of NPC IDs to verify existence before starting
+function QuestEngine._run_precheck(def, callback)
+    local npcs = def.precheck
+    if not npcs or #npcs == 0 then
+        callback()
+        return
+    end
+
+    local missing = {}
+    local index = 0
+    local s = QuestEngine.state
+    s.phase = "prechecking"
+    s.precheck_missing = missing
+    s.precheck_npc = nil
+
+    local function check_next()
+        if not s.running then return end
+        index = index + 1
+        if index > #npcs then
+            if #missing > 0 then
+                mud.echo("[QuestEngine] Missing NPCs: " .. table.concat(missing, ", "))
+                mud.echo("[QuestEngine] Retrying in 30s...")
+                MudUtils.safe_timer(30.0, function()
+                    if not s.running then return end
+                    missing = {}
+                    s.precheck_missing = missing
+                    index = 0
+                    check_next()
+                end)
+            else
+                mud.echo("[QuestEngine] Precheck passed")
+                callback()
+            end
+            return
+        end
+
+        s.precheck_npc = npcs[index]
+        mud.send("q " .. npcs[index])
+        MudUtils.safe_timer(0.8, check_next)
+    end
+
+    check_next()
+end
+
+-- Extend on_server_message for precheck and wait_for_mob
+local original_on_server_message = QuestEngine.on_server_message
+QuestEngine.on_server_message = function(line, clean_line, is_echo)
+    if is_echo then return end
+    if not QuestEngine.state.running then return end
+    local s = QuestEngine.state
+    local text = clean_line or line
+
+    -- Precheck NPC existence detection
+    if s.phase == "prechecking" and s.precheck_npc then
+        if string.find(text, "這個名稱並不存在於這個系統當中", 1, true) then
+            table.insert(s.precheck_missing, s.precheck_npc)
+            mud.echo("[QuestEngine] Missing: " .. s.precheck_npc)
+        end
+    end
+
+    -- Wait for mob detection
+    if s.phase == "waiting_for_mob" and s.wait_target then
+        local matched = false
+        if s.wait_target_alias then
+            matched = string.find(text, s.wait_target_alias, 1, true)
+        end
+        if not matched then
+            local bracketed = "(" .. s.wait_target .. ")"
+            matched = string.find(string.lower(text), string.lower(bracketed), 1, true)
+        end
+        -- Also detect summon success: "XXX 突然出現在你的眼前"
+        if not matched and s.wait_target_alias then
+            local short_name = s.wait_target_alias:match("^([^(]+)") or s.wait_target_alias
+            short_name = short_name:gsub("%s+$", "")
+            if string.find(text, short_name, 1, true) and string.find(text, "突然出現在你的眼前", 1, true) then
+                matched = true
+            end
+        end
+        if matched then
+            mud.echo("[QuestEngine] Found: " .. s.wait_target)
+            s.phase = "acting"
+            local step = s.wait_step
+            if step and step.cmds then
+                for _, cmd in ipairs(step.cmds) do mud.send(cmd) end
+            end
+            if step and step.expect then
+                QuestEngine.set_expect(step.expect, step.timeout or 30.0, "WaitMob")
+            else
+                QuestEngine.advance()
+            end
+            return
+        end
+    end
+
+    -- Delegate to original handler (sleep detection, expect, hunt)
+    original_on_server_message(line, clean_line, is_echo)
+end
+
+-- Re-register hook with extended handler
+MudUtils.register_hook("QuestEngine", QuestEngine.on_server_message)
+
+-- Override run to support precheck and on_fail
+local original_run = QuestEngine.run
+QuestEngine.run = function(name)
+    local def = QuestEngine.quests[name]
+    if not def then
+        if mud then mud.echo("[QuestEngine] Unknown quest: " .. tostring(name)) end
+        return
+    end
+
+    -- Stop any currently running quest
+    if QuestEngine.state.running then
+        QuestEngine.stop(false)
+    end
+
+    local rid = MudUtils.get_new_run_id()
+    QuestEngine.state = {
+        running = true,
+        quest_name = name,
+        step_index = 1,
+        run_id = rid,
+        phase = "running",
+        expect_id = 0,
+    }
+
+    MudUtils.register_quest("QuestEngine", function() QuestEngine.stop(false) end)
+
+    if mud then mud.echo("[QuestEngine] Starting quest: " .. name) end
+
+    -- Start log if configured
+    if def.log_name then
+        MudUtils.start_log(def.log_name)
+    end
+
+    local function after_precheck()
+        if not QuestEngine.state.running then return end
+        if def.recall_cmd then
+            mud.send("wa")
+            mud.send(def.recall_cmd)
+            MudUtils.safe_timer(1.5, function()
+                if QuestEngine.state.running then
+                    QuestEngine.execute_step()
+                end
+            end)
+        else
+            QuestEngine.execute_step()
+        end
+    end
+
+    if def.precheck then
+        QuestEngine._run_precheck(def, after_precheck)
+    else
+        after_precheck()
+    end
+end
+
+-- Override stop to support on_fail cleanup
+local original_stop = QuestEngine.stop
+QuestEngine.stop = function(is_success)
+    if not QuestEngine.state.running then return end
+
+    local quest_name = QuestEngine.state.quest_name
+    local def = QuestEngine.quests[quest_name]
+
+    -- Stop log
+    if def and def.log_name then
+        MudUtils.stop_log()
+    end
+
+    -- Call original stop
+    original_stop(is_success)
+
+    -- On success, recall to let NPCs respawn
+    if is_success and def and def.recall_cmd then
+        MudUtils.safe_timer(1.0, function()
+            mud.send(def.recall_cmd)
+        end)
+    end
+
+    -- On failure, run cleanup if defined
+    if not is_success and def and def.on_fail then
+        local MudNav = require_module("MudNav")
+        MudUtils.safe_timer(1.0, function()
+            mud.send("wa")
+            mud.send("recall")
+            if def.on_fail.path then
+                MudUtils.safe_timer(1.5, function()
+                    MudNav.walk(def.on_fail.path, function()
+                        if def.on_fail.cmds then
+                            for _, cmd in ipairs(def.on_fail.cmds) do
+                                mud.send(cmd)
+                            end
+                        end
+                    end)
+                end)
+            end
+        end)
+    end
+
+    -- Loop mode
+    if is_success and def and def.loop then
+        mud.echo("[QuestEngine] Loop mode: restarting in 10s...")
+        MudUtils.safe_timer(10.0, function()
+            QuestEngine.run(quest_name)
+        end)
     end
 end
 

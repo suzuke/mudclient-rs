@@ -10,6 +10,7 @@ _G.mud.emit = function(event, data) end
 _G.mud.start_log = function(f) end
 _G.mud.stop_log = function() end
 _G.mud.get_current_room_id = function() return nil end
+_G.mud.collect_response = function(cmd, callback) end
 
 dofile("scripts/modules/MudUtils.lua")
 MudUtils.run_id = 0
@@ -229,5 +230,161 @@ describe("QuestEngine Navigate", function()
             if cmd == "s" then found_s = true end
         end
         assert_equal(true, found_s, "First nav command should be 's'")
+    end)
+end)
+
+describe("QuestEngine Summon Handler", function()
+    it("should call MudCombat.safe_summon when target not in room", function()
+        mock.sent = {}
+        MudUtils.run_id = 0
+        MudUtils.callbacks = {}
+        MudUtils.callback_id = 0
+
+        -- Mock collect_response to immediately call the callback
+        local orig_collect = mud.collect_response
+        mud.collect_response = function(cmd, callback_code)
+            -- Simulate empty room (target not found)
+            _G._collected_lines = {"一個空曠的房間", "[出口: 南]"}
+            -- Execute the callback
+            local fn = load(callback_code)
+            if fn then fn() end
+        end
+
+        -- Track safe_summon calls
+        local summon_called = false
+        local orig_safe_summon = MudCombat.safe_summon
+        MudCombat.safe_summon = function(target, cmd, opts, on_success, on_fail)
+            summon_called = true
+            assert_equal("test_mob", target, "Target should match")
+            assert_equal("c sum test", cmd, "Summon cmd should match")
+            if on_success then on_success() end
+        end
+
+        QuestEngine.define("summon_test", {
+            steps = {{type="summon", name="sum", target="test_mob", summon_cmd="c sum test"}},
+        })
+        QuestEngine.run("summon_test")
+        assert_equal(true, summon_called, "safe_summon should be called")
+
+        MudCombat.safe_summon = orig_safe_summon
+        mud.collect_response = orig_collect
+    end)
+
+    it("should skip summon when target already in room", function()
+        mock.sent = {}
+        MudUtils.run_id = 0
+        MudUtils.callbacks = {}
+        MudUtils.callback_id = 0
+
+        -- Mock collect_response: target IS in room
+        local orig_collect = mud.collect_response
+        mud.collect_response = function(cmd, callback_code)
+            _G._collected_lines = {"test_mob正站在這兒。", "[出口: 南]"}
+            local fn = load(callback_code)
+            if fn then fn() end
+        end
+
+        local summon_called = false
+        local orig_safe_summon = MudCombat.safe_summon
+        MudCombat.safe_summon = function(target, cmd, opts, on_success, on_fail)
+            summon_called = true
+        end
+
+        QuestEngine.define("summon_skip_test", {
+            steps = {{type="summon", name="sum", target="test_mob", summon_cmd="c sum test",
+                      cmds={"talk test_mob hello"}}},
+        })
+        QuestEngine.run("summon_skip_test")
+        assert_equal(false, summon_called, "safe_summon should NOT be called")
+
+        -- Should have sent the cmds directly
+        local found_talk = false
+        for _, cmd in ipairs(mock.sent) do
+            if cmd == "talk test_mob hello" then found_talk = true end
+        end
+        assert_equal(true, found_talk, "Should send cmds when target already in room")
+
+        MudCombat.safe_summon = orig_safe_summon
+        mud.collect_response = orig_collect
+    end)
+end)
+
+describe("QuestEngine Custom Handler", function()
+    it("should call inline fn", function()
+        mock.sent = {}
+        MudUtils.run_id = 0
+        MudUtils.callbacks = {}
+        MudUtils.callback_id = 0
+
+        local fn_called = false
+        QuestEngine.define("custom_test", {
+            steps = {{type="custom", name="test", fn=function(step, engine)
+                fn_called = true
+                engine.advance()
+            end}},
+        })
+        QuestEngine.run("custom_test")
+        assert_equal(true, fn_called, "Custom fn should be called")
+    end)
+end)
+
+describe("QuestEngine Wait For Mob", function()
+    it("should set phase to waiting_for_mob", function()
+        mock.sent = {}
+        MudUtils.run_id = 0
+        MudUtils.callbacks = {}
+        MudUtils.callback_id = 0
+
+        QuestEngine.define("wait_test", {
+            steps = {{type="wait_for_mob", name="wait", target="goblin", target_alias="Goblin"}},
+        })
+        QuestEngine.run("wait_test")
+        assert_equal("waiting_for_mob", QuestEngine.state.phase, "Phase should be waiting_for_mob")
+        assert_equal("goblin", QuestEngine.state.wait_target, "Wait target should be set")
+    end)
+
+    it("should detect mob and send cmds", function()
+        mock.sent = {}
+        MudUtils.run_id = 0
+        MudUtils.callbacks = {}
+        MudUtils.callback_id = 0
+
+        QuestEngine.define("wait_detect_test", {
+            steps = {{type="wait_for_mob", name="wait",
+                      target="goblin", target_alias="小哥布林(Goblin)",
+                      cmds={"talk goblin hello"}}},
+        })
+        QuestEngine.run("wait_detect_test")
+
+        -- Simulate server message with target
+        QuestEngine.on_server_message("小哥布林(Goblin)正站在這裡", "小哥布林(Goblin)正站在這裡", false)
+
+        local found_talk = false
+        for _, cmd in ipairs(mock.sent) do
+            if cmd == "talk goblin hello" then found_talk = true end
+        end
+        assert_equal(true, found_talk, "Should send cmds when mob detected")
+    end)
+end)
+
+describe("QuestEngine Precheck", function()
+    it("should send q commands for each NPC", function()
+        mock.sent = {}
+        MudUtils.run_id = 0
+        MudUtils.callbacks = {}
+        MudUtils.callback_id = 0
+
+        QuestEngine.define("precheck_test", {
+            precheck = {"npc1", "npc2"},
+            steps = {{type="interact", name="test", cmd="test"}},
+        })
+        QuestEngine.run("precheck_test")
+
+        local q_npc1 = false
+        for _, cmd in ipairs(mock.sent) do
+            if cmd == "q npc1" then q_npc1 = true end
+        end
+        assert_equal(true, q_npc1, "Should send 'q npc1'")
+        assert_equal("prechecking", QuestEngine.state.phase, "Phase should be prechecking")
     end)
 end)
