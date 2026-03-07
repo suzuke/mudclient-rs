@@ -131,6 +131,82 @@ describe("QuestEngine Hunt", function()
     end)
 end)
 
+describe("QuestEngine Simple Handlers", function()
+    it("give handler should send 'gi item npc'", function()
+        mock.sent = {}
+        MudUtils.run_id = 0
+        MudUtils.callbacks = {}
+        MudUtils.callback_id = 0
+
+        QuestEngine.define("give_test", {
+            steps = {{type="give", name="give_stone", item="stone", npc="king"}},
+        })
+        QuestEngine.run("give_test")
+        local found = false
+        for _, cmd in ipairs(mock.sent) do
+            if cmd == "gi stone king" then found = true end
+        end
+        assert_equal(true, found, "Should send 'gi stone king'")
+    end)
+
+    it("say handler should send command", function()
+        mock.sent = {}
+        MudUtils.run_id = 0
+        MudUtils.callbacks = {}
+        MudUtils.callback_id = 0
+
+        QuestEngine.define("say_test", {
+            steps = {{type="say", name="greet", text="hello world"}},
+        })
+        QuestEngine.run("say_test")
+        local found = false
+        for _, cmd in ipairs(mock.sent) do
+            if cmd == "say hello world" then found = true end
+        end
+        assert_equal(true, found, "Should send 'say hello world'")
+    end)
+
+    it("interact handler should send custom cmd", function()
+        mock.sent = {}
+        MudUtils.run_id = 0
+        MudUtils.callbacks = {}
+        MudUtils.callback_id = 0
+
+        QuestEngine.define("interact_test", {
+            steps = {{type="interact", name="push", cmd="push stone"}},
+        })
+        QuestEngine.run("interact_test")
+        local found = false
+        for _, cmd in ipairs(mock.sent) do
+            if cmd == "push stone" then found = true end
+        end
+        assert_equal(true, found, "Should send 'push stone'")
+    end)
+end)
+
+describe("QuestEngine Recall", function()
+    it("should send recall before first step", function()
+        mock.sent = {}
+        MudUtils.run_id = 0
+        MudUtils.callbacks = {}
+        MudUtils.callback_id = 0
+
+        QuestEngine.define("recall_test", {
+            recall_cmd = "recall",
+            steps = {{type="interact", name="test", cmd="test"}},
+        })
+        QuestEngine.run("recall_test")
+        local has_wa = false
+        local has_recall = false
+        for _, cmd in ipairs(mock.sent) do
+            if cmd == "wa" then has_wa = true end
+            if cmd == "recall" then has_recall = true end
+        end
+        assert_equal(true, has_wa, "Should send 'wa'")
+        assert_equal(true, has_recall, "Should send 'recall'")
+    end)
+end)
+
 describe("QuestEngine Navigate", function()
     it("should call MudNav.walk with the path", function()
         -- Reset state

@@ -71,7 +71,17 @@ function QuestEngine.run(name)
 
     if mud then mud.echo("[QuestEngine] Starting quest: " .. name) end
 
-    QuestEngine.execute_step()
+    if def.recall_cmd then
+        mud.send("wa")
+        mud.send(def.recall_cmd)
+        MudUtils.safe_timer(1.5, function()
+            if QuestEngine.state.running then
+                QuestEngine.execute_step()
+            end
+        end)
+    else
+        QuestEngine.execute_step()
+    end
 end
 
 --- Stop the current quest
@@ -423,6 +433,78 @@ function QuestEngine._handle_hunt_after_loot()
         mud.echo("[QuestEngine] No target item yet, resuming exploration...")
         s.phase = "finding"
         MudExplorer.resume(s.hunt_explore_cb)
+    end
+end
+
+-- ===== Give Handler =====
+QuestEngine.handlers["give"] = function(step)
+    local s = QuestEngine.state
+    mud.send("gi " .. step.item .. " " .. step.npc)
+
+    if step.expect then
+        s.phase = "waiting_response"
+        s.current_expect = step.expect
+        MudUtils.safe_timer(10.0, function()
+            if s.running and s.phase == "waiting_response" then
+                mud.echo("[QuestEngine] Give timeout: " .. step.expect)
+                QuestEngine.stop(false)
+            end
+        end)
+    else
+        MudUtils.safe_timer(1.0, function() QuestEngine.advance() end)
+    end
+end
+
+-- ===== Say Handler =====
+QuestEngine.handlers["say"] = function(step)
+    local s = QuestEngine.state
+    local cmd = step.text
+    -- Auto-prefix "say" if not already a command
+    if not cmd:match("^say ") and not cmd:match("^ta ") and not cmd:match("^talk ") then
+        cmd = "say " .. cmd
+    end
+    mud.send(cmd)
+
+    if step.expect then
+        s.phase = "waiting_response"
+        s.current_expect = step.expect
+        MudUtils.safe_timer(10.0, function()
+            if s.running and s.phase == "waiting_response" then
+                mud.echo("[QuestEngine] Say timeout: " .. step.expect)
+                QuestEngine.stop(false)
+            end
+        end)
+    else
+        MudUtils.safe_timer(1.0, function() QuestEngine.advance() end)
+    end
+end
+
+-- ===== Interact Handler =====
+QuestEngine.handlers["interact"] = function(step)
+    local s = QuestEngine.state
+    -- Support single cmd or table of cmds
+    if type(step.cmd) == "table" then
+        for _, c in ipairs(step.cmd) do mud.send(c) end
+    else
+        mud.send(step.cmd)
+    end
+
+    if step.expect then
+        s.phase = "waiting_response"
+        s.current_expect = step.expect
+        MudUtils.safe_timer(step.timeout or 10.0, function()
+            if s.running and s.phase == "waiting_response" then
+                if step.retry and (s.interact_retries or 0) < step.retry then
+                    s.interact_retries = (s.interact_retries or 0) + 1
+                    QuestEngine.execute_step()
+                else
+                    mud.echo("[QuestEngine] Interact timeout: " .. step.expect)
+                    QuestEngine.stop(false)
+                end
+            end
+        end)
+    else
+        MudUtils.safe_timer(1.0, function() QuestEngine.advance() end)
     end
 end
 
