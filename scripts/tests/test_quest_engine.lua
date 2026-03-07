@@ -80,3 +80,37 @@ describe("QuestEngine", function()
     end)
 
 end)
+
+-- Load MudNav for navigate tests
+dofile("scripts/modules/MudNav.lua")
+package.loaded["scripts.modules.MudNav"] = _G.MudNav
+package.loaded["modules.MudNav"] = _G.MudNav
+package.loaded["MudNav"] = _G.MudNav
+
+-- Reload QuestEngine to re-register the navigate handler (earlier tests overwrite it)
+dofile("scripts/modules/QuestEngine.lua")
+
+describe("QuestEngine Navigate", function()
+    it("should call MudNav.walk with the path", function()
+        -- Reset state
+        mock.sent = {}
+        mock.logs = {}
+        MudUtils.run_id = 0
+        MudUtils.callbacks = {}
+        MudUtils.callback_id = 0
+
+        QuestEngine.define("nav_test", {
+            steps = {
+                {type="navigate", name="go_south", path={"s", "s", "e"}},
+            }
+        })
+        QuestEngine.run("nav_test")
+
+        -- MudNav.walk should send first command
+        local found_s = false
+        for _, cmd in ipairs(mock.sent) do
+            if cmd == "s" then found_s = true end
+        end
+        assert_equal(true, found_s, "First nav command should be 's'")
+    end)
+end)

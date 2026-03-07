@@ -154,12 +154,72 @@ function QuestEngine.execute_step()
     handler(step)
 end
 
---- Hook for server messages (stub, will be populated in later tasks)
+--- Hook for server messages
 function QuestEngine.on_server_message(line, clean_line, is_echo)
-    -- Stub: later tasks will add message matching logic here
+    if is_echo then return end
+    if not QuestEngine.state.running then return end
+    local s = QuestEngine.state
+    local text = clean_line or line
+
+    -- Sleep detection (凍原山頂 auto-sleep)
+    if string.find(text, "你正在睡覺") or string.find(text, "睡得很熟") then
+        MudUtils.safe_timer(1.5, function() mud.send("wa") end)
+        return
+    end
+
+    -- Generic expect matching (navigate+cmds, say, interact)
+    if s.phase == "waiting_response" and s.current_expect then
+        if string.find(text, s.current_expect, 1, true) then
+            mud.echo("[QuestEngine] Matched: " .. s.current_expect)
+            s.current_expect = nil
+            QuestEngine.advance()
+        end
+    end
 end
 
 -- Register hook via MudUtils
 MudUtils.register_hook("QuestEngine", QuestEngine.on_server_message)
+
+-- ===== Navigate Handler =====
+QuestEngine.handlers["navigate"] = function(step)
+    local MudNav = require_module("MudNav")
+    local s = QuestEngine.state
+
+    s.phase = "navigating"
+
+    MudNav.walk(step.path, function(success, reason)
+        if not s.running or not MudUtils.check_run(s.run_id) then return end
+
+        if not success then
+            mud.echo("[QuestEngine] Navigate failed: " .. tostring(reason))
+            local on_fail = step.on_fail or "stop"
+            if on_fail == "retry" then
+                MudUtils.safe_timer(2.0, function() QuestEngine.execute_step() end)
+            else
+                QuestEngine.stop(false)
+            end
+            return
+        end
+
+        -- Post-arrival commands
+        if step.cmds then
+            for _, cmd in ipairs(step.cmds) do mud.send(cmd) end
+        end
+
+        -- If expect pattern specified, wait for server response
+        if step.expect then
+            s.phase = "waiting_response"
+            s.current_expect = step.expect
+            MudUtils.safe_timer(10.0, function()
+                if s.running and s.phase == "waiting_response" then
+                    mud.echo("[QuestEngine] Timeout waiting for: " .. step.expect)
+                    QuestEngine.stop(false)
+                end
+            end)
+        else
+            QuestEngine.advance()
+        end
+    end)
+end
 
 return QuestEngine
