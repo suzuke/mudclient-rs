@@ -165,7 +165,7 @@ end
 
 function M.register_event_handlers(job)
     -- Search found
-    local search_event = (job.search.type == "quest") and "ifarm:search_found" or "ifarm:search_found"
+    local search_event = "ifarm:search_found"
     mud.on(search_event, string.format([[
         local cur = mud.sm_current("itemfarm_job")
         if cur ~= "searching" then return end

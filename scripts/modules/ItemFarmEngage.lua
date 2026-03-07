@@ -265,6 +265,8 @@ function M.start(job, merged_resources, on_done, on_failed)
                 _G.ItemFarm.engage.echo("Summoning target...")
                 _G.ItemFarm.engage.start_summon()
             ]],
+            timeout_secs = 30.0,
+            timeout_goto = "failed",
         }
         order[#order + 1] = "fighting"
         states.fighting = {
@@ -318,6 +320,8 @@ function M.start(job, merged_resources, on_done, on_failed)
                 _G.ItemFarm.engage.echo("Leading charmed target to kill zone...")
                 _G.ItemFarm.engage.lead_to_kill()
             ]],
+            timeout_secs = 60.0,
+            timeout_goto = "failed",
         }
         order[#order + 1] = "waiting_kill"
         states.waiting_kill = {
@@ -327,7 +331,7 @@ function M.start(job, merged_resources, on_done, on_failed)
                 mud.send("c ref")
                 %s
             ]], job.engage.kill_action
-                and ('_G.ItemFarm.engage.send_cmds_str("' .. job.engage.kill_action .. '")')
+                and ('_G.ItemFarm.engage.send_cmds_str(' .. string.format("%q", job.engage.kill_action) .. ')')
                 or ""),
             timeout_secs = 30.0,
             timeout_goto = "kill_confirmed",  -- force proceed on timeout
@@ -660,17 +664,19 @@ function M.register_event_handlers(job)
     ]], 0)
 
     -- ifarm:engage_done -> invoke on_done callback
-    mud.once("ifarm:engage_done", [[
-        if _G.ItemFarm and _G.ItemFarm.engage and _G.ItemFarm.engage.on_done then
-            _G.ItemFarm.engage.on_done()
-        end
+    mud.on("ifarm:engage_done", [[
+        local cur = mud.sm_current("itemfarm_engage")
+        if cur ~= "kill_confirmed" then return end
+        local fn = _G.ItemFarm.engage.on_done
+        if fn then fn() end
     ]], 0)
 
     -- ifarm:engage_failed -> invoke on_failed callback
-    mud.once("ifarm:engage_failed", [[
-        if _G.ItemFarm and _G.ItemFarm.engage and _G.ItemFarm.engage.on_failed then
-            _G.ItemFarm.engage.on_failed()
-        end
+    mud.on("ifarm:engage_failed", [[
+        local cur = mud.sm_current("itemfarm_engage")
+        if cur ~= "failed" then return end
+        local fn = _G.ItemFarm.engage.on_failed
+        if fn then fn() end
     ]], 0)
 end
 

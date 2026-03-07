@@ -121,7 +121,10 @@ function M.parse(line, clean_line, is_echo)
     -- Static rules
     for _, rule in ipairs(RULES) do
         if string.find(cl, rule.p, 1, true) then
-            local data = rule.data or {}
+            local data = {}
+            if rule.data then
+                for k, v in pairs(rule.data) do data[k] = v end
+            end
             data.line = cl
             mud.emit(rule.ev, data)
             return  -- first match wins
@@ -131,7 +134,12 @@ function M.parse(line, clean_line, is_echo)
     -- Dynamic rules (buff fade)
     for _, rule in ipairs(dynamic_rules) do
         if string.find(cl, rule.p, 1, true) then
-            mud.emit(rule.ev, rule.data)
+            local data = {}
+            if rule.data then
+                for k, v in pairs(rule.data) do data[k] = v end
+            end
+            data.line = cl
+            mud.emit(rule.ev, data)
             return
         end
     end
