@@ -31,6 +31,7 @@ QuestEngine.define("poker_quest", {
         -- 2. Hunt Spade mobs for yellow stone
         {type="hunt", name="hunt_spade",
          target="spade",
+         explorer_target="(spade)正站在",
          attack_cmd="ear spade",
          max_laps=5,
          disable_open_doors=true,

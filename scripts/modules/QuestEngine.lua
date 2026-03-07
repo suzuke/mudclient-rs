@@ -322,8 +322,8 @@ QuestEngine.handlers["hunt"] = function(step)
     local MudExplorer = require_module("MudExplorer")
     local s = QuestEngine.state
 
-    -- Configure explorer
-    MudExplorer.config.target = step.target
+    -- Configure explorer (explorer_target avoids matching corpse lines)
+    MudExplorer.config.target = step.explorer_target or step.target
     MudExplorer.config.max_laps = step.max_laps or 5
     MudExplorer.config.disable_open_doors = step.disable_open_doors or false
     MudExplorer.config.debug = step.debug or false
