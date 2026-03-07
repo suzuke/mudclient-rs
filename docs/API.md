@@ -138,199 +138,62 @@ end
 
 ---
 
-## 事件系統 (Event System)
+## 事件系統 API 速查
 
-事件系統允許你監聽和發送自訂或內建事件，實現鬆耦合的腳本架構。
+以下為事件驅動系統的 API 速查表。完整教學（含狀態機、快捷鍵、訊息路由、實戰範例）請參閱 [事件系統教學 (EventSystem.md)](EventSystem.md)。
 
-### 內建事件
+### 事件
 
-| 事件名稱 | 觸發時機 | `event_data` 內容 |
-| :--- | :--- | :--- |
-| `connected` | 連線到伺服器 | `nil` |
-| `disconnected` | 與伺服器斷線 | `nil` |
-| `room_changed` | 房間變更 | 房間名稱 (string) |
-| `command_sent` | 發送指令 | 指令文字 (string) |
-| `state_changed` | 狀態機狀態變更 | JSON string `{"machine":"name","from":"old","to":"new"}` |
+| 函數 | 說明 |
+| :--- | :--- |
+| `mud.on(event, code, [priority])` | 註冊事件處理器，回傳 handler_id |
+| `mud.once(event, code, [priority])` | 註冊一次性事件處理器 |
+| `mud.off(handler_id)` | 取消事件處理器 |
+| `mud.emit(event, [data])` | 發送事件，data 可為 string 或 table |
 
-### API 函數
+內建事件：`connected`、`disconnected`、`room_changed`、`command_sent`、`state_changed`
 
-| 函數 | 說明 | 範例 |
-| :--- | :--- | :--- |
-| `mud.on(event, code, [priority])` | 註冊事件處理器，回傳 handler_id | `local id = mud.on("connected", "mud.echo('hi')")` |
-| `mud.once(event, code, [priority])` | 註冊一次性事件處理器 | `mud.once("room_changed", "mud.echo(event_data)")` |
-| `mud.off(handler_id)` | 取消事件處理器 | `mud.off(id)` |
-| `mud.emit(event, [data])` | 發送事件，data 可為 string 或 table | `mud.emit("combat_start", {target="orc"})` |
+### 觸發器群組
 
-事件處理器的 code 中可透過全域變數 `event_data` 取得事件資料（JSON string 或 nil）。`priority` 為數字，數字越小越先執行，預設為 0。
+| 函數 | 說明 |
+| :--- | :--- |
+| `mud.enable_group(group, enabled)` | 啟用/禁用群組內所有觸發器 |
 
-```lua
--- 監聽房間變更
-local id = mud.on("room_changed", [[
-    mud.echo("進入房間: " .. (event_data or "unknown"))
-]], 10)
+### 狀態機
 
--- 一次性監聽
-mud.once("connected", "mud.echo('首次連線!')")
+| 函數 | 說明 |
+| :--- | :--- |
+| `mud.state_machine(name, def)` | 建立狀態機（含 states、transitions 定義） |
+| `mud.sm_current(name)` | 取得目前狀態 |
+| `mud.sm_transition(name, event)` | 手動觸發狀態轉換 |
+| `mud.sm_reset(name)` | 重置為初始狀態 |
 
--- 發送自訂事件（table 會序列化為 JSON）
-mud.emit("loot_found", { item = "sword", value = 100 })
+### 快捷鍵
 
--- 取消監聽
-mud.off(id)
-```
+| 函數 | 說明 |
+| :--- | :--- |
+| `mud.bind_key(combo, code)` | 綁定按鍵（f1-f12, ctrl/alt/shift 組合） |
+| `mud.unbind_key(combo)` | 取消按鍵綁定 |
 
----
+### 訊息路由
 
-## 觸發器群組 (Trigger Groups)
+| 函數 | 說明 |
+| :--- | :--- |
+| `mud.add_route({name, pattern, window, gag})` | 新增路由規則 |
+| `mud.remove_route(name)` | 移除路由規則 |
 
-觸發器可以指定 `group` 欄位來分組，並透過 API 批量啟用或禁用整個群組。
+### Debug 面板
 
-| 函數 | 說明 | 範例 |
-| :--- | :--- | :--- |
-| `mud.enable_group(group, enabled)` | 啟用/禁用群組內所有觸發器 | `mud.enable_group("combat", false)` |
-
-```lua
--- 禁用 combat 群組的所有觸發器
-mud.enable_group("combat", false)
-
--- 啟用 combat 群組
-mud.enable_group("combat", true)
-```
-
-觸發器定義中加入 `group` 欄位即可歸類：
-
-```json
-{
-  "name": "auto_attack",
-  "pattern": "怪物出現了",
-  "script": "mud.send('kill monster')",
-  "group": "combat"
-}
-```
-
----
-
-## 狀態機 (State Machine)
-
-狀態機提供有限狀態自動機 (FSM) 功能，可用於管理複雜的多步驟流程（如自動練功、任務腳本等）。
-
-### API 函數
-
-| 函數 | 說明 | 範例 |
-| :--- | :--- | :--- |
-| `mud.state_machine(name, def)` | 建立狀態機 | 見下方範例 |
-| `mud.sm_current(name)` | 取得目前狀態（string 或 nil） | `local s = mud.sm_current("bot")` |
-| `mud.sm_transition(name, event)` | 手動觸發狀態轉換 | `mud.sm_transition("bot", "start")` |
-| `mud.sm_reset(name)` | 重置為初始狀態 | `mud.sm_reset("bot")` |
-
-### 定義格式
-
-```lua
-mud.state_machine("bot", {
-    initial = "idle",
-    states = {
-        idle = {
-            enter = "mud.echo('進入閒置')",   -- 進入狀態時執行
-            exit  = "mud.echo('離開閒置')",   -- 離開狀態時執行
-        },
-        fighting = {
-            enter = "mud.send('kill monster')",
-            timeout = { seconds = 60, target = "idle" },  -- 超時自動轉換
-        },
-    },
-    transitions = {
-        { from = "idle",     event = "engage",     to = "fighting" },
-        { from = "fighting", event = "combat_end", to = "idle" },
-    },
-})
-
--- 查詢狀態
-mud.echo(mud.sm_current("bot"))  -- "idle"
-
--- 觸發轉換
-mud.sm_transition("bot", "engage")  -- idle -> fighting
-
--- 重置
-mud.sm_reset("bot")  -- 回到 idle
-```
-
-狀態轉換時會自動發送 `state_changed` 事件，可搭配事件系統使用。
-
----
-
-## 按鍵綁定 (Key Bindings)
-
-將快捷鍵綁定到 Lua 代碼，支援功能鍵和組合鍵。
-
-| 函數 | 說明 | 範例 |
-| :--- | :--- | :--- |
-| `mud.bind_key(combo, code)` | 綁定按鍵 | `mud.bind_key("f5", "mud.send('look')")` |
-| `mud.unbind_key(combo)` | 取消按鍵綁定 | `mud.unbind_key("f5")` |
-
-支援的按鍵格式：`f1`~`f12`、`ctrl+<key>`、`alt+<key>`、`shift+<key>`，以及組合如 `ctrl+shift+a`。
-
-```lua
--- 綁定 F5 為查看狀態
-mud.bind_key("f5", "mud.send('score')")
-
--- 綁定 Ctrl+1 為快速治療
-mud.bind_key("ctrl+1", "mud.send('drink heal_potion')")
-
--- 綁定 Alt+A 為自動攻擊
-mud.bind_key("alt+a", "mud.send('kill $target')")
-
--- 取消綁定
-mud.unbind_key("f5")
-```
-
----
-
-## 訊息路由 (Message Routing)
-
-將符合特定模式的訊息自動導向子視窗，可選擇是否在主視窗中隱藏（gag）。
-
-| 函數 | 說明 | 範例 |
-| :--- | :--- | :--- |
-| `mud.add_route(def)` | 新增路由規則 | 見下方範例 |
-| `mud.remove_route(name)` | 移除路由規則 | `mud.remove_route("chat")` |
-
-路由定義欄位：
-
-| 欄位 | 類型 | 說明 |
-| :--- | :--- | :--- |
-| `name` | string | 路由名稱（唯一識別） |
-| `pattern` | string | 匹配模式（正則表達式） |
-| `window` | string | 目標子視窗名稱 |
-| `gag` | boolean | 是否從主視窗隱藏（預設 false） |
-
-```lua
--- 將閒聊頻道導向 chat 視窗
-mud.add_route({ name = "chat", pattern = "【閒聊】", window = "chat", gag = false })
-
--- 將系統訊息導向 system 視窗，並從主視窗隱藏
-mud.add_route({ name = "system", pattern = "\\[System\\]", window = "system", gag = true })
-
--- 移除路由
-mud.remove_route("chat")
-```
-
----
-
-## Debug 面板
-
-側邊欄新增 **Debug** 頁籤，提供以下功能：
-
-*   **Lua Console**: 即時執行 Lua 代碼並查看輸出
-*   **Variables**: 查看與編輯全域變數表
-*   **State Machines**: 查看所有狀態機的目前狀態
-*   **Key Bindings**: 查看已綁定的快捷鍵
-*   **Route Rules**: 查看已設定的訊息路由規則
-*   **Event Log**: 查看最近的事件觸發記錄
+側邊欄 **Debug** 頁籤提供：Lua Console、Variables、State Machines、Key Bindings、Route Rules、Event Log。
 
 ---
 
 ## 相關文件
 
-* [觸發器與別名指南 (Triggers & Aliases)](Triggers_Aliases.md)
-* [腳本開發指南 (Script Guide)](ScriptGuide.md)
-* [腳本使用手冊 (Scripts)](Scripts.md)
+| 文件 | 說明 |
+| :--- | :--- |
+| [事件系統教學](EventSystem.md) | 事件、狀態機、快捷鍵、訊息路由完整教學與範例 |
+| [QuestEngine 教學](QuestEngine.md) | 宣告式任務引擎教學 |
+| [觸發器與別名指南](Triggers_Aliases.md) | 觸發器和別名設定 |
+| [腳本開發指南](ScriptGuide.md) | 腳本架構、模組系統、撰寫規範 |
+| [腳本使用手冊](Scripts.md) | 各腳本使用說明 |

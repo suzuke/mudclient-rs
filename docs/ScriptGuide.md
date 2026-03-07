@@ -147,6 +147,7 @@ MudUtils.register_hook("MyScript", ...)
 | `MudExplorer` | DFS/BFS 探索、目標搜尋 |
 | `MudLoot` | 戰利品收集、自動 `get` |
 | `MudMapper` | 地圖記錄、廣度優先探索 |
+| `QuestEngine` | 宣告式任務引擎，協調上述模組執行多步驟任務 |
 
 ---
 
@@ -240,9 +241,29 @@ Rust: load_startup_scripts()
 
 ---
 
-## 任務腳本架構（Signal Pattern）
+## 任務腳本架構
 
-任務腳本（如 `smurf_quest.lua`、`poker_quest.lua`）建議採用 **Signal Pattern**，統一以 `expect` 匹配推進步驟，避免多重推進路徑造成的 race condition。
+### 推薦方式：QuestEngine（宣告式）
+
+新任務腳本建議使用 `QuestEngine` 模組，用資料定義取代命令式程式碼。詳見 [QuestEngine 教學指南](QuestEngine.md)。
+
+```lua
+local QuestEngine = require("scripts.modules.QuestEngine")
+
+QuestEngine.define("my_quest", {
+    recall_cmd = "recall",
+    steps = {
+        {type="navigate", name="go", path="3s;2e"},
+        {type="hunt", name="kill", target="goblin", attack_cmd="kill goblin",
+         loot={items={"key"}, sac=true}},
+        {type="give", name="deliver", item="key", npc="king", expect="國王收下了"},
+    }
+})
+```
+
+### 傳統方式：Signal Pattern（命令式）
+
+舊版任務腳本（如 `smurf_quest.lua`、`poker_quest.lua`）採用 **Signal Pattern**，統一以 `expect` 匹配推進步驟，避免多重推進路徑造成的 race condition。
 
 ### 核心原則
 

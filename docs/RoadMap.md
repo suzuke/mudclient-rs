@@ -1,7 +1,7 @@
 # 專案路線圖 (Roadmap)
 
 ## 📌 當前狀態
-目前專案處於 **v0.8.0** 穩定版。核心功能（連線、腳本、觸發器、別名、地圖、MCP Server、內嵌終端）均已完成，持續進行 UI 優化與進階功能開發。
+目前專案處於 **v0.9.0** 穩定版。核心功能（連線、腳本、觸發器、別名、地圖、MCP Server、內嵌終端、事件系統、任務引擎）均已完成，持續進行進階功能開發。
 
 ## 📅 里程碑
 
@@ -61,6 +61,19 @@
 - [x] 字型設定 — 系統等寬字型掃描與即時切換（內建 Sarasa Mono TC 為預設）
 - [x] 主題切換 — 深色/淺色模式，含 ANSI 前景色自適應確保可讀性
 
+### v0.9.0 (事件驅動與任務引擎) - ✅ 已完成 (2026-03-07)
+- [x] **EventBus 事件匯流排**：`mud.on/off/emit/once` Lua API，支援優先序和一次性監聽
+- [x] **觸發器群組**：`mud.enable_group()` 批量開關觸發器
+- [x] **狀態機框架**：`mud.state_machine()` 有限狀態機，支援 timeout 和 enter/exit callback
+- [x] **快捷鍵綁定**：`mud.bind_key/unbind_key`，支援 F1-F12、Ctrl/Alt 組合鍵
+- [x] **訊息路由**：`mud.add_route/remove_route` 將訊息導向子視窗
+- [x] **Script Debug 面板**：Lua Console、變數檢視、狀態機、事件日誌
+- [x] **QuestEngine 宣告式任務引擎**：8 種 step 類型（navigate, hunt, give, say, interact, summon, wait_for_mob, custom）
+- [x] **任務移植**：poker_quest_v2、ikkoku_quest_v2、smurf_quest_v2
+- [x] **效能優化**：render loop char_buf reuse、BFS parent-pointer、strip_ansi dedup 等
+
+---
+
 ## 🎯 功能需求清單
 
 ### 核心功能 (Core)
@@ -71,10 +84,15 @@
 
 ### 腳本與自動化 (Scripting)
 - [x] **Lua 綁定**：完整 `mud.*` API (send, echo, trigger, timer)
-- [x] **觸發器**：支援正則表達式 (Regex) 與 Lua 回調
+- [x] **觸發器**：支援正則表達式 (Regex) 與 Lua 回調，支援群組批量開關
 - [x] **別名**：支援參數替換 (`$1`, `$2`)
 - [x] **計時器**：一次性 (`tempTimer`) 與循環計時器
 - [x] **模組化腳本**：`scripts/modules/` 共用邏輯 (MudNav, MudCombat 等)
+- [x] **事件系統**：EventBus (`mud.on/off/emit/once`)，解耦腳本模組
+- [x] **狀態機**：`mud.state_machine()` 有限狀態機框架
+- [x] **快捷鍵綁定**：`mud.bind_key/unbind_key`
+- [x] **訊息路由**：`mud.add_route/remove_route` 訊息導向子視窗
+- [x] **QuestEngine**：宣告式任務引擎，8 種 step 類型
 
 ### 使用者介面 (UI/UX)
 - [x] **多視窗**：支援分頁 (Tabs) 切換
@@ -95,5 +113,6 @@
 - [x] **地圖視覺化**：egui canvas 渲染、BFS 佈局、zoom/pan 互動
 - [x] **自動導航**：Lua BFS pathfinding (`MudMapper.find_path`)
 - [x] **內嵌終端**：側邊欄終端模擬器 (egui-term)
+- [x] **Script Debug 面板**：Lua Console、變數檢視、狀態機狀態、事件日誌
 
-> 最後更新: 2026-03-06
+> 最後更新: 2026-03-08

@@ -20,9 +20,14 @@
     *   提供 `mud.*` API 綁定。
     *   管理 Lua 狀態與全域變數。
 *   **Automation (自動化)**:
-    *   **Triggers**: 基於 Regex 的訊息觸發器。
+    *   **Triggers**: 基於 Regex 的訊息觸發器，支援群組 (Groups) 批量開關。
     *   **Aliases**: 指令別名與參數展開。
     *   **Timers**: 排程任務管理。
+*   **Event System (事件系統)**:
+    *   **EventBus**: 事件匯流排，支援 `on/off/emit/once` 操作。
+    *   **State Machine**: 有限狀態機框架，支援狀態轉換、timeout、enter/exit callback。
+    *   **Key Bindings**: 快捷鍵綁定 (F1-F12, Ctrl/Alt 組合鍵)。
+    *   **Message Routing**: 訊息路由到子視窗，支援 gag 隱藏。
 *   **Logger (日誌層)**:
     *   結構化日誌記錄。
     *   支援 ANSI 轉 HTML 的日誌輸出。
@@ -119,7 +124,8 @@ Rust 原生的 MCP Server，透過 stdio 模式讓 AI Agent（如 Claude Code、
     *   `MudMapper` — 房間記錄與地圖建構。
     *   `MudExplorer` — 自動探索。
     *   `MudUtils` — 通用工具函式。
-*   **任務腳本**: `ikkoku_quest`, `poker_quest`, `smurf_quest`, `itemfarm` 等。
+*   `QuestEngine` — 宣告式任務引擎，協調各模組執行多步驟任務。
+*   **任務腳本**: `poker_quest_v2`, `ikkoku_quest_v2`, `smurf_quest_v2`（QuestEngine 版）, `itemfarm` 等。
 *   **輔助腳本**: `autocast`, `benumb`, `practice`, `memcalc`, `skillplanner` 等。
 
 ## 📂 檔案系統
@@ -157,6 +163,8 @@ cargo build -p mcp-server --release
 | :--- | :--- |
 | [API.md](API.md) | Lua 腳本 API 參考 |
 | [ScriptGuide.md](ScriptGuide.md) | 腳本開發入門教學 |
+| [EventSystem.md](EventSystem.md) | 事件系統、狀態機、快捷鍵教學 |
+| [QuestEngine.md](QuestEngine.md) | 宣告式任務引擎教學 |
 | [MCP_Usage.md](MCP_Usage.md) | MCP Server 使用指南 |
 | [MCP_Agent_Playbook.md](MCP_Agent_Playbook.md) | AI Agent 操控 Playbook |
 | [Navigation.md](Navigation.md) | 導航系統說明 |

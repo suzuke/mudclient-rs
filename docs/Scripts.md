@@ -10,8 +10,9 @@
 2. [Practice - 法術練習](#practice---法術練習)
 3. [MemCalc - 記憶點數計算機](#memcalc---記憶點數計算機)
 4. [SkillPlanner - 技能配置規劃](#skillplanner---技能配置規劃)
-5. [MudNav & MudExplorer - 導航與地圖系統](Navigation.md)
-6. [MCP Server - 外部控制介面](MCP_Usage.md)
+5. [QuestEngine - 宣告式任務引擎](#questengine---宣告式任務引擎)
+6. [MudNav & MudExplorer - 導航與地圖系統](Navigation.md)
+7. [MCP Server - 外部控制介面](MCP_Usage.md)
 
 ---
 
@@ -267,6 +268,51 @@ graph LR
 3. **Practice** 自動練習未滿的法術
 4. **AutoCast** 持續施法練習特定技能
 5. **MudNav/MudExplorer** 處理移動與探索
+
+---
+
+## QuestEngine - 宣告式任務引擎
+
+用 ~30 行資料定義取代 600+ 行的命令式任務腳本。定義步驟序列（導航、獵殺、對話、交付等），引擎自動協調底層模組執行。
+
+### 已移植的任務
+
+| 腳本 | 說明 | 原始版本 |
+|------|------|----------|
+| `poker_quest_v2.lua` | 撲克王國任務 | `poker_quest.lua` |
+| `ikkoku_quest_v2.lua` | 一刻館任務 | `ikkoku_quest.lua` |
+| `smurf_quest_v2.lua` | 藍色小精靈任務 | `smurf_quest.lua` |
+
+### 使用方式
+
+```lua
+-- 載入任務
+/lua dofile("scripts/poker_quest_v2.lua")
+
+-- 執行
+/lua PokerQuestV2.start()
+
+-- 停止
+/lua PokerQuestV2.stop()
+
+-- 查看狀態
+/lua PokerQuestV2.status()
+```
+
+### 支援的 Step 類型
+
+| 類型 | 用途 |
+|------|------|
+| `navigate` | 路徑導航 |
+| `hunt` | 探索並獵殺目標，撿取戰利品 |
+| `give` | 交付物品給 NPC |
+| `say` | 對話 |
+| `interact` | 發送任意指令 |
+| `summon` | 召喚 NPC |
+| `wait_for_mob` | 等待 NPC 出現 |
+| `custom` | 自訂 inline 函數 |
+
+詳細用法請參閱 [QuestEngine 教學指南](QuestEngine.md)。
 
 ---
 

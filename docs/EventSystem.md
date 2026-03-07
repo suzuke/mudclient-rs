@@ -556,6 +556,7 @@ mud.on("room_changed", [[
 
 ## 相關文件
 
-- [指令與腳本指南 (API Reference)](API.md) — 完整的 API 函數清單
+- [指令與腳本 API (API Reference)](API.md) — 完整的 API 函數速查表
+- [QuestEngine 教學指南](QuestEngine.md) — 宣告式任務引擎
 - [腳本開發指南 (Script Guide)](ScriptGuide.md) — 腳本架構與模組系統
 - [觸發器與別名指南](Triggers_Aliases.md) — 觸發器和別名設定
