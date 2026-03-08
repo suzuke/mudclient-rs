@@ -1,0 +1,39 @@
+作者 Hsins (迅雷不及掩耳盜鈴)
+看板 mud
+標題 Re: [心得] 7777「四度空間裝備一覽表」
+時間 Tue Aug 18 08:44:08 2020
+
+來源: https://www.ptt.cc/bbs/mud/M.1597711450.A.12E.html
+
+最近不知道是不是貼文有一種宣傳用，回鍋的大叔們湧現了幾位
+也順便揪出了一些這份裝備總覽的小錯誤…
+小幅度地修改了一些內容然後新增一些小工具
+想說稍微講一下更新了什麼，然後再順便打個廣告（？
+
+檔案連結: https://bit.ly/7777EQLIST
+
+工商時間
+IP : void7777.ddns.net PORT: 7777
+
+更新內容 (2020/08/18 Update)
+- 新增裝備：瑤瑤木馬/Yao horse 瑤瑤巨劍/Yao sword 棄天神劍/Dark God Sword
+  混沌戰甲/chaos armor 真武太極劍/taigi sword 紫金龍紋玉/Dragon Soul Medal
+  心靈護手/mind bracelet（純） 心靈護手/mind bracelet（紅） 心靈護手/mind bracelet（白）
+  魅影神靴/boots ☆步雲靴☆/cloud boots
+- 總覽配裝頁面增添 Changebody, Train 欄位，供配裝調整
+- 選單列添加參考裝備功能，詳見下面 demo 動圖
+  https://i.imgur.com/HJp1DWh.gif
+
+--
+※ 發信站: 批踢踢實業坊(ptt.cc), 來自: 140.112.37.86 (臺灣)
+※ 文章網址: https://www.ptt.cc/bbs/mud/M.1597711450.A.12E.html
+
+推 tsetsethatha: 感謝您辛苦整理及分享! 本系列文已收入精華區 08/18 21:25
+推 orchidisland: 布達拉宮皇冠 中立者加mp40 需跟holy和evil分開 08/19 16:37
+推 orchidisland: Man medal 戰功1200 08/19 21:28
+推 orchidisland: Alien medal (智) 戰功300 08/19 21:33
+推 flyvsmax : 好久沒碰 帳號已死QQ.... 10/20 10:19
+推 DropOut : 進不去捏 想懷舊一下但進不去 11/30 08:52
+推 DropOut : 發現是公司擋mud Q Q 回家在試試看 11/30 09:19
+推 tsetsethatha: http://www.revivalworld.org/mud/taiwanmudlist 12/04 19:47
+推 tsetsethatha: 可以用此網址查詢mud連線狀況唷! 12/04 19:47

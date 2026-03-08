@@ -1,7 +1,8 @@
 # MudClient Lua 腳本撰寫指南
 
-> **適用版本**：mudclient-rs（Rust + Lua 架構）  
-> **最後更新**：2026-02-20
+> **適用版本**：mudclient-rs v0.8+（Rust + Lua 架構）
+> **最後更新**：2026-03-08
+> **另見**：[Lua API 參考手冊](LuaAPI.md) — `mud.*` 全部 API 與內建 `json` 模組文件
 
 ---
 
@@ -187,6 +188,18 @@ _G.MyScript.state = _G.MyScript.state or { running = false }
 
 ## Timer 與 run_id 防競態
 
+`mud.timer` 支援字串和 function 兩種模式（推薦使用 function 模式）：
+
+```lua
+-- function 模式（推薦）— 有 closure、IDE 補全、語法檢查
+mud.timer(5, function()
+    mud.send("look")
+end)
+
+-- 字串模式（向下相容）
+mud.timer(5, "mud.send('look')")
+```
+
 腳本啟動時呼叫 `MudUtils.get_new_run_id()` 取得一個遞增的 ID。所有計時器回呼的第一件事就是驗證 `run_id`，確保舊計時器不會干擾新的執行週期。
 
 ```lua
@@ -360,6 +373,27 @@ function step_handlers.get_loot(rid)
     end)
 end
 ```
+
+---
+
+## 內建工具
+
+### json 模組
+
+全域可用，無需 require。取代各腳本自製的 json_encode / json_decode。
+
+```lua
+-- 編碼
+local s = json.encode({name = "item", damage = 50})
+
+-- 解碼
+local data = json.decode(s)
+
+-- Pretty print
+local pretty = json.encode(data, true)
+```
+
+詳見 [Lua API 參考手冊 — json 模組](LuaAPI.md#內建-json-模組)。
 
 ---
 
