@@ -1353,3 +1353,287 @@ Block Wiz 善良陣營職業。源自 Lilina 撰寫的阿拉丁系列區域後�
 | 照明器具 | 智慧之光 |
 
 **評價：** 此配置「最大的好處在於取得方便」，無需完成困難任務。體格較低會影響生命值，但整體而言適合新手玩家使用。
+
+---
+
+## SKILL 組合（角色配置範例）
+
+以下為各種角色配置的技能組合範例，供建角時參考。
+
+### 17. kai-kni
+
+```
+[   enhanced damage]熟練度:  99/   2  [     second attack]熟練度:  99/   2
+[      third attack]熟練度:  99/   3  [         bare fist]熟練度:  99/   3
+[             blitz]熟練度:  99/   2  [          ejinjing]熟練度:  99/   1
+[        dragonfist]熟練度:  99/   6  [         lohanfist]熟練度:  99/  29
+[           sadfist]熟練度:  99/   9  [        saulinfist]熟練度:  99/   5
+[        kamekameha]熟練度:  99/  22  [         gankitama]熟練度:  61/ 316
+[           kaioken]熟練度:  99/   6  [         drunkfist]熟練度:  99/  32
+```
+
+`<2837hp 110m 583mv 2319ip>`
+
+### 18. star-wiz
+
+```
+[             armor]熟練度:  99/   2  [             bless]熟練度:  99/  52
+[         blindness]熟練度:  99/  68  [     burning hands]熟練度:  99/  68
+[    call lightning]熟練度:  99/  86  [      charm person]熟練度:  99/  62
+[       chill touch]熟練度:  99/  52  [   continual light]熟練度:  99/  55
+[   control weather]熟練度:  99/  39  [       create food]熟練度:  99/ 105
+[     create spring]熟練度:  99/  84  [      create water]熟練度:  99/  20
+[    cure blindness]熟練度:  99/  22  [        cure light]熟練度:  99/  39
+[       cure poison]熟練度:  99/  70  [      cure serious]熟練度:  99/  71
+[             curse]熟練度:  99/ 100  [       detect evil]熟練度:  99/  39
+[      detect invis]熟練度:  99/  24  [      detect magic]熟練度:  99/  55
+[     detect poison]熟練度:  99/  71  [       faerie fire]熟練度:  99/  36
+[        faerie fog]熟練度:  99/  68  [          fireball]熟練度:  99/  20
+[       flamestrike]熟練度:  99/  20  [               fly]熟練度:  99/  84
+[              heal]熟練度:  99/  48  [       infravision]熟練度:  99/  39
+[             invis]熟練度:  99/  52  [    know alignment]熟練度:  99/  23
+[     magic missile]熟練度:  99/   4  [        mass invis]熟練度:  99/  63
+[          illusion]熟練度:  99/  47  [            poison]熟練度:  99/  38
+[        protection]熟練度:  99/  36  [           refresh]熟練度:  99/  52
+[      remove curse]熟練度:  99/ 103  [         sanctuary]熟練度:  99/  52
+[             sleep]熟練度:  99/  62  [            summon]熟練度:  99/ 107
+[          teleport]熟練度:  99/  84  [     ventriloquate]熟練度:  99/  71
+[            weaken]熟練度:  99/  47  [              lore]熟練度:  99/  20
+[         lifesteal]熟練度:  99/  36  [         soulsteal]熟練度:  99/  84
+[      nuclearblast]熟練度:  99/   4  [    cure paralysis]熟練度:  99/  23
+[         star rain]熟練度:  99/ 100  [         powerball]熟練度:  99/  36
+[         rockblast]熟練度:  99/   4  [           cyclone]熟練度:  99/  84
+```
+
+`<2144hp 5314m 686mv>`
+
+### 19. mag-kni-bxr
+
+```
+[             bless]熟練度:  99/  12  [       create food]熟練度:  99/   9
+[     create spring]熟練度:  99/  28  [      create water]熟練度:  99/  35
+[    cure blindness]熟練度:  99/  28  [        cure light]熟練度:  99/  30
+[      cure serious]熟練度:  99/  18  [              heal]熟練度:  99/  15
+[     magic missile]熟練度:  99/   7  [        protection]熟練度:  99/  14
+[           refresh]熟練度:  99/  11  [         sanctuary]熟練度:  99/  18
+[         rockblast]熟練度:  99/  33  [   enhanced damage]熟練度:  99/   4
+[     second attack]熟練度:  99/   5  [      third attack]熟練度:  99/   2
+[         bare fist]熟練度:  99/   4  [             blitz]熟練度:  99/   2
+[         reflexion]熟練度:  99/  14  [          ejinjing]熟練度:  99/   4
+[         cometfist]熟練度:  99/   2  [        dragonfist]熟練度:  99/  14
+[         lohanfist]熟練度:  99/  42  [           sadfist]熟練度:  99/  24
+[        saulinfist]熟練度:  99/  14  [         drunkfist]熟練度:  99/  42
+[         fusislash]熟練度:  99/  22  [     mountainslash]熟練度:  99/  22
+[       shadowslash]熟練度:  99/  22
+```
+
+`<3492hp 491m 1797mv>`
+
+### 20. tai-swd-bxr
+
+```
+[         bare fist]熟練度:  72/ 260  [       swordmaster]熟練度:  61/ 553
+[          ejinjing]熟練度:  94/ 205  [        dragonfist]熟練度:  99/  14
+[         drunkfist]熟練度:  99/  14  [        bloomslash]熟練度:  99/  42
+[      chunshislash]熟練度:  99/  22  [         fusislash]熟練度:  99/  22
+[       shadowslash]熟練度:  99/  10  [      shanyanslash]熟練度:  99/  22
+[        taigislash]熟練度:  99/  36  [        twoyislash]熟練度:  99/   8
+[         girlslash]熟練度:  71/   0  [       flowerslash]熟練度:  99/   1
+```
+
+`<生命3251 精神133 移動2317>`
+
+### 21. out-wiz (Lace)
+
+```
+[             armor]熟練度:  99/  14  [             bless]熟練度:  99/  35
+[         blindness]熟練度:  97/ 825  [   control weather]熟練度:  99/  23
+[       create food]熟練度:  99/  26  [      create water]熟練度:  99/  35
+[    cure blindness]熟練度:  99/  15  [        cure light]熟練度:  99/   2
+[       cure poison]熟練度:  99/  29  [      cure serious]熟練度:  99/  26
+[             curse]熟練度:  71/   0  [       detect evil]熟練度:  99/  16
+[     detect hidden]熟練度:  99/  28  [      detect invis]熟練度:  99/  45
+[      detect magic]熟練度:  99/  37  [     detect poison]熟練度:  99/  37
+[      dispel magic]熟練度:  99/  37  [       faerie fire]熟練度:  71/ 161
+[        faerie fog]熟練度:  99/  35  [               fly]熟練度:  99/  35
+[              heal]熟練度:  99/  49  [          identify]熟練度:  86/  66
+[       infravision]熟練度:  99/  23  [    know alignment]熟練度:  99/  16
+[     locate object]熟練度:  86/ 846  [     magic missile]熟練度:  80/ 186
+[        protection]熟練度:  99/  14  [           refresh]熟練度:  99/  24
+[      remove curse]熟練度:  91/ 922  [         sanctuary]熟練度:  99/   7
+[            shield]熟練度:  99/   7  [        stone skin]熟練度:  99/  42
+[              lore]熟練度:  99/  22  [         lifesteal]熟練度:  75/  71
+[         soulsteal]熟練度:  99/  14  [     remove nodrop]熟練度:  85/ 419
+[           barrier]熟練度:  99/   2  [        dark space]熟練度:  85/ 572
+[             dodge]熟練度:  99/  14  [        earthslice]熟練度:  99/  10
+[              scan]熟練度:  99/   1  [           agility]熟練度:  99/   5
+[       outdo waver]熟練度:  79/ 912  [       spellmaster]熟練度:  99/   3
+```
+
+`2821/2821 1911/1911 2034/2034 413/401`
+
+### 22. mag-swd
+
+魔劍配置，技能較多，僅供參考（還有很多沒練完的技能）。
+
+```
+[             bless]熟練度:  99/  51  [         blindness]熟練度:  99/  36
+[     burning hands]熟練度:  99/ 106  [    call lightning]熟練度:  99/  86
+[       chill touch]熟練度:  99/   4  [   continual light]熟練度:  99/  55
+[   control weather]熟練度:  99/ 103  [       create food]熟練度:  99/   7
+[     create spring]熟練度:  99/  84  [      create water]熟練度:  99/  36
+[    cure blindness]熟練度:  99/  54  [        cure light]熟練度:  99/  40
+[       cure poison]熟練度:  83/ 927  [      cure serious]熟練度:  99/   1
+[             curse]熟練度:  94/1007  [       detect evil]熟練度:  99/  71
+[      detect invis]熟練度:  99/  56  [      detect magic]熟練度:  99/  85
+[     detect poison]熟練度:  85/   0  [      dispel magic]熟練度:  99/  55
+[       faerie fire]熟練度:  94/ 264  [        faerie fog]熟練度:  99/  74
+[          fireball]熟練度:  99/  42  [       flamestrike]熟練度:  99/  47
+[               fly]熟練度:  99/  84  [              heal]熟練度:  99/  94
+[          identify]熟練度:  99/  42  [       infravision]熟練度:  99/  71
+[             invis]熟練度:  99/ 100  [    know alignment]熟練度:  99/ 103
+[     locate object]熟練度:  99/  88  [     magic missile]熟練度:  99/ 106
+[        mass invis]熟練度:  99/  36  [          illusion]熟練度:  99/  77
+[            poison]熟練度:  81/ 561  [        protection]熟練度:  99/  20
+[           refresh]熟練度:  99/  52  [      remove curse]熟練度:  93/   4
+[         sanctuary]熟練度:  99/  20  [     ventriloquate]熟練度:  99/ 103
+[              lore]熟練度:  99/ 106  [         lifesteal]熟練度:  75/ 560
+[         soulsteal]熟練度:  99/  20  [     recharge item]熟練度:  85/ 497
+[         powerball]熟練度:  99/ 106  [           cyclone]熟練度:  95/  14
+[              scan]熟練度:  81/ 337  [       swordmaster]熟練度:  99/  24
+[         fireslash]熟練度:  99/ 130  [        flameslash]熟練度:  99/  95
+[         fusislash]熟練度:  98/ 715  [         lifeslash]熟練度:  99/  84
+[       shadowslash]熟練度:  99/   2  [      shanyanslash]熟練度:  96/ 725
+[         soulslash]熟練度:  99/  84
+```
+
+### 23. bare-kni
+
+角色：弱拳騎士 Eastbxr（等級 60，力量 30 智力 12 睿智 14 速度 28 體格 22）
+
+- 生命力: 3160 / 精神力: 908 / 移動力: 1642 / 內力: 1997
+- 加強命中率: 41 / 加強傷害率: 84
+- 內力強度 1638，魔法強度 136
+
+```
+[             bless]熟練度:  99/  35  [         blindness]熟練度:  99/  28
+[   continual light]熟練度:  99/   3  [   control weather]熟練度:  99/  26
+[       create food]熟練度:  99/   7  [     create spring]熟練度:  99/  26
+[      create water]熟練度:  99/  26  [    cure blindness]熟練度:  99/  16
+[        cure light]熟練度:  99/  18  [       cure poison]熟練度:  99/  31
+[      cure serious]熟練度:  99/  22  [             curse]熟練度:  99/  28
+[      detect invis]熟練度:  99/  10  [      detect magic]熟練度:  99/  11
+[     detect poison]熟練度:  99/  30  [      dispel magic]熟練度:  99/  18
+[       faerie fire]熟練度:  99/  20  [               fly]熟練度:  99/  16
+[              heal]熟練度:  99/   6  [          identify]熟練度:  99/  24
+[       infravision]熟練度:  99/  24  [     locate object]熟練度:  99/   8
+[     magic missile]熟練度:  77/ 854  [        protection]熟練度:  99/  30
+[           refresh]熟練度:  99/   2  [      remove curse]熟練度:  99/  27
+[         sanctuary]熟練度:  99/   7  [     remove nodrop]熟練度:  99/  35
+[             dodge]熟練度:  99/   1  [   enhanced damage]熟練度:  99/   3
+[     second attack]熟練度:  99/   2  [      third attack]熟練度:  99/   2
+[         bare fist]熟練度:  99/   4  [             blitz]熟練度:  99/   2
+[         reflexion]熟練度:  99/  11  [              scan]熟練度:  99/   2
+[          ejinjing]熟練度:  99/   3  [         cometfist]熟練度:  99/   2
+[        dragonfist]熟練度:  99/   6  [         lohanfist]熟練度:  99/  25
+[           sadfist]熟練度:  99/  25  [        saulinfist]熟練度:  99/  47
+```
+
+### 24. mag-kni
+
+角色：時空冒險者 Linix（等級 60，力量 30 智力 12 睿智 14 速度 30 體格 22）
+
+- 生命力: 3002 / 精神力: 962/1097 / 移動力: 2469 / 內力: 505
+
+```
+[             bless]熟練度:  99/  16  [         blindness]熟練度:  99/   9
+[   control weather]熟練度:  99/  15  [    cure blindness]熟練度:  99/  30
+[        cure light]熟練度:  99/  25  [       cure poison]熟練度:  99/  16
+[      cure serious]熟練度:  99/  30  [             curse]熟練度:  99/   6
+[       detect evil]熟練度:  99/  25  [     detect hidden]熟練度:  93/ 682
+[      detect invis]熟練度:  99/  23  [      detect magic]熟練度:  99/  26
+[     detect poison]熟練度:  99/   5  [      dispel magic]熟練度:  99/  23
+[       faerie fire]熟練度:  99/  12  [        faerie fog]熟練度:  90/ 160
+[               fly]熟練度:  99/  29  [              heal]熟練度:  99/   5
+[          identify]熟練度:  99/  27  [       infravision]熟練度:  97/ 460
+[             invis]熟練度:  99/  32  [    know alignment]熟練度:  97/ 204
+[     locate object]熟練度:  99/  34  [     magic missile]熟練度:  99/   5
+[        protection]熟練度:  99/  18  [           refresh]熟練度:  99/   4
+[      remove curse]熟練度:  99/  11  [         sanctuary]熟練度:  99/   9
+[              lore]熟練度:  97/ 363  [     remove nodrop]熟練度:  99/  18
+[      full refresh]熟練度:  90/ 815  [           cyclone]熟練度:  89/  56
+[             dodge]熟練度:  99/   7  [   enhanced damage]熟練度:  99/   2
+[     second attack]熟練度:  99/   5  [      third attack]熟練度:  99/   4
+[               aid]熟練度:  99/   3  [             blitz]熟練度:  99/   3
+[        earthslice]熟練度:  99/  10  [              scan]熟練度:  99/   2
+[         windslice]熟練度:  99/   9  [        two weapon]熟練度:  99/   1
+```
+
+### 25. sole-swd (Protoss)
+
+角色：弱劍士 Protoss（等級 60，力量 30 智力 22 睿智 14 速度 30 體格 14）
+
+- 生命力: 2760 / 精神力: 249 / 移動力: 5384 / 內力: 2543
+- 加強命中率: 61 / 加強傷害率: 29
+
+```
+[   control weather]熟練度:  99/  22  [        cure light]熟練度:  99/  18
+[      cure serious]熟練度:  99/  53  [               fly]熟練度:  99/  15
+[           refresh]熟練度:  99/  39  [      full refresh]熟練度:  99/  57
+[       swordmaster]熟練度:  65/ 721  [        bloomslash]熟練度:  99/  42
+[      chunshislash]熟練度:  99/  43  [         fusislash]熟練度:  99/  43
+[       shadowslash]熟練度:  99/  40  [      shanyanslash]熟練度:  99/  43
+[        taigislash]熟練度:  99/  45  [        twoyislash]熟練度:  99/  22
+[         girlslash]熟練度:  99/   8  [       flowerslash]熟練度:  99/  21
+[         soleslash]熟練度:  99/  37
+```
+
+### 26. sole-swd（屬性配置版）
+
+屬性配置：
+
+- Change Body: 力量 22, 智力 18, 睿智 14, 速度 22, 體格 14
+- Train: 力量 08, 智力 04, 睿智 00, 速度 08, 體格 00
+- 最終: 力量 30, 智力 22, 睿智 14, 速度 30, 體格 14
+
+> **註解**：INT 為什麼要 22 呢？其實是為了讓 MOB 的 Delay 增加。根據研究發現 INT 22 的 soleslash 每一劍可造成對方 250 的 Delay，所以建議練 INT 22 的劍客。
+
+```
+[             armor]熟練度:  71/   0  [   control weather]熟練度:  81/   0
+[    cure blindness]熟練度:  76/  74  [        cure light]熟練度:  81/   0
+[      cure serious]熟練度:  90/  64  [               fly]熟練度:  71/ 148
+[           refresh]熟練度:  73/ 598  [      full refresh]熟練度:  85/ 743
+[             dodge]熟練度:  99/   6  [              scan]熟練度:  74/ 340
+[       swordmaster]熟練度:  74/ 863  [      chunshislash]熟練度:  99/  45
+[         fusislash]熟練度:  99/  39  [       shadowslash]熟練度:  99/  14
+[      shanyanslash]熟練度:  99/  14  [        taigislash]熟練度:  99/   7
+[        twoyislash]熟練度:  99/   1  [         girlslash]熟練度:  99/   9
+[       flowerslash]熟練度:  99/   8  [         soleslash]熟練度:  99/   4
+```
+
+### 27. fat-out-wiz
+
+```
+[             armor]熟練度:  99/  21  [             bless]熟練度:  99/   7
+[         blindness]熟練度:  78/ 300  [   control weather]熟練度:  99/  44
+[       create food]熟練度:  99/  37  [     create spring]熟練度:  99/  42
+[      create water]熟練度:  99/   7  [    cure blindness]熟練度:  99/  36
+[        cure light]熟練度:  99/  44  [       cure poison]熟練度:  99/  15
+[      cure serious]熟練度:  99/  37  [             curse]熟練度:  71/  80
+[       detect evil]熟練度:  99/  16  [     detect hidden]熟練度:  99/   6
+[      detect invis]熟練度:  77/ 730  [      detect magic]熟練度:  81/  35
+[     detect poison]熟練度:  81/   0  [      dispel magic]熟練度:  94/ 827
+[       faerie fire]熟練度:  71/   0  [        faerie fog]熟練度:  71/   0
+[               fly]熟練度:  75/ 848  [              heal]熟練度:  76/ 880
+[          identify]熟練度:  74/ 853  [       infravision]熟練度:  81/   0
+[    know alignment]熟練度:  81/   0  [     locate object]熟練度:  79/ 178
+[        protection]熟練度:  74/ 369  [           refresh]熟練度:  99/  30
+[      remove curse]熟練度:  81/ 616  [         sanctuary]熟練度:  79/ 576
+[            shield]熟練度:  73/ 639  [        stone skin]熟練度:  73/ 759
+[              lore]熟練度:  75/  77  [         lifesteal]熟練度:  74/ 248
+[         soulsteal]熟練度:  94/ 501  [     remove nodrop]熟練度:  71/ 129
+[           barrier]熟練度:  84/ 141  [        dark space]熟練度:  77/ 198
+[             dodge]熟練度:  99/   2  [        earthslice]熟練度:  99/  20
+[              scan]熟練度:  73/ 161  [           agility]熟練度:  99/   2
+[       outdo waver]熟練度:  99/   7  [       spellmaster]熟練度:  99/  10
+```
