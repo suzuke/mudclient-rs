@@ -19,8 +19,17 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Data files (game guides, keep locally only)
-docs/7777/
+# Claude Code MCP config (absolute paths)
+.mcp.json
+
+# Data files (raw fetched data and source notes, keep locally only)
+docs/7777/ptt/
+docs/7777/ptt_treasure/
+docs/7777/*.json
+docs/7777/*.doc
+docs/7777/*.docm
+docs/7777/*.txt
+docs/7777/*_Full_Guide_*
 
 # Maps output
 map_output.mermaid
