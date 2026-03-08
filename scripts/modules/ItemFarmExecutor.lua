@@ -16,24 +16,12 @@ end
 
 local MudNav = require_module("MudNav")
 local MudLoot = require_module("MudLoot")
+local MudUtils = require_module("MudUtils")
 local ItemFarmEngage = require_module("ItemFarmEngage")
 
 local M = {}
 
--- Helper: parse and send commands
-local function send_cmds(str)
-    for cmd in string.gmatch(str, "[^;]+") do
-        cmd = cmd:match("^%s*(.-)%s*$")
-        if cmd ~= "" then
-            local count, actual = cmd:match("^(%d+)(%a.*)$")
-            if count then
-                for _ = 1, tonumber(count) do mud.send(actual) end
-            else
-                mud.send(cmd)
-            end
-        end
-    end
-end
+local send_cmds = MudUtils.send_cmds
 
 -- Deep merge: b overrides a, field by field
 local function deep_merge(a, b)
@@ -80,15 +68,24 @@ function M.start(job, defaults, on_done)
     end
     _G.ItemFarm.executor.echo = echo
 
+    -- Terminal state helper: echo, consume on_done, call it
+    _G.ItemFarm.executor.finish = function(reason, msg)
+        if not _G.ItemFarm or not _G.ItemFarm.executor then return end
+        _G.ItemFarm.executor.echo(msg)
+        local fn = _G.ItemFarm.executor.on_done
+        _G.ItemFarm.executor.on_done = nil
+        if fn then fn(reason) end
+    end
+
     -- Build SM states
     local states = {
         searching = {
             enter = string.format([[
                 _G.ItemFarm.executor.echo("Searching for target...")
-                if %q ~= "quest" then mud.send("wa") end
+                mud.send("wa")
                 mud.send(%q)
-            ]], job.search.type, job.search.cmd),
-            timeout_secs = 3.0,
+            ]], job.search.cmd),
+            timeout_secs = 5.0,
             timeout_goto = "not_found",
         },
         traveling = {
@@ -96,6 +93,8 @@ function M.start(job, defaults, on_done)
                 _G.ItemFarm.executor.echo("Traveling to target...")
                 _G.ItemFarm.executor.do_travel()
             ]],
+            timeout_secs = 120.0,
+            timeout_goto = "failed",
         },
         engaging = {
             enter = [[
@@ -116,24 +115,20 @@ function M.start(job, defaults, on_done)
                 _G.ItemFarm.executor.echo("Going to storage...")
                 _G.ItemFarm.executor.do_store()
             ]],
+            timeout_secs = 120.0,
+            timeout_goto = "done",
         },
         done = {
-            enter = [[
-                _G.ItemFarm.executor.echo("Job complete!")
-                mud.emit("ifarm:job_done", {name = _G.ItemFarm.executor.job.name})
-            ]],
+            enter = [[_G.ItemFarm.executor.finish("done", "Job complete!")]],
         },
         not_found = {
-            enter = [[
-                _G.ItemFarm.executor.echo("Target not found")
-                mud.emit("ifarm:job_failed", {name = _G.ItemFarm.executor.job.name, reason = "not_found"})
-            ]],
+            enter = [[_G.ItemFarm.executor.finish("not_found", "Target not found")]],
         },
         failed = {
-            enter = [[
-                _G.ItemFarm.executor.echo("Job failed")
-                mud.emit("ifarm:job_failed", {name = _G.ItemFarm.executor.job.name, reason = "error"})
-            ]],
+            enter = [[_G.ItemFarm.executor.finish("error", "Job failed")]],
+        },
+        low_resources = {
+            enter = [[_G.ItemFarm.executor.finish("low_resources", "Resources insufficient, need rest")]],
         },
     }
 
@@ -142,6 +137,7 @@ function M.start(job, defaults, on_done)
         { from = "traveling",  event = "arrived",       to = "engaging" },
         { from = "engaging",   event = "engage_done",   to = "looting" },
         { from = "engaging",   event = "engage_failed", to = "failed" },
+        { from = "engaging",   event = "engage_low_resources", to = "low_resources" },
         { from = "looting",    event = "loot_done",     to = "storing" },
         { from = "storing",    event = "store_done",    to = "done" },
         -- Failures
@@ -188,32 +184,9 @@ function M.register_event_handlers(job)
         mud.sm_transition("itemfarm_job", "found")
     ]], job.search.type, ItemFarmEngage.serialize_target(job.engage.target_display)), 0)
 
-    -- Engage done/failed -> job SM transitions
-    mud.on("ifarm:engage_done", [[
-        local cur = mud.sm_current("itemfarm_job")
-        if cur == "engaging" then
-            mud.sm_transition("itemfarm_job", "engage_done")
-        end
-    ]], 0)
-
-    mud.on("ifarm:engage_failed", [[
-        local cur = mud.sm_current("itemfarm_job")
-        if cur == "engaging" then
-            mud.sm_transition("itemfarm_job", "engage_failed")
-        end
-    ]], 0)
-
-    -- Job done/failed -> notify scheduler
-    mud.on("ifarm:job_done", [[
-        local fn = _G.ItemFarm.executor.on_done
-        if fn then fn("done") end
-    ]], 0)
-
-    mud.on("ifarm:job_failed", [[
-        local d = data or {}
-        local fn = _G.ItemFarm.executor.on_done
-        if fn then fn(d.reason or "error") end
-    ]], 0)
+    -- NOTE: engage_done/engage_failed and job_done/job_failed are handled
+    -- via direct calls in SM enter callbacks, NOT via mud.on() handlers.
+    -- This prevents handler accumulation across job cycles.
 end
 
 -- Action implementations stored on _G.ItemFarm.executor
@@ -227,20 +200,18 @@ function M.setup_actions(job, defaults, merged_resources, merged_loot, merged_st
             send_cmds(job.travel.pre_cmd)
         end
         local path = job.travel and job.travel.path or "recall"
-        MudNav.walk(path, function()
-            mud.sm_transition("itemfarm_job", "arrived")
+        MudNav.walk(path, function(success)
+            if success == false then
+                mud.sm_transition("itemfarm_job", "fail")
+            else
+                mud.sm_transition("itemfarm_job", "arrived")
+            end
         end)
     end
 
     ex.do_engage = function()
-        ItemFarmEngage.start(job, merged_resources,
-            function() -- on_done
-                -- engage_done event is emitted by ItemFarmEngage SM enter callback
-            end,
-            function() -- on_failed
-                -- engage_failed event is emitted by ItemFarmEngage SM enter callback
-            end
-        )
+        -- on_done/on_failed callbacks not needed — engage SM directly transitions job SM
+        ItemFarmEngage.start(job, merged_resources)
     end
 
     ex.do_loot = function()
@@ -262,7 +233,12 @@ function M.setup_actions(job, defaults, merged_resources, merged_loot, merged_st
 
     ex.do_store = function()
         local path = merged_store.path or "recall;3n;e"
-        MudNav.walk(path, function()
+        MudNav.walk(path, function(success)
+            if success == false then
+                -- Store walk failed, skip to done (items lost but don't get stuck)
+                mud.sm_transition("itemfarm_job", "store_done")
+                return
+            end
             -- Remove nodrop + drop items
             local remove = merged_loot.remove_nodrop or {}
             for _, item in ipairs(remove) do

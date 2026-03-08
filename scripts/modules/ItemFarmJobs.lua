@@ -25,7 +25,7 @@ local path_to_painting_area = {
 local M = {}
 
 M.defaults = {
-    resources = { hp_threshold = 0, mp_threshold = 50 },
+    resources = { hp_threshold = 80, mp_threshold = 50 },
     store = { path = "recall;3n;e" },
     loot = { items = {}, sac = true, remove_nodrop = {} },
     rest_cmd = "sleep",
@@ -36,7 +36,7 @@ M.defaults = {
 M.jobs = {
     {
         name = "商務間諜",
-        disabled = true,
+        disabled = false,
         search = { type = "locate", cmd = "c loc grating" },
         travel = { path = "recall;2n;2e" },
         engage = {
@@ -50,21 +50,25 @@ M.jobs = {
     },
     {
         name = "街頭混混",
-        disabled = true,
+        disabled = false,
         search = { type = "quest", cmd = "q 28.boy" },
         travel = { path = "recall" },
         engage = {
-            mode = "summon",
+            mode = "summon_charm",
             target = "boy",
             target_display = {"街頭混混"},
-            attack = "c flame boy",
+            attack = "c charm boy",
             summon_cmd = "c sum boy",
+            pre_lead_cmds = "or all hi;or all recall",
+            path_to_kill = "recall;n;n;n;e",
+            pre_kill_cmds = "or all rem take;or all drop take",
+            purge_path = "w;s;s;s;w;w;n",
         },
-        loot = { items = {"take"}, sac = true },
+        loot = { items = {}, sac = false },
     },
     {
         name = "某校生",
-        disabled = false,
+        disabled = true,
         search = { type = "locate", cmd = "c loc id" },
         travel = { path = "recall" },
         engage = {
@@ -165,8 +169,10 @@ M.jobs = {
             target = "student",
             target_display = {"一位魔法見習生", "魔法見習生"},
             attack = "c charm student",
-            path_to_kill = "or all hi;or all recall;recall;n;n;n;e",
-            kill_action = "or all drop hat;w;s;s;s;w;w;n",
+            pre_lead_cmds = "or all hi;or all recall",
+            path_to_kill = "recall;n;n;n;e",
+            pre_kill_cmds = "or all drop hat",
+            purge_path = "w;s;s;s;w;w;n",
         },
         loot = { items = {}, sac = false },
     },

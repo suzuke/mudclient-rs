@@ -38,6 +38,9 @@ local RULES = {
     -- Loot
     { p = "丟下了",                ev = "ifarm:mob_dropped" },
 
+    -- Resource depletion
+    { p = "你已耗盡了精神力",       ev = "ifarm:mana_depleted" },
+
     -- Spell list
     { p = "目前對你產生影響的法術或技巧有", ev = "ifarm:spell_list_start" },
 }

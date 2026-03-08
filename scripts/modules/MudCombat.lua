@@ -88,7 +88,36 @@ function MudCombat.safe_summon(target_name, summon_cmd, options, on_success, on_
     s.pending_verification = false
     s.attempt_id = s.attempt_id + 1  -- 遞增，使舊 timer 失效
 
-    MudCombat.do_summon()
+    mud.emit("summon_start", {target = tostring(target_name), cmd = summon_cmd})
+
+    -- First check if target is already in the room
+    mud.collect_response("l", [==[
+        local s = MudCombat.summon_state
+        if not s.active then return end
+        local tn = s.target_name
+        local found = false
+        for _, line in ipairs(_G._collected_lines or {}) do
+            if not string.find(line, "屍體", 1, true)
+               and not string.find(line, "corpse", 1, true) then
+                if type(tn) == "table" then
+                    for _, kw in ipairs(tn) do
+                        if string.find(line, kw, 1, true) then found = true; break end
+                    end
+                else
+                    if string.find(line, tostring(tn), 1, true) then found = true end
+                end
+            end
+            if found then break end
+        end
+        if found then
+            s.active = false
+            s.pending_verification = false
+            mud.emit("summon_success", {target = tostring(s.target_name), already_here = true})
+            if s.on_success then s.on_success() end
+        else
+            MudCombat.do_summon()
+        end
+    ]==])
 end
 
 function MudCombat.do_summon()
@@ -109,6 +138,7 @@ function MudCombat.retry_summon()
     s.retries = s.retries + 1
     if s.retries >= s.max_retries then
         s.active = false
+        mud.emit("summon_failed", {target = tostring(s.target_name), retries = s.retries})
         if s.on_fail then s.on_fail() end
         return
     end
@@ -198,6 +228,7 @@ function MudCombat.verify_summon_success()
     -- Success confirmed
     s.active = false
     s.pending_verification = false
+    mud.emit("summon_success", {target = tostring(s.target_name)})
     if s.on_success then s.on_success() end
 end
 

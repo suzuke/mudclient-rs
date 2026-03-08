@@ -14,6 +14,7 @@ local function require_module(name)
 end
 
 local MudUtils = require_module("MudUtils")
+local MudNav = require_module("MudNav")
 local ItemFarmJobs = require_module("ItemFarmJobs")
 local ItemFarmParser = require_module("ItemFarmParser")
 local ItemFarmExecutor = require_module("ItemFarmExecutor")
@@ -86,13 +87,14 @@ local function create_scheduler_sm()
             rotating = {
                 enter = [[_G.ItemFarm._scheduler_rotating()]],
             },
+            recovering = {
+                enter = [[_G.ItemFarm._scheduler_recovering()]],
+            },
+            resting = {
+                enter = [[_G.ItemFarm._scheduler_resting()]],
+            },
             waiting_respawn = {
-                enter = string.format([[
-                    _G.ItemFarm.echo("All targets not respawned, resting " .. %d .. "s...")
-                    mud.send(%q)
-                ]], defaults.poll_interval, defaults.rest_cmd or "sleep"),
-                timeout_secs = defaults.poll_interval,
-                timeout_goto = "idle",
+                enter = [[_G.ItemFarm._scheduler_waiting_respawn()]],
             },
             stopped = {
                 enter = [[_G.ItemFarm._scheduler_stopped()]],
@@ -101,15 +103,21 @@ local function create_scheduler_sm()
         transitions = {
             { from = "idle",              event = "job_found",      to = "executing" },
             { from = "idle",              event = "no_active_jobs", to = "stopped" },
-            { from = "executing",         event = "job_done",       to = "rotating" },
-            { from = "executing",         event = "job_failed",     to = "rotating" },
+            { from = "executing",         event = "job_done",       to = "recovering" },
+            { from = "executing",         event = "job_failed",     to = "recovering" },
+            { from = "executing",         event = "not_found",      to = "rotating" },
+            { from = "executing",         event = "low_resources",  to = "resting" },
+            { from = "recovering",        event = "recovered",      to = "rotating" },
+            { from = "resting",           event = "rested",         to = "idle" },
             { from = "rotating",          event = "next_ready",     to = "idle" },
             { from = "rotating",          event = "all_checked",    to = "waiting_respawn" },
             { from = "waiting_respawn",   event = "wake",           to = "idle" },
             -- Emergency stop from any state
             { from = "idle",              event = "stop",           to = "stopped" },
             { from = "executing",         event = "stop",           to = "stopped" },
+            { from = "recovering",        event = "stop",           to = "stopped" },
             { from = "rotating",          event = "stop",           to = "stopped" },
+            { from = "resting",           event = "stop",           to = "stopped" },
             { from = "waiting_respawn",   event = "stop",           to = "stopped" },
         },
     })
@@ -117,6 +125,7 @@ end
 
 -- Scheduler state callbacks
 function _G.ItemFarm._scheduler_idle()
+    if mud.sm_current("itemfarm_scheduler") ~= "idle" then return end
     local s = _G.ItemFarm.state
     s.jobs_checked = 0
 
@@ -135,6 +144,7 @@ function _G.ItemFarm._scheduler_idle()
 end
 
 function _G.ItemFarm._scheduler_executing()
+    if mud.sm_current("itemfarm_scheduler") ~= "executing" then return end
     local s = _G.ItemFarm.state
     local j = _G.ItemFarm.job()
     local defaults = _G.ItemFarm.defaults
@@ -146,12 +156,19 @@ function _G.ItemFarm._scheduler_executing()
             s.loot_count = s.loot_count + 1
             _G.ItemFarm.echo("Loot count: " .. s.loot_count)
         end
+        s.last_result = reason  -- "done", "not_found", "error", "low_resources"
         ItemFarmExecutor.cleanup()
-        mud.sm_transition("itemfarm_scheduler", reason == "done" and "job_done" or "job_failed")
+        local event
+        if reason == "low_resources" then event = "low_resources"
+        elseif reason == "not_found" then event = "not_found"
+        else event = (reason == "done") and "job_done" or "job_failed"
+        end
+        mud.sm_transition("itemfarm_scheduler", event)
     end)
 end
 
 function _G.ItemFarm._scheduler_rotating()
+    if mud.sm_current("itemfarm_scheduler") ~= "rotating" then return end
     local s = _G.ItemFarm.state
     local active = count_active_jobs()
 
@@ -179,10 +196,87 @@ function _G.ItemFarm._scheduler_rotating()
     mud.sm_transition("itemfarm_scheduler", "next_ready")
 end
 
-function _G.ItemFarm._scheduler_stopped()
+function _G.ItemFarm._scheduler_recovering()
+    if mud.sm_current("itemfarm_scheduler") ~= "recovering" then return end
+    local defaults = _G.ItemFarm.defaults
+    local rest_cmd = defaults.rest_cmd or "sleep"
+    local rest_secs = 10  -- short rest between jobs
+
+    local function do_rest()
+        if mud.sm_current("itemfarm_scheduler") ~= "recovering" then return end
+        _G.ItemFarm.echo("Brief rest " .. rest_secs .. "s...")
+        mud.send(rest_cmd)
+        mud.timer(rest_secs, [[
+            if mud.sm_current("itemfarm_scheduler") == "recovering" then
+                mud.send("wa")
+                mud.sm_transition("itemfarm_scheduler", "recovered")
+            end
+        ]])
+    end
+
     local s = _G.ItemFarm.state
-    s.running = false
-    _G.ItemFarm.echo_force("Stopped. Total loot: " .. s.loot_count)
+    if s.last_result == "done" then
+        -- Job succeeded: executor's storing state already brought us to storage
+        do_rest()
+    else
+        -- Job failed mid-execution: still at target location, need to walk back
+        local rest_path = defaults.store and defaults.store.path or "recall"
+        _G.ItemFarm.echo("Returning to storage...")
+        MudNav.walk(rest_path, do_rest)
+    end
+end
+
+function _G.ItemFarm._scheduler_waiting_respawn()
+    if mud.sm_current("itemfarm_scheduler") ~= "waiting_respawn" then return end
+    local defaults = _G.ItemFarm.defaults
+    local rest_path = defaults.store and defaults.store.path or "recall"
+    local rest_cmd = defaults.rest_cmd or "sleep"
+    local rest_secs = defaults.poll_interval or 30
+
+    _G.ItemFarm.echo("All jobs checked, resting " .. rest_secs .. "s at storage...")
+    MudNav.walk(rest_path, function()
+        if mud.sm_current("itemfarm_scheduler") ~= "waiting_respawn" then return end
+        mud.send(rest_cmd)
+        mud.timer(rest_secs, [[
+            if mud.sm_current("itemfarm_scheduler") == "waiting_respawn" then
+                mud.send("wa")
+                mud.sm_transition("itemfarm_scheduler", "wake")
+            end
+        ]])
+    end)
+end
+
+function _G.ItemFarm._scheduler_resting()
+    if mud.sm_current("itemfarm_scheduler") ~= "resting" then return end
+    local defaults = _G.ItemFarm.defaults
+    local rest_path = defaults.store and defaults.store.path or "recall"
+    local rest_cmd = defaults.rest_cmd or "sleep"
+    local rest_secs = defaults.poll_interval or 30
+
+    _G.ItemFarm.echo("Low resources, going to rest at storage...")
+    MudNav.walk(rest_path, function()
+        if mud.sm_current("itemfarm_scheduler") ~= "resting" then return end
+        _G.ItemFarm.echo("Resting " .. rest_secs .. "s...")
+        mud.send(rest_cmd)
+        mud.timer(rest_secs, [[
+            if mud.sm_current("itemfarm_scheduler") == "resting" then
+                mud.send("wa")
+                mud.sm_transition("itemfarm_scheduler", "rested")
+            end
+        ]])
+    end)
+end
+
+function _G.ItemFarm._scheduler_stopped()
+    if mud.sm_current("itemfarm_scheduler") ~= "stopped" then return end
+    -- This is the SM-driven stop path (e.g. no_active_jobs -> stop event)
+    -- For manual stop, ItemFarm.stop() handles cleanup directly
+    _G.ItemFarm.state.running = false
+    MudNav.reset()
+    ItemFarmExecutor.cleanup()
+    mud.sm_remove("itemfarm_engage")
+    mud.sm_remove("itemfarm_job")
+    _G.ItemFarm.echo_force("Stopped. Total loot: " .. _G.ItemFarm.state.loot_count)
     MudUtils.stop_log()
 end
 
@@ -253,13 +347,20 @@ function _G.ItemFarm.stop()
     if not _G.ItemFarm.state.running then return end
     _G.ItemFarm.state.running = false
 
-    -- Transition scheduler to stopped (will trigger cleanup)
-    local cur = mud.sm_current("itemfarm_scheduler")
-    if cur and cur ~= "stopped" then
-        mud.sm_transition("itemfarm_scheduler", "stop")
-    else
-        _G.ItemFarm._scheduler_stopped()
-    end
+    -- 1. Stop MudNav walk immediately
+    MudNav.reset()
+
+    -- 2. Clean up executor and engage contexts
+    ItemFarmExecutor.cleanup()
+
+    -- 3. Remove all SMs (no more callbacks will fire)
+    mud.sm_remove("itemfarm_engage")
+    mud.sm_remove("itemfarm_job")
+    mud.sm_remove("itemfarm_scheduler")
+
+    -- 4. Final cleanup
+    _G.ItemFarm.echo_force("Stopped. Total loot: " .. _G.ItemFarm.state.loot_count)
+    MudUtils.stop_log()
 end
 
 function _G.ItemFarm.status()
