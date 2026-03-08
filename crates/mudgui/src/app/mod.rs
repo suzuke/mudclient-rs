@@ -894,7 +894,10 @@ impl MudApp {
                 }
                 for (code, tx) in eval_lua_codes {
                     let result_str = match session.script_engine.execute_inline_with_result(&code, "API_EVAL", &[]) {
-                        Ok(result) => result,
+                        Ok((ctx, result)) => {
+                            session.apply_script_context(ctx);
+                            result
+                        }
                         Err(e) => {
                             tracing::error!("API Eval Lua error (session {}): {}", session_key, e);
                             format!("Error: {}", e)
@@ -1771,7 +1774,7 @@ impl eframe::App for MudApp {
             session.check_timers();
         }
         
-        // 計算最近的計時器到期時間以喚醒 UI
+        // 計算最近的計時器到期時間以喚醒 UI（包含 SM timeouts）
         let mut next_wake: Option<std::time::Duration> = None;
         let now = Instant::now();
         for session in self.session_manager.sessions_mut() {
@@ -1781,6 +1784,17 @@ impl eframe::App for MudApp {
                     None => next_wake = Some(remaining),
                     Some(d) if remaining < d => next_wake = Some(remaining),
                     _ => {}
+                }
+            }
+            // Also consider state machine timeouts
+            if !session.state_machines.machines.is_empty() {
+                if let Some(sm_timeout) = session.state_machines.next_timeout() {
+                    let remaining = sm_timeout.saturating_duration_since(now);
+                    match next_wake {
+                        None => next_wake = Some(remaining),
+                        Some(d) if remaining < d => next_wake = Some(remaining),
+                        _ => {}
+                    }
                 }
             }
         }

@@ -28,6 +28,7 @@ pub enum LogControl {
 
 /// MUD 腳本上下文（腳本執行後的結果）
 #[derive(Debug, Clone, Default)]
+#[must_use = "MudContext contains pending operations — call apply_script_context()"]
 pub struct MudContext {
     /// 待發送的命令隊列
     pub commands: Vec<String>,
@@ -78,6 +79,8 @@ pub struct MudContext {
     pub state_machine_transitions: Vec<(String, String)>,
     /// State machine resets: machine_name
     pub state_machine_resets: Vec<String>,
+    /// State machine removals: machine_name
+    pub state_machine_removes: Vec<String>,
 
     /// Key binding updates: (key_combo, Some(lua_code) = bind, None = unbind)
     pub key_binding_updates: Vec<(String, Option<String>)>,
@@ -110,6 +113,8 @@ pub struct ScriptEngine {
     scripts: HashMap<String, String>,
     /// 持久化變數（跨觸發器共享）
     persistent_vars: RefCell<HashMap<String, String>>,
+    /// 狀態機當前狀態快照（由 session 在每次執行前同步）
+    sm_states: RefCell<HashMap<String, String>>,
     /// 腳本目錄的絕對路徑，用於 dofile 查找
     scripts_dir: Option<String>,
     /// 當前房間 (Thread-local storage concept within engine)
@@ -126,6 +131,7 @@ impl ScriptEngine {
             lua,
             scripts: HashMap::new(),
             persistent_vars: RefCell::new(HashMap::new()),
+            sm_states: RefCell::new(HashMap::new()),
             scripts_dir: None,
             current_room: RefCell::new(None),
             dofile_initialized: Cell::new(false),
@@ -135,6 +141,11 @@ impl ScriptEngine {
     /// 設定腳本目錄路徑（供 dofile 查找）
     pub fn set_scripts_dir(&mut self, dir: impl Into<String>) {
         self.scripts_dir = Some(dir.into());
+    }
+
+    /// 同步狀態機狀態（由 session 在執行 Lua 前呼叫）
+    pub fn sync_sm_states(&self, states: HashMap<String, String>) {
+        *self.sm_states.borrow_mut() = states;
     }
 
     /// 設定當前房間
@@ -210,15 +221,15 @@ impl ScriptEngine {
         self.run_code(code, None, message, message, captures, is_echo).map(|(ctx, _)| ctx)
     }
 
-    /// 執行內聯代碼並返回 JSON 字串結果 (用於 evaluate_lua)
+    /// 執行內聯代碼並返回 (MudContext, JSON 字串結果) (用於 evaluate_lua)
     pub fn execute_inline_with_result(
         &self,
         code: &str,
         message: &str,
         captures: &[String],
-    ) -> Result<String, ScriptError> {
-        let (_, result) = self.run_code("", Some(code), message, message, captures, false)?;
-        Ok(result.unwrap_or_else(|| "null".to_string()))
+    ) -> Result<(MudContext, String), ScriptError> {
+        let (ctx, result) = self.run_code("", Some(code), message, message, captures, false)?;
+        Ok((ctx, result.unwrap_or_else(|| "null".to_string())))
     }
 
     fn lua_value_to_json(val: &mlua::Value) -> serde_json::Value {
@@ -344,7 +355,12 @@ impl ScriptEngine {
             mud.set("_sm_transitions", sm_transitions)?;
             let sm_resets = self.lua.create_table()?;
             mud.set("_sm_resets", sm_resets)?;
+            let sm_removes = self.lua.create_table()?;
+            mud.set("_sm_removes", sm_removes)?;
             let sm_states = self.lua.create_table()?;
+            for (name, state) in self.sm_states.borrow().iter() {
+                sm_states.set(name.as_str(), state.as_str())?;
+            }
             mud.set("_sm_states", sm_states)?;
 
             // Key binding table
@@ -646,11 +662,17 @@ impl ScriptEngine {
                     let mut obj = serde_json::Map::new();
                     if let Ok(enter) = state_def.get::<String>("enter") { obj.insert("enter".into(), serde_json::Value::String(enter)); }
                     if let Ok(exit) = state_def.get::<String>("exit") { obj.insert("exit".into(), serde_json::Value::String(exit)); }
+                    // Support both formats:
+                    //   timeout = { seconds = N, target = "state" }
+                    //   timeout_secs = N, timeout_goto = "state"
                     if let Ok(timeout) = state_def.get::<mlua::Table>("timeout") {
                         if let (Ok(secs), Ok(goto)) = (timeout.get::<f64>("seconds"), timeout.get::<String>("target").or_else(|_| timeout.get::<String>("goto"))) {
                             obj.insert("timeout_secs".into(), serde_json::json!(secs));
                             obj.insert("timeout_goto".into(), serde_json::Value::String(goto));
                         }
+                    } else if let (Ok(secs), Ok(goto)) = (state_def.get::<f64>("timeout_secs"), state_def.get::<String>("timeout_goto")) {
+                        obj.insert("timeout_secs".into(), serde_json::json!(secs));
+                        obj.insert("timeout_goto".into(), serde_json::Value::String(goto));
                     }
                     states_map.insert(state_name, serde_json::Value::Object(obj));
                 }
@@ -712,6 +734,16 @@ impl ScriptEngine {
                 Ok(())
             })?;
             mud.set("sm_reset", sm_reset_fn)?;
+
+            // mud.sm_remove(name)
+            let sm_remove_fn = scope.create_function_mut(|lua, name: String| {
+                let mud: mlua::Table = lua.globals().get("mud")?;
+                let removes: mlua::Table = mud.get("_sm_removes")?;
+                let len = removes.len()? + 1;
+                removes.set(len, name)?;
+                Ok(())
+            })?;
+            mud.set("sm_remove", sm_remove_fn)?;
 
             // mud.bind_key(key_combo, lua_code)
             let bind_key_fn = scope.create_function_mut(|lua, (key, code): (String, String)| {
@@ -1037,6 +1069,15 @@ impl ScriptEngine {
                 for pair in resets.pairs::<i64, String>() {
                     if let Ok((_, name)) = pair {
                         context.state_machine_resets.push(name);
+                    }
+                }
+            }
+
+            // 收集 state machine removes
+            if let Ok(removes) = mud.get::<mlua::Table>("_sm_removes") {
+                for pair in removes.pairs::<i64, String>() {
+                    if let Ok((_, name)) = pair {
+                        context.state_machine_removes.push(name);
                     }
                 }
             }

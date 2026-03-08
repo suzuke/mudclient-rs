@@ -267,19 +267,13 @@ impl MudApp {
                     let code = self.debug_lua_input.clone();
                     if !code.is_empty() {
                         if let Some(session) = self.session_manager.active_session_mut() {
-                            // First get the return value
-                            let result = session
-                                .script_engine
-                                .execute_inline_with_result(&code, "", &[]);
-                            // Then execute for side effects
-                            match session.script_engine.execute_inline(&code, "", &[], false) {
-                                Ok(ctx) => session.apply_script_context(ctx),
-                                Err(_) => {}
-                            }
-                            match result {
-                                Ok(r) => self.debug_lua_result = Some(r),
+                            match session.script_engine.execute_inline_with_result(&code, "", &[]) {
+                                Ok((ctx, result)) => {
+                                    session.apply_script_context(ctx);
+                                    self.debug_lua_result = Some(result);
+                                }
                                 Err(e) => {
-                                    self.debug_lua_result = Some(format!("Error: {}", e))
+                                    self.debug_lua_result = Some(format!("Error: {}", e));
                                 }
                             }
                         }
@@ -420,8 +414,9 @@ impl MudApp {
                                 .size(font_size - 1.0),
                         );
                         if let Some(ref d) = data {
-                            let display = if d.len() > 30 {
-                                format!("{}...", &d[..30])
+                            let display = if d.chars().count() > 30 {
+                                let truncated: String = d.chars().take(30).collect();
+                                format!("{}...", truncated)
                             } else {
                                 d.clone()
                             };
