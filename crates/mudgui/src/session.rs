@@ -117,7 +117,7 @@ pub enum Command {
     Connect(String, u16, Option<String>, Option<String>), // Host, Port, Username, Password
     Send(String),
     /// 指令回應收集：網路執行緒先 drain 管線，再發送指令並收集回應
-    CollectResponse { command: String, callback_code: String },
+    CollectResponse { command: String, callback: Option<mudcore::script::LuaCallback> },
     Disconnect,
 }
 
@@ -127,7 +127,7 @@ pub enum NetMessage {
     /// 一般文字資料
     Text(String, Vec<u8>),
     /// 指令回應收集完成
-    CollectedResponse { lines: Vec<String>, callback_code: String },
+    CollectedResponse { lines: Vec<String>, callback: Option<mudcore::script::LuaCallback> },
 }
 
 // ============================================================================
@@ -139,8 +139,8 @@ pub enum NetMessage {
 pub struct ActiveTimer {
     /// 到期時間
     pub expires_at: Instant,
-    /// 腳本代碼
-    pub lua_code: String,
+    /// 回呼：字串程式碼或 Lua function reference
+    pub callback: mudcore::script::LuaCallback,
 }
 
 // ============================================================================
@@ -289,6 +289,8 @@ pub struct Session {
 
     /// 狀態機管理器
     pub state_machines: mudcore::StateMachineManager,
+    /// 狀態機是否有變更（dirty flag，避免每次 script 執行都同步）
+    sm_dirty: bool,
 
     /// 自訂快捷鍵綁定: key_combo -> lua_code
     pub key_bindings: std::collections::HashMap<String, String>,
@@ -528,6 +530,7 @@ impl Session {
             api_state,
             event_bus: mudcore::EventBus::new(),
             state_machines: mudcore::StateMachineManager::new(),
+            sm_dirty: false,
             key_bindings: std::collections::HashMap::new(),
             route_rules: Vec::new(),
             map_database: {
@@ -1099,6 +1102,7 @@ impl Session {
             Ok(None) => {}, // Hook not defined
             Err(e) => {
                  tracing::error!("on_room_detected hook error: {}", e);
+                 self.system_message(&format!("on_room_detected Hook Error: {}", e));
             }
         }
 
@@ -1114,36 +1118,50 @@ impl Session {
 
     /// 檢查並執行到期的計時器
     pub fn check_timers(&mut self) {
-        if self.active_timers.is_empty() {
-            return;
-        }
+        if !self.active_timers.is_empty() {
+            let now = Instant::now();
+            let mut expired = Vec::new();
 
-        let now = Instant::now();
-        let mut expired = Vec::new();
-
-        let mut i = 0;
-        while i < self.active_timers.len() {
-            if now >= self.active_timers[i].expires_at {
-                let timer = self.active_timers.swap_remove(i);
-                expired.push(timer.lua_code); // move 而非 clone
-            } else {
-                i += 1;
+            let mut i = 0;
+            while i < self.active_timers.len() {
+                if now >= self.active_timers[i].expires_at {
+                    let timer = self.active_timers.swap_remove(i);
+                    expired.push(timer.callback);
+                } else {
+                    i += 1;
+                }
             }
-        }
 
-        for code in expired {
-            match self.script_engine.execute_inline(&code, "TIMER_EXPIRED", &[], false) {
-                Ok(context) => self.apply_script_context(context),
-                Err(e) => {
-                    tracing::error!("Timer execution failed: {}\nCode: {}", e, code);
-                    self.system_message(&format!("Timer Error: {}", e));
+            use mudcore::script::LuaCallback;
+            for callback in expired {
+                self.sync_sm_to_lua();
+                match callback {
+                    LuaCallback::Code(code) => {
+                        match self.script_engine.execute_inline(&code, "TIMER_EXPIRED", &[], false) {
+                            Ok(context) => self.apply_script_context(context),
+                            Err(e) => {
+                                tracing::error!("Timer execution failed: {}\nCode: {}", e, code);
+                                self.system_message(&format!("Timer Error: {}", e));
+                            }
+                        }
+                    }
+                    LuaCallback::Function(key) => {
+                        match self.script_engine.execute_lua_callback(key, "TIMER_EXPIRED") {
+                            Ok(context) => self.apply_script_context(context),
+                            Err(e) => {
+                                tracing::error!("Timer function execution failed: {}", e);
+                                self.system_message(&format!("Timer Error: {}", e));
+                            }
+                        }
+                    }
                 }
             }
         }
 
-        // Check state machine timeouts
-        let timeout_results = self.state_machines.check_timeouts();
-        for (machine_name, result) in timeout_results {
+        // Check state machine timeouts one at a time.
+        // Processing a timeout callback may create/destroy/transition other SMs,
+        // so we must re-check after each to avoid stale results.
+        while let Some((machine_name, result)) = self.state_machines.check_first_timeout() {
             self.execute_transition_callbacks(&machine_name, result);
         }
     }
@@ -1244,6 +1262,22 @@ impl Session {
     }
 
     /// 核心：將腳本執行結果套用到 Session
+    /// 同步狀態機狀態到 Lua 引擎（僅在 dirty 時執行）
+    fn sync_sm_to_lua(&mut self) {
+        if !self.sm_dirty || self.state_machines.machines.is_empty() {
+            return;
+        }
+        self.sm_dirty = false;
+        self.script_engine.sync_sm_states(self.state_machines.get_all_states());
+    }
+
+    /// 標記 SM 狀態已變更，需要在下次 Lua 執行前同步
+    fn mark_sm_dirty(&mut self) {
+        if !self.state_machines.machines.is_empty() {
+            self.sm_dirty = true;
+        }
+    }
+
     pub fn apply_script_context(&mut self, context: MudContext) {
         // 1. 發送指令
         if let Some(tx) = &self.command_tx {
@@ -1284,10 +1318,10 @@ impl Session {
 
         // 4. 計時器註冊
         let now = Instant::now();
-        for (delay_ms, code) in context.timers {
+        for (delay_ms, callback) in context.timers {
             self.active_timers.push(ActiveTimer {
                 expires_at: now + Duration::from_millis(delay_ms),
-                lua_code: code,
+                callback,
             });
         }
 
@@ -1334,11 +1368,11 @@ impl Session {
         }
 
         // 8. 指令回應收集器（透過 Command channel 發送到網路執行緒）
-        for (cmd, callback_code) in context.response_collectors {
+        for (cmd, callback) in context.response_collectors {
             if let Some(tx) = &self.command_tx {
                 let _ = tx.blocking_send(Command::CollectResponse {
                     command: cmd.clone(),
-                    callback_code,
+                    callback,
                 });
                 tracing::info!("CollectResponse: queued for command '{}'", cmd);
             }
@@ -1350,8 +1384,8 @@ impl Session {
         }
 
         // 10. Event handler registrations
-        for (name, code, priority, once) in context.event_registrations {
-            self.event_bus.on(&name, code, priority, once);
+        for (name, callback, priority, once) in context.event_registrations {
+            self.event_bus.on(&name, callback, priority, once);
         }
 
         // 11. Event handler removals
@@ -1394,6 +1428,7 @@ impl Session {
                 let sm = mudcore::StateMachine::new(name.clone(), initial, states, transitions);
                 tracing::info!("State machine '{}' created, initial state: '{}'", name, sm.current_state());
                 self.state_machines.add(sm);
+                self.mark_sm_dirty();
             }
         }
 
@@ -1417,6 +1452,14 @@ impl Session {
                 if let Some(result) = sm.reset() {
                     self.execute_transition_callbacks(&name, result);
                 }
+            }
+        }
+
+        // 15b. State machine removals
+        for name in context.state_machine_removes {
+            if self.state_machines.remove(&name).is_some() {
+                tracing::info!("[SM] Removed: {}", name);
+                self.mark_sm_dirty();
             }
         }
 
@@ -1447,23 +1490,70 @@ impl Session {
                 }
             }
         }
+
+        // 19. Sync SM states to Lua engine (after all SM operations)
+        self.sync_sm_to_lua();
     }
 
     /// 觸發事件並執行所有 handler
     pub fn emit_event(&mut self, event_name: &str, data: Option<String>) {
+        use mudcore::event::EmittedCallback;
+        use mudcore::script::LuaCallback;
+
         let handlers = self.event_bus.emit(event_name, data.clone());
-        for (_id, lua_code) in handlers {
-            // Set event_data global before executing handler
+        if !handlers.is_empty() {
+            // Pre-compute setup code once for all handlers
             let setup = if let Some(ref d) = data {
-                format!("event_data = [==[{}]==]", d)
+                let data_table = json_to_lua_table(d);
+                format!(
+                    "event_data = [==[{}]==]\ndata = {}",
+                    d, data_table
+                )
             } else {
-                "event_data = nil".to_string()
+                "event_data = nil\ndata = {}".to_string()
             };
-            let full_code = format!("{}\n{}", setup, lua_code);
-            match self.script_engine.execute_inline(&full_code, "", &[], false) {
-                Ok(ctx) => self.apply_script_context(ctx),
-                Err(e) => {
-                    tracing::error!("Event handler error for '{}': {}", event_name, e);
+
+            for (id, emitted) in handlers {
+                self.sync_sm_to_lua();
+                match emitted {
+                    EmittedCallback::Code(lua_code) => {
+                        let full_code = format!("{}\n{}", setup, lua_code);
+                        match self.script_engine.execute_inline(&full_code, "", &[], false) {
+                            Ok(ctx) => self.apply_script_context(ctx),
+                            Err(e) => {
+                                tracing::error!("Event handler error for '{}': {}", event_name, e);
+                                self.system_message(&format!("Event '{}' Handler Error: {}", event_name, e));
+                            }
+                        }
+                    }
+                    EmittedCallback::OwnedFunction(key) => {
+                        // once handler: function key 已被移出，可直接消費
+                        match self.script_engine.execute_lua_callback_with_setup(key, &setup, "EVENT") {
+                            Ok(ctx) => self.apply_script_context(ctx),
+                            Err(e) => {
+                                tracing::error!("Event handler function error for '{}': {}", event_name, e);
+                                self.system_message(&format!("Event '{}' Handler Error: {}", event_name, e));
+                            }
+                        }
+                    }
+                    EmittedCallback::PersistentFunction => {
+                        // persistent function handler: 借用 RegistryKey 執行，不消費
+                        let result = {
+                            if let Some(LuaCallback::Function(key)) = self.event_bus.get_handler_callback(id) {
+                                Some(self.script_engine.execute_lua_callback_ref_with_setup(key, &setup, "EVENT"))
+                            } else {
+                                None
+                            }
+                        };
+                        match result {
+                            Some(Ok(ctx)) => self.apply_script_context(ctx),
+                            Some(Err(e)) => {
+                                tracing::error!("Event handler function error for '{}': {}", event_name, e);
+                                self.system_message(&format!("Event '{}' Handler Error: {}", event_name, e));
+                            }
+                            None => {}
+                        }
+                    }
                 }
             }
         }
@@ -1481,19 +1571,30 @@ impl Session {
     fn execute_transition_callbacks(&mut self, machine_name: &str, result: mudcore::state_machine::TransitionResult) {
         tracing::info!("[SM:{}] {} -> {}", machine_name, result.old_state, result.new_state);
 
+        // Mark dirty so next sync_sm_to_lua() will refresh Lua state
+        self.mark_sm_dirty();
+
         // Execute exit callback
         if let Some(code) = result.exit_code {
+            self.sync_sm_to_lua(); // ensure mud.sm_current() is up-to-date
             match self.script_engine.execute_inline(&code, "", &[], false) {
                 Ok(ctx) => self.apply_script_context(ctx),
-                Err(e) => tracing::error!("[SM:{}] exit callback error: {}", machine_name, e),
+                Err(e) => {
+                    tracing::error!("[SM:{}] exit callback error: {}", machine_name, e);
+                    self.system_message(&format!("[SM:{}] Exit Callback Error: {}", machine_name, e));
+                }
             }
         }
 
         // Execute enter callback
         if let Some(code) = result.enter_code {
+            self.sync_sm_to_lua(); // ensure mud.sm_current() is up-to-date
             match self.script_engine.execute_inline(&code, "", &[], false) {
                 Ok(ctx) => self.apply_script_context(ctx),
-                Err(e) => tracing::error!("[SM:{}] enter callback error: {}", machine_name, e),
+                Err(e) => {
+                    tracing::error!("[SM:{}] enter callback error: {}", machine_name, e);
+                    self.system_message(&format!("[SM:{}] Enter Callback Error: {}", machine_name, e));
+                }
             }
         }
 
@@ -1503,9 +1604,15 @@ impl Session {
         self.emit_event("state_changed", Some(data));
     }
 
-    /// 派發 LLM 請求：透過 api_state 排入 pending_lua，由 tokio 非同步執行
+    /// 派發 LLM 請求：透過 api_state 排入 pending_lua/pending_llm_fn_results，由 tokio 非同步執行
     fn dispatch_llm_request(&self, req: mudcore::LlmRequest) {
+        use mudcore::script::LuaCallback;
         let api_state = self.api_state.clone();
+
+        // 分離 callback 和 prompt/model（callback 需 move 到 async closure）
+        let prompt = req.prompt;
+        let model = req.model;
+        let callback = req.callback;
 
         let llm_future = async move {
                 let api_key = match std::env::var("ANTHROPIC_API_KEY") {
@@ -1520,13 +1627,13 @@ impl Session {
                     }
                 };
 
-                let model = req.model.as_deref().unwrap_or("claude-haiku-4-5-20251001");
+                let model_str = model.as_deref().unwrap_or("claude-haiku-4-5-20251001");
 
                 let client = reqwest::Client::new();
                 let body = serde_json::json!({
-                    "model": model,
+                    "model": model_str,
                     "max_tokens": 256,
-                    "messages": [{"role": "user", "content": req.prompt}]
+                    "messages": [{"role": "user", "content": prompt}]
                 });
 
                 let resp = client
@@ -1571,16 +1678,25 @@ impl Session {
                     return;
                 }
 
-                // 將 $RESULT 替換為 LLM 回覆（JSON escape 避免注入）
-                let escaped = result_text
-                    .replace('\\', "\\\\")
-                    .replace('"', "\\\"")
-                    .replace('\n', "\\n")
-                    .replace('\r', "");
-                let lua_code = req.callback_code.replace("$RESULT", &format!("\"{}\"", escaped));
-
-                if let Ok(mut s) = api_state.lock() {
-                    s.pending_lua.push_back(lua_code);
+                match callback {
+                    LuaCallback::Code(callback_code) => {
+                        // 將 $RESULT 替換為 LLM 回覆（JSON escape 避免注入）
+                        let escaped = result_text
+                            .replace('\\', "\\\\")
+                            .replace('"', "\\\"")
+                            .replace('\n', "\\n")
+                            .replace('\r', "");
+                        let lua_code = callback_code.replace("$RESULT", &format!("\"{}\"", escaped));
+                        if let Ok(mut s) = api_state.lock() {
+                            s.pending_lua.push_back(lua_code);
+                        }
+                    }
+                    LuaCallback::Function(_) => {
+                        // Function callback: 將 RegistryKey 和結果送回 GUI 線程執行
+                        if let Ok(mut s) = api_state.lock() {
+                            s.pending_llm_fn_results.push_back((callback, result_text));
+                        }
+                    }
                 }
         };
 
@@ -1651,11 +1767,11 @@ impl Session {
         let mut gagged = false;
         let mut targets = vec!["main".to_string()];
 
-        // 提前計算 clean_text 以供各處使用
+        // 提前計算 clean_text 以供各處使用（strip ANSI + trim \r）
         let clean_text = if text.contains('\x1b') {
-            ANSI_STRIP_RE.replace_all(text, "").to_string()
+            ANSI_STRIP_RE.replace_all(text, "").trim_matches('\r').to_string()
         } else {
-            text.to_string()
+            text.trim_matches('\r').to_string()
         };
 
         // [穩定化] 先更新 Server Buffer 與 Room ID，確保 Lua Hook 能取得最新 Room ID
@@ -1740,6 +1856,7 @@ impl Session {
 
             // 執行收集到的腳本
             for (code, captures) in pending_scripts {
+                self.sync_sm_to_lua();
                 if let Ok(context) = self.script_engine.execute_inline(&code, text, &captures, false) {
                     if context.gag {
                         gagged = true;
@@ -1978,29 +2095,52 @@ impl Session {
     }
 
     /// 處理網路執行緒收集的指令回應
-    pub fn execute_collected_response(&mut self, lines: Vec<String>, callback_code: String) {
+    pub fn execute_collected_response(&mut self, lines: Vec<String>, callback: Option<mudcore::script::LuaCallback>) {
+        use mudcore::script::LuaCallback;
+
         // 沒有 callback 時不需要執行腳本（send_chain 的中間指令）
-        if callback_code.is_empty() {
-            tracing::debug!("CollectedResponse: {} lines, no callback (chain intermediate)", lines.len());
-            return;
-        }
+        let callback = match callback {
+            Some(cb) => cb,
+            None => {
+                tracing::debug!("CollectedResponse: {} lines, no callback (chain intermediate)", lines.len());
+                return;
+            }
+        };
 
-        // 構建 Lua table 字串
-        let mut lines_lua = String::from("{");
-        for (i, line) in lines.iter().enumerate() {
-            if i > 0 { lines_lua.push(','); }
-            let escaped = line.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
-            lines_lua.push('"');
-            lines_lua.push_str(&escaped);
-            lines_lua.push('"');
-        }
-        lines_lua.push('}');
-
-        let code = format!("_G._collected_lines = {} \n {}", lines_lua, callback_code);
         tracing::info!("CollectedResponse: {} lines, executing callback", lines.len());
+        self.sync_sm_to_lua();
 
-        if let Ok(ctx) = self.script_engine.execute_inline(&code, "COLLECT_RESPONSE", &[], false) {
-            self.apply_script_context(ctx);
+        match callback {
+            LuaCallback::Code(code) => {
+                // 構建 Lua table 字串
+                let mut lines_lua = String::from("{");
+                for (i, line) in lines.iter().enumerate() {
+                    if i > 0 { lines_lua.push(','); }
+                    let escaped = line.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
+                    lines_lua.push('"');
+                    lines_lua.push_str(&escaped);
+                    lines_lua.push('"');
+                }
+                lines_lua.push('}');
+
+                let full_code = format!("_G._collected_lines = {} \n {}", lines_lua, code);
+                match self.script_engine.execute_inline(&full_code, "COLLECT_RESPONSE", &[], false) {
+                    Ok(ctx) => self.apply_script_context(ctx),
+                    Err(e) => {
+                        tracing::error!("CollectedResponse callback error: {}", e);
+                        self.system_message(&format!("[collect_response] callback 錯誤: {}", e));
+                    }
+                }
+            }
+            LuaCallback::Function(key) => {
+                match self.script_engine.execute_lua_callback_with_lines(key, &lines) {
+                    Ok(ctx) => self.apply_script_context(ctx),
+                    Err(e) => {
+                        tracing::error!("CollectedResponse function callback error: {}", e);
+                        self.system_message(&format!("[collect_response] function callback 錯誤: {}", e));
+                    }
+                }
+            }
         }
     }
 
@@ -2145,7 +2285,7 @@ impl Session {
                             
                             self.active_timers.push(ActiveTimer {
                                 expires_at: Instant::now() + std::time::Duration::from_millis(ms),
-                                lua_code,
+                                callback: mudcore::script::LuaCallback::Code(lua_code),
                             });
                             self.system_message(&format!("Delayed execution of '{}' by {}ms", sub_cmd, ms));
                             return;
@@ -2698,6 +2838,51 @@ impl Default for SessionManager {
 // ============================================================================
 // 工具函數
 // ============================================================================
+
+/// Convert a JSON string to a Lua table literal
+fn json_to_lua_table(json_str: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(json_str) {
+        Ok(val) => json_value_to_lua(&val),
+        Err(_) => "{}".to_string(),
+    }
+}
+
+fn lua_escape_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\0' => out.push_str("\\0"),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn json_value_to_lua(val: &serde_json::Value) -> String {
+    match val {
+        serde_json::Value::Null => "nil".to_string(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::String(s) => lua_escape_string(s),
+        serde_json::Value::Array(arr) => {
+            let items: Vec<String> = arr.iter().map(json_value_to_lua).collect();
+            format!("{{{}}}", items.join(","))
+        }
+        serde_json::Value::Object(map) => {
+            let items: Vec<String> = map
+                .iter()
+                .map(|(k, v)| format!("[{}]={}", lua_escape_string(k), json_value_to_lua(v)))
+                .collect();
+            format!("{{{}}}", items.join(","))
+        }
+    }
+}
 
 /// 清理可能的 Debug 格式
 fn clean_pattern_string(pattern: &str) -> String {

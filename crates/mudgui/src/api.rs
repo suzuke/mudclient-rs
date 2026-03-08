@@ -77,6 +77,8 @@ pub struct ApiState {
     pub pending_eval_lua: VecDeque<(String, tokio::sync::oneshot::Sender<String>)>,
     /// 待處理的 API 查詢佇列 (附帶 oneshot channel 用於回傳 JSON 結果)
     pub pending_api_queries: VecDeque<(ApiQuery, tokio::sync::oneshot::Sender<serde_json::Value>)>,
+    /// LLM function callback 結果佇列 (callback, result_text)
+    pub pending_llm_fn_results: VecDeque<(mudcore::script::LuaCallback, String)>,
 }
 
 /// 房間資訊
@@ -101,6 +103,7 @@ impl ApiState {
             pending_lua: VecDeque::new(),
             pending_eval_lua: VecDeque::new(),
             pending_api_queries: VecDeque::new(),
+            pending_llm_fn_results: VecDeque::new(),
         }
     }
 
@@ -130,6 +133,11 @@ impl ApiState {
     /// 取出所有待處理的 API 查詢（GUI 呼叫）
     pub fn drain_api_queries(&mut self) -> Vec<(ApiQuery, tokio::sync::oneshot::Sender<serde_json::Value>)> {
         self.pending_api_queries.drain(..).collect()
+    }
+
+    /// 取出所有待處理的 LLM function callback 結果（GUI 呼叫）
+    pub fn drain_llm_fn_results(&mut self) -> Vec<(mudcore::script::LuaCallback, String)> {
+        self.pending_llm_fn_results.drain(..).collect()
     }
 }
 

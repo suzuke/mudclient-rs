@@ -99,6 +99,10 @@ impl StateMachineManager {
         self.machines.insert(machine.name.clone(), machine);
     }
 
+    pub fn get_all_states(&self) -> HashMap<String, String> {
+        self.machines.iter().map(|(k, v)| (k.clone(), v.current_state().to_string())).collect()
+    }
+
     pub fn get(&self, name: &str) -> Option<&StateMachine> { self.machines.get(name) }
     pub fn get_mut(&mut self, name: &str) -> Option<&mut StateMachine> { self.machines.get_mut(name) }
     pub fn remove(&mut self, name: &str) -> Option<StateMachine> { self.machines.remove(name) }
@@ -114,15 +118,21 @@ impl StateMachineManager {
         results
     }
 
-    /// Check timeouts across ALL machines
-    pub fn check_timeouts(&mut self) -> Vec<(String, TransitionResult)> {
-        let mut results = Vec::new();
+    /// Check and return the first expired timeout (avoids Vec allocation)
+    pub fn check_first_timeout(&mut self) -> Option<(String, TransitionResult)> {
         for (name, machine) in &mut self.machines {
             if let Some(result) = machine.check_timeout() {
-                results.push((name.clone(), result));
+                return Some((name.clone(), result));
             }
         }
-        results
+        None
+    }
+
+    /// Return the earliest timeout_at across all machines (for scheduling UI repaint)
+    pub fn next_timeout(&self) -> Option<Instant> {
+        self.machines.values()
+            .filter_map(|m| m.timeout_at)
+            .min()
     }
 }
 

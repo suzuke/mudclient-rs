@@ -1,4 +1,4 @@
-use mlua::Lua;
+use mlua::{Lua, RegistryKey};
 use std::collections::HashMap;
 use thiserror::Error;
 use std::cell::{Cell, RefCell};
@@ -26,45 +26,62 @@ pub enum LogControl {
     Stop,
 }
 
+/// Timer 回呼：字串程式碼或 Lua function reference
+pub enum LuaCallback {
+    /// Lua 程式碼字串（傳統模式）
+    Code(String),
+    /// Lua function 的 registry key（function 模式）
+    Function(RegistryKey),
+}
+
+impl std::fmt::Debug for LuaCallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LuaCallback::Code(s) => write!(f, "Code({:?})", s),
+            LuaCallback::Function(_) => write!(f, "Function(<registry_key>)"),
+        }
+    }
+}
+
 /// MUD 腳本上下文（腳本執行後的結果）
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 #[must_use = "MudContext contains pending operations — call apply_script_context()"]
 pub struct MudContext {
     /// 待發送的命令隊列
     pub commands: Vec<String>,
-    
+
     /// 變數存儲
     pub variables: HashMap<String, String>,
-    
+
     /// 是否應該抑制當前訊息
     pub gag: bool,
-    
+
     /// 本地顯示的訊息（mud.echo）
     pub echos: Vec<String>,
-    
+
     /// 輸出到子視窗的訊息 (window_id, message)
     pub window_outputs: Vec<(String, String)>,
-    
+
     /// 寫入日誌的訊息
     pub log_messages: Vec<String>,
-    
+
     /// 日誌控制指令
     pub log_control: Option<LogControl>,
-    
-    /// 延遲執行的 Timer (delay_ms, lua_code)
-    pub timers: Vec<(u64, String)>,
+
+    /// 延遲執行的 Timer (delay_ms, callback)
+    pub timers: Vec<(u64, LuaCallback)>,
     
     /// 觸發器狀態更新 (name, enabled)
     pub trigger_updates: Vec<(String, bool)>,
 
-    /// 指令回應收集請求 (command, callback_code)
-    pub response_collectors: Vec<(String, String)>,
+    /// 指令回應收集請求 (command, callback) — None 表示 send_chain 中間指令
+    pub response_collectors: Vec<(String, Option<LuaCallback>)>,
 
     /// LLM 請求佇列 (prompt, callback_lua_code, model)
     pub llm_requests: Vec<LlmRequest>,
 
-    /// Event handler registrations: (event_name, lua_code, priority, once)
-    pub event_registrations: Vec<(String, String, i32, bool)>,
+    /// Event handler registrations: (event_name, callback, priority, once)
+    pub event_registrations: Vec<(String, LuaCallback, i32, bool)>,
     /// Event handler removals: handler_id
     pub event_removals: Vec<u64>,
     /// Events to emit: (event_name, data_json)
@@ -92,11 +109,20 @@ pub struct MudContext {
 }
 
 /// LLM 非同步請求
-#[derive(Debug, Clone)]
 pub struct LlmRequest {
     pub prompt: String,
-    pub callback_code: String,
+    pub callback: LuaCallback,
     pub model: Option<String>,
+}
+
+impl std::fmt::Debug for LlmRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LlmRequest")
+            .field("prompt", &self.prompt)
+            .field("callback", &self.callback)
+            .field("model", &self.model)
+            .finish()
+    }
 }
 
 impl MudContext {
@@ -136,6 +162,11 @@ impl ScriptEngine {
             current_room: RefCell::new(None),
             dofile_initialized: Cell::new(false),
         }
+    }
+
+    /// 取得 Lua VM 參考（用於直接操作 registry 等低階操作）
+    pub fn lua(&self) -> &Lua {
+        &self.lua
     }
 
     /// 設定腳本目錄路徑（供 dofile 查找）
@@ -457,14 +488,31 @@ impl ScriptEngine {
             })?;
             mud.set("stop_log", stop_log_fn)?;
             
-            // mud.timer(seconds, code) 函數 - 延遲執行
-            let timer_fn = scope.create_function(|lua, (seconds, lua_code): (f64, String)| {
+            // mud.timer(seconds, code_or_function) 函數 - 延遲執行
+            // 支援字串或 function 參數：
+            //   mud.timer(5, "mud.send('look')")        -- 字串模式
+            //   mud.timer(5, function() mud.send('look') end)  -- function 模式
+            let timer_fn = scope.create_function(|lua, (seconds, callback): (f64, mlua::Value)| {
                 let mud: mlua::Table = lua.globals().get("mud")?;
                 let timers: mlua::Table = mud.get("timers")?;
                 let len = timers.len()? + 1;
                 let pair = lua.create_table()?;
                 pair.set(1, (seconds * 1000.0) as u64)?; // 轉換為毫秒
-                pair.set(2, lua_code)?;
+                match &callback {
+                    mlua::Value::String(s) => {
+                        pair.set(2, s.to_str()?)?;
+                    }
+                    mlua::Value::Function(f) => {
+                        // 存入 Lua registry，回傳 RegistryKey
+                        // 用 Function 值直接存到 timer entry（Lua table 持有 reference，不會 GC）
+                        pair.set(2, f.clone())?;
+                    }
+                    _ => {
+                        return Err(mlua::Error::RuntimeError(
+                            "mud.timer: expected string or function as second argument".into()
+                        ));
+                    }
+                }
                 timers.set(len, pair)?;
                 Ok(())
             })?;
@@ -496,25 +544,40 @@ impl ScriptEngine {
             })?;
             mud.set("enable_group", enable_group_fn)?;
 
-            // mud.collect_response(cmd, callback_code) 函數
+            // mud.collect_response(cmd, callback) 函數
             // 發送指令並收集所有回應行直到 prompt（網路層指令佇列化）
-            let collect_response_fn = scope.create_function(|lua, (cmd, callback_code): (String, String)| {
+            // callback 可以是字串或 function：
+            //   mud.collect_response("inv", [[...code...]])
+            //   mud.collect_response("inv", function(lines) ... end)
+            let collect_response_fn = scope.create_function(|lua, (cmd, callback): (String, mlua::Value)| {
                 let mud: mlua::Table = lua.globals().get("mud")?;
                 let collectors: mlua::Table = mud.get("response_collectors")?;
                 let len = collectors.len()? + 1;
                 let entry = lua.create_table()?;
                 entry.set(1, cmd)?;
-                entry.set(2, callback_code)?;
+                match &callback {
+                    mlua::Value::String(s) => {
+                        entry.set(2, s.to_str()?)?;
+                    }
+                    mlua::Value::Function(f) => {
+                        entry.set(2, f.clone())?;
+                    }
+                    _ => {
+                        return Err(mlua::Error::RuntimeError(
+                            "mud.collect_response: expected string or function as callback".into()
+                        ));
+                    }
+                }
                 collectors.set(len, entry)?;
                 Ok(())
             })?;
             mud.set("collect_response", collect_response_fn)?;
 
-            // mud.send_chain(cmds, [callback_code]) 函數
+            // mud.send_chain(cmds, [callback]) 函數
             // 依序發送多個指令，每個指令等待 server 回應後才發下一個
-            // cmds: table of strings, callback_code: 最後執行的 Lua code（可選）
+            // cmds: table of strings, callback: 最後執行的 Lua code 或 function（可選）
             // 內部展開為多個 collect_response，利用網路層的佇列串連
-            let send_chain_fn = scope.create_function(|lua, (cmds, callback_code): (mlua::Table, Option<String>)| {
+            let send_chain_fn = scope.create_function(|lua, (cmds, callback): (mlua::Table, Option<mlua::Value>)| {
                 let mud: mlua::Table = lua.globals().get("mud")?;
                 let collectors: mlua::Table = mud.get("response_collectors")?;
                 let cmd_count = cmds.len()?;
@@ -524,11 +587,27 @@ impl ScriptEngine {
                     let base = collectors.len()? + 1;
                     let entry = lua.create_table()?;
                     entry.set(1, cmd)?;
-                    // 只有最後一個指令帶 callback，其餘用空字串（不執行 callback）
+                    // 只有最後一個指令帶 callback，其餘用 nil（不執行 callback）
                     if i == cmd_count {
-                        entry.set(2, callback_code.as_deref().unwrap_or(""))?;
+                        if let Some(ref cb) = callback {
+                            match cb {
+                                mlua::Value::String(_) | mlua::Value::Function(_) => {
+                                    entry.set(2, cb.clone())?;
+                                }
+                                mlua::Value::Nil => {
+                                    entry.set(2, mlua::Value::Nil)?;
+                                }
+                                _ => {
+                                    return Err(mlua::Error::RuntimeError(
+                                        "mud.send_chain: expected string or function as callback".into()
+                                    ));
+                                }
+                            }
+                        } else {
+                            entry.set(2, mlua::Value::Nil)?;
+                        }
                     } else {
-                        entry.set(2, "")?;
+                        entry.set(2, mlua::Value::Nil)?;
                     }
                     collectors.set(base, entry)?;
                 }
@@ -536,15 +615,25 @@ impl ScriptEngine {
             })?;
             mud.set("send_chain", send_chain_fn)?;
 
-            // mud.ask_llm(prompt, callback_lua_code, [model])
-            // 非同步呼叫 LLM，回覆後執行 callback（callback 中 $RESULT 被替換為回覆）
-            let ask_llm_fn = scope.create_function(|lua, (prompt, callback_code, model): (String, String, Option<String>)| {
+            // mud.ask_llm(prompt, callback, [model])
+            // 非同步呼叫 LLM，回覆後執行 callback
+            // callback 可以是字串（$RESULT 被替換為回覆）或 function（接收回覆字串）
+            let ask_llm_fn = scope.create_function(|lua, (prompt, callback, model): (String, mlua::Value, Option<String>)| {
                 let mud: mlua::Table = lua.globals().get("mud")?;
                 let requests: mlua::Table = mud.get("llm_requests")?;
                 let len = requests.len()? + 1;
                 let entry = lua.create_table()?;
                 entry.set(1, prompt)?;
-                entry.set(2, callback_code)?;
+                match &callback {
+                    mlua::Value::String(_) | mlua::Value::Function(_) => {
+                        entry.set(2, callback)?;
+                    }
+                    _ => {
+                        return Err(mlua::Error::RuntimeError(
+                            "mud.ask_llm: expected string or function as callback".into()
+                        ));
+                    }
+                }
                 entry.set(3, model.unwrap_or_default())?;
                 requests.set(len, entry)?;
                 Ok(())
@@ -585,14 +674,24 @@ impl ScriptEngine {
             })?;
             mud.set("get_current_room", get_current_room_fn)?;
 
-            // mud.on(event_name, lua_code, [priority]) -> handler_id (placeholder)
-            let on_fn = scope.create_function_mut(|lua, (event_name, code, priority): (String, String, Option<i32>)| {
+            // mud.on(event_name, callback, [priority]) -> handler_id (placeholder)
+            // callback 可以是字串或 function
+            let on_fn = scope.create_function_mut(|lua, (event_name, callback, priority): (String, mlua::Value, Option<i32>)| {
                 let mud: mlua::Table = lua.globals().get("mud")?;
                 let regs: mlua::Table = mud.get("_event_registrations")?;
                 let len = regs.len()? + 1;
                 let entry = lua.create_table()?;
                 entry.set(1, event_name)?;
-                entry.set(2, code)?;
+                match &callback {
+                    mlua::Value::String(_) | mlua::Value::Function(_) => {
+                        entry.set(2, callback)?;
+                    }
+                    _ => {
+                        return Err(mlua::Error::RuntimeError(
+                            "mud.on: expected string or function as callback".into()
+                        ));
+                    }
+                }
                 entry.set(3, priority.unwrap_or(0))?;
                 entry.set(4, false)?; // once = false
                 regs.set(len, entry)?;
@@ -600,14 +699,24 @@ impl ScriptEngine {
             })?;
             mud.set("on", on_fn)?;
 
-            // mud.once(event_name, lua_code, [priority]) -> handler_id (placeholder)
-            let once_fn = scope.create_function_mut(|lua, (event_name, code, priority): (String, String, Option<i32>)| {
+            // mud.once(event_name, callback, [priority]) -> handler_id (placeholder)
+            // callback 可以是字串或 function
+            let once_fn = scope.create_function_mut(|lua, (event_name, callback, priority): (String, mlua::Value, Option<i32>)| {
                 let mud: mlua::Table = lua.globals().get("mud")?;
                 let regs: mlua::Table = mud.get("_event_registrations")?;
                 let len = regs.len()? + 1;
                 let entry = lua.create_table()?;
                 entry.set(1, event_name)?;
-                entry.set(2, code)?;
+                match &callback {
+                    mlua::Value::String(_) | mlua::Value::Function(_) => {
+                        entry.set(2, callback)?;
+                    }
+                    _ => {
+                        return Err(mlua::Error::RuntimeError(
+                            "mud.once: expected string or function as callback".into()
+                        ));
+                    }
+                }
                 entry.set(3, priority.unwrap_or(0))?;
                 entry.set(4, true)?; // once = true
                 regs.set(len, entry)?;
@@ -857,6 +966,185 @@ impl ScriptEngine {
                         tracing::warn!("Failed to override dofile: {}", e);
                     }
                 }
+                // 註冊全域 json 模組（json.encode / json.decode）
+                let json_module = self.lua.load(r#"
+                    local json = {}
+
+                    local function json_escape(s)
+                        s = s:gsub('\\', '\\\\')
+                        s = s:gsub('"', '\\"')
+                        s = s:gsub('\n', '\\n')
+                        s = s:gsub('\r', '\\r')
+                        s = s:gsub('\t', '\\t')
+                        return s
+                    end
+
+                    local function encode_value(val, indent, depth)
+                        local t = type(val)
+                        if val == nil then return "null"
+                        elseif t == "boolean" then return tostring(val)
+                        elseif t == "number" then
+                            if val ~= val then return "null" end
+                            if val == math.huge or val == -math.huge then return "null" end
+                            if val == math.floor(val) and math.abs(val) < 2^53 then
+                                return string.format("%d", val)
+                            end
+                            return tostring(val)
+                        elseif t == "string" then
+                            return '"' .. json_escape(val) .. '"'
+                        elseif t == "table" then
+                            local is_array = true
+                            local max_idx = 0
+                            local count = 0
+                            for k, _ in pairs(val) do
+                                count = count + 1
+                                if type(k) == "number" and k == math.floor(k) and k >= 1 then
+                                    if k > max_idx then max_idx = k end
+                                else
+                                    is_array = false
+                                    break
+                                end
+                            end
+                            if is_array and max_idx == count and count > 0 then
+                                -- array
+                                local parts = {}
+                                for i = 1, max_idx do
+                                    parts[#parts + 1] = encode_value(val[i], indent, depth + 1)
+                                end
+                                if indent then
+                                    local pad = string.rep(indent, depth + 1)
+                                    local pad0 = string.rep(indent, depth)
+                                    return "[\n" .. pad .. table.concat(parts, ",\n" .. pad) .. "\n" .. pad0 .. "]"
+                                end
+                                return "[" .. table.concat(parts, ",") .. "]"
+                            else
+                                -- object
+                                local parts = {}
+                                local keys = {}
+                                for k, _ in pairs(val) do keys[#keys + 1] = k end
+                                table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+                                for _, k in ipairs(keys) do
+                                    local ks = type(k) == "string" and k or tostring(k)
+                                    parts[#parts + 1] = '"' .. json_escape(ks) .. '":' ..
+                                        (indent and " " or "") .. encode_value(val[k], indent, depth + 1)
+                                end
+                                if count == 0 then return "{}" end
+                                if indent then
+                                    local pad = string.rep(indent, depth + 1)
+                                    local pad0 = string.rep(indent, depth)
+                                    return "{\n" .. pad .. table.concat(parts, ",\n" .. pad) .. "\n" .. pad0 .. "}"
+                                end
+                                return "{" .. table.concat(parts, ",") .. "}"
+                            end
+                        else
+                            return '"' .. tostring(val) .. '"'
+                        end
+                    end
+
+                    function json.encode(val, pretty)
+                        return encode_value(val, pretty and "  " or nil, 0)
+                    end
+
+                    -- Minimal JSON decoder
+                    local function skip_ws(s, i)
+                        return s:match("^%s*()", i)
+                    end
+
+                    local function decode_value(s, i)
+                        i = skip_ws(s, i)
+                        local c = s:sub(i, i)
+                        if c == '"' then
+                            -- string
+                            local j = i + 1
+                            local parts = {}
+                            while j <= #s do
+                                local ch = s:sub(j, j)
+                                if ch == '\\' then
+                                    local nc = s:sub(j+1, j+1)
+                                    if nc == '"' then parts[#parts+1] = '"'; j = j + 2
+                                    elseif nc == '\\' then parts[#parts+1] = '\\'; j = j + 2
+                                    elseif nc == '/' then parts[#parts+1] = '/'; j = j + 2
+                                    elseif nc == 'n' then parts[#parts+1] = '\n'; j = j + 2
+                                    elseif nc == 'r' then parts[#parts+1] = '\r'; j = j + 2
+                                    elseif nc == 't' then parts[#parts+1] = '\t'; j = j + 2
+                                    elseif nc == 'b' then parts[#parts+1] = '\b'; j = j + 2
+                                    elseif nc == 'f' then parts[#parts+1] = '\f'; j = j + 2
+                                    elseif nc == 'u' then
+                                        local hex = s:sub(j+2, j+5)
+                                        local code = tonumber(hex, 16) or 0
+                                        if code < 128 then
+                                            parts[#parts+1] = string.char(code)
+                                        elseif code < 2048 then
+                                            parts[#parts+1] = string.char(192 + math.floor(code/64), 128 + code%64)
+                                        else
+                                            parts[#parts+1] = string.char(224 + math.floor(code/4096), 128 + math.floor(code%4096/64), 128 + code%64)
+                                        end
+                                        j = j + 6
+                                    else parts[#parts+1] = nc; j = j + 2 end
+                                elseif ch == '"' then
+                                    return table.concat(parts), j + 1
+                                else
+                                    parts[#parts+1] = ch; j = j + 1
+                                end
+                            end
+                            error("json.decode: unterminated string")
+                        elseif c == '{' then
+                            local obj = {}
+                            i = skip_ws(s, i + 1)
+                            if s:sub(i, i) == '}' then return obj, i + 1 end
+                            while true do
+                                local key, val
+                                key, i = decode_value(s, i)
+                                i = skip_ws(s, i)
+                                if s:sub(i, i) ~= ':' then error("json.decode: expected ':'") end
+                                i = skip_ws(s, i + 1)
+                                val, i = decode_value(s, i)
+                                obj[key] = val
+                                i = skip_ws(s, i)
+                                local sep = s:sub(i, i)
+                                if sep == '}' then return obj, i + 1
+                                elseif sep == ',' then i = skip_ws(s, i + 1)
+                                else error("json.decode: expected ',' or '}'") end
+                            end
+                        elseif c == '[' then
+                            local arr = {}
+                            i = skip_ws(s, i + 1)
+                            if s:sub(i, i) == ']' then return arr, i + 1 end
+                            while true do
+                                local val
+                                val, i = decode_value(s, i)
+                                arr[#arr+1] = val
+                                i = skip_ws(s, i)
+                                local sep = s:sub(i, i)
+                                if sep == ']' then return arr, i + 1
+                                elseif sep == ',' then i = skip_ws(s, i + 1)
+                                else error("json.decode: expected ',' or ']'") end
+                            end
+                        elseif s:sub(i, i+3) == "true" then return true, i + 4
+                        elseif s:sub(i, i+4) == "false" then return false, i + 5
+                        elseif s:sub(i, i+3) == "null" then return nil, i + 4
+                        else
+                            local num_str = s:match("^-?%d+%.?%d*[eE]?[+-]?%d*", i)
+                            if num_str then return tonumber(num_str), i + #num_str
+                            else error("json.decode: unexpected character at position " .. i .. ": " .. c) end
+                        end
+                    end
+
+                    function json.decode(s)
+                        if type(s) ~= "string" then error("json.decode: expected string, got " .. type(s)) end
+                        local val, i = decode_value(s, 1)
+                        return val
+                    end
+
+                    -- Register as global and in package.loaded
+                    _G.json = json
+                    package.loaded["json"] = json
+                    return json
+                "#).exec();
+                if let Err(e) = json_module {
+                    tracing::warn!("Failed to register json module: {}", e);
+                }
+
                 self.dofile_initialized.set(true);
             }
             
@@ -941,14 +1229,27 @@ impl ScriptEngine {
                 }
             }
             
-            // 收集 timers
+            // 收集 timers（支援 string code 和 function reference 兩種模式）
             if let Ok(timers) = mud.get::<mlua::Table>("timers") {
                 for pair in timers.pairs::<i64, mlua::Table>() {
                     if let Ok((_, tbl)) = pair {
-                        if let (Ok(delay_ms), Ok(code)) = (tbl.get::<u64>(1), tbl.get::<String>(2)) {
-                            // 計時器觸發永遠不被視為回顯
-                            context.timers.push((delay_ms, code));
-                        }
+                        let delay_ms: u64 = match tbl.get(1) { Ok(v) => v, _ => continue };
+                        let callback_val: mlua::Value = match tbl.get(2) { Ok(v) => v, _ => continue };
+                        let timer_cb = match callback_val {
+                            mlua::Value::String(s) => LuaCallback::Code(s.to_string_lossy()),
+                            mlua::Value::Function(_) => {
+                                // 將 function 存入 Lua registry，取得 RegistryKey 傳出 scope
+                                match self.lua.create_registry_value(callback_val) {
+                                    Ok(key) => LuaCallback::Function(key),
+                                    Err(e) => {
+                                        tracing::error!("Failed to register timer function: {}", e);
+                                        continue;
+                                    }
+                                }
+                            }
+                            _ => continue,
+                        };
+                        context.timers.push((delay_ms, timer_cb));
                     }
                 }
             }
@@ -975,45 +1276,85 @@ impl ScriptEngine {
                 }
             }
 
-            // 收集 response_collectors
+            // 收集 response_collectors（支援 string code 和 function reference）
             if let Ok(collectors) = mud.get::<mlua::Table>("response_collectors") {
                 for pair in collectors.pairs::<i64, mlua::Table>() {
                     if let Ok((_, tbl)) = pair {
-                        if let (Ok(cmd), Ok(callback)) = (tbl.get::<String>(1), tbl.get::<String>(2)) {
-                            context.response_collectors.push((cmd, callback));
-                        }
+                        let cmd: String = match tbl.get(1) { Ok(v) => v, _ => continue };
+                        let callback_val: mlua::Value = match tbl.get(2) { Ok(v) => v, _ => continue };
+                        let cb = match callback_val {
+                            mlua::Value::String(s) => {
+                                let code = s.to_string_lossy();
+                                if code.is_empty() { None } else { Some(LuaCallback::Code(code)) }
+                            }
+                            mlua::Value::Function(_) => {
+                                match self.lua.create_registry_value(callback_val) {
+                                    Ok(key) => Some(LuaCallback::Function(key)),
+                                    Err(e) => {
+                                        tracing::error!("Failed to register collect_response function: {}", e);
+                                        continue;
+                                    }
+                                }
+                            }
+                            mlua::Value::Nil => None,
+                            _ => continue,
+                        };
+                        context.response_collectors.push((cmd, cb));
                     }
                 }
             }
 
-            // 收集 llm_requests
+            // 收集 llm_requests（支援 string code 和 function reference）
             if let Ok(requests) = mud.get::<mlua::Table>("llm_requests") {
                 for pair in requests.pairs::<i64, mlua::Table>() {
                     if let Ok((_, tbl)) = pair {
-                        if let (Ok(prompt), Ok(callback)) = (tbl.get::<String>(1), tbl.get::<String>(2)) {
-                            let model = tbl.get::<String>(3).ok().filter(|s| !s.is_empty());
-                            context.llm_requests.push(LlmRequest {
-                                prompt,
-                                callback_code: callback,
-                                model,
-                            });
-                        }
+                        let prompt: String = match tbl.get(1) { Ok(v) => v, _ => continue };
+                        let callback_val: mlua::Value = match tbl.get(2) { Ok(v) => v, _ => continue };
+                        let model = tbl.get::<String>(3).ok().filter(|s| !s.is_empty());
+                        let cb = match callback_val {
+                            mlua::Value::String(s) => LuaCallback::Code(s.to_string_lossy()),
+                            mlua::Value::Function(_) => {
+                                match self.lua.create_registry_value(callback_val) {
+                                    Ok(key) => LuaCallback::Function(key),
+                                    Err(e) => {
+                                        tracing::error!("Failed to register ask_llm function: {}", e);
+                                        continue;
+                                    }
+                                }
+                            }
+                            _ => continue,
+                        };
+                        context.llm_requests.push(LlmRequest {
+                            prompt,
+                            callback: cb,
+                            model,
+                        });
                     }
                 }
             }
 
-            // 收集 event_registrations
+            // 收集 event_registrations（支援 string code 和 function reference）
             if let Ok(regs) = mud.get::<mlua::Table>("_event_registrations") {
                 for pair in regs.pairs::<i64, mlua::Table>() {
                     if let Ok((_, entry)) = pair {
-                        if let (Ok(name), Ok(code), Ok(priority), Ok(once)) = (
-                            entry.get::<String>(1),
-                            entry.get::<String>(2),
-                            entry.get::<i32>(3),
-                            entry.get::<bool>(4),
-                        ) {
-                            context.event_registrations.push((name, code, priority, once));
-                        }
+                        let name: String = match entry.get(1) { Ok(v) => v, _ => continue };
+                        let callback_val: mlua::Value = match entry.get(2) { Ok(v) => v, _ => continue };
+                        let priority: i32 = match entry.get(3) { Ok(v) => v, _ => continue };
+                        let once: bool = match entry.get(4) { Ok(v) => v, _ => continue };
+                        let cb = match callback_val {
+                            mlua::Value::String(s) => LuaCallback::Code(s.to_string_lossy()),
+                            mlua::Value::Function(_) => {
+                                match self.lua.create_registry_value(callback_val) {
+                                    Ok(key) => LuaCallback::Function(key),
+                                    Err(e) => {
+                                        tracing::error!("Failed to register event handler function: {}", e);
+                                        continue;
+                                    }
+                                }
+                            }
+                            _ => continue,
+                        };
+                        context.event_registrations.push((name, cb, priority, once));
                     }
                 }
             }
@@ -1123,6 +1464,102 @@ impl ScriptEngine {
         Ok((context, eval_result_str))
     }
 
+    /// 執行 Lua function callback（從 registry 取出 function 並呼叫）
+    ///
+    /// 將 function 暫存到 `_G.__pending_cb_fn`，透過 run_code 呼叫以取得完整的 mud.* API 環境。
+    /// Registry entry 在取出後立即釋放，避免記憶體洩漏。
+    /// `context_msg` 用於辨識呼叫來源（如 "TIMER_EXPIRED", "COLLECT_RESPONSE"）。
+    pub fn execute_lua_callback(&self, key: RegistryKey, context_msg: &str) -> Result<MudContext, ScriptError> {
+        let func: mlua::Function = self.lua.registry_value(&key)?;
+        self.lua.remove_registry_value(key)?;
+        self.lua.globals().set("__pending_cb_fn", func)?;
+        let result = self.execute_inline(
+            "__pending_cb_fn()\n_G.__pending_cb_fn = nil",
+            context_msg, &[], false,
+        );
+        let _ = self.lua.globals().set("__pending_cb_fn", mlua::Value::Nil);
+        result
+    }
+
+    /// 執行 Lua function callback 並先設定 collected_lines 全域變數
+    /// 用於 collect_response 的 function 模式
+    pub fn execute_lua_callback_with_lines(&self, key: RegistryKey, lines: &[String]) -> Result<MudContext, ScriptError> {
+        let func: mlua::Function = self.lua.registry_value(&key)?;
+        self.lua.remove_registry_value(key)?;
+        // 建構 _G._collected_lines table
+        let lines_table = self.lua.create_table()?;
+        for (i, line) in lines.iter().enumerate() {
+            lines_table.set(i + 1, line.as_str())?;
+        }
+        self.lua.globals().set("_collected_lines", lines_table)?;
+        self.lua.globals().set("__pending_cb_fn", func)?;
+        let result = self.execute_inline(
+            "__pending_cb_fn(_G._collected_lines)\n_G.__pending_cb_fn = nil",
+            "COLLECT_RESPONSE", &[], false,
+        );
+        let _ = self.lua.globals().set("__pending_cb_fn", mlua::Value::Nil);
+        result
+    }
+
+    /// 執行 Lua function callback 並傳入 LLM 結果字串
+    pub fn execute_lua_callback_with_result(&self, key: RegistryKey, result_str: &str) -> Result<MudContext, ScriptError> {
+        let func: mlua::Function = self.lua.registry_value(&key)?;
+        self.lua.remove_registry_value(key)?;
+        self.lua.globals().set("__pending_cb_fn", func)?;
+        self.lua.globals().set("__pending_cb_arg", result_str)?;
+        let result = self.execute_inline(
+            "__pending_cb_fn(__pending_cb_arg)\n_G.__pending_cb_fn = nil\n_G.__pending_cb_arg = nil",
+            "LLM_RESPONSE", &[], false,
+        );
+        let _ = self.lua.globals().set("__pending_cb_fn", mlua::Value::Nil);
+        let _ = self.lua.globals().set("__pending_cb_arg", mlua::Value::Nil);
+        result
+    }
+
+    /// 執行 Lua function callback（消費 RegistryKey）並帶 setup code 設定環境
+    ///
+    /// setup_code 用於設定 event data 等全域變數，function 以 `data` 為參數呼叫。
+    pub fn execute_lua_callback_with_setup(&self, key: RegistryKey, setup_code: &str, context_msg: &str) -> Result<MudContext, ScriptError> {
+        let func: mlua::Function = self.lua.registry_value(&key)?;
+        self.lua.remove_registry_value(key)?;
+        self.lua.globals().set("__pending_cb_fn", func)?;
+        let code = format!("{}\n__pending_cb_fn(data)\n_G.__pending_cb_fn = nil", setup_code);
+        let result = self.execute_inline(
+            &code,
+            context_msg, &[], false,
+        );
+        let _ = self.lua.globals().set("__pending_cb_fn", mlua::Value::Nil);
+        result
+    }
+
+    /// 執行 Lua function callback（借用 RegistryKey，不消費）
+    ///
+    /// 用於 persistent event handler 等需要重複執行的場景。
+    /// 與 execute_lua_callback 不同，不會從 registry 中移除 key。
+    pub fn execute_lua_callback_ref(&self, key: &RegistryKey, context_msg: &str) -> Result<MudContext, ScriptError> {
+        let func: mlua::Function = self.lua.registry_value(key)?;
+        self.lua.globals().set("__pending_cb_fn", func)?;
+        let result = self.execute_inline(
+            "__pending_cb_fn()\n_G.__pending_cb_fn = nil",
+            context_msg, &[], false,
+        );
+        let _ = self.lua.globals().set("__pending_cb_fn", mlua::Value::Nil);
+        result
+    }
+
+    /// 執行 Lua function callback（借用 RegistryKey）並傳入 event data 參數
+    pub fn execute_lua_callback_ref_with_setup(&self, key: &RegistryKey, setup_code: &str, context_msg: &str) -> Result<MudContext, ScriptError> {
+        let func: mlua::Function = self.lua.registry_value(key)?;
+        self.lua.globals().set("__pending_cb_fn", func)?;
+        let code = format!("{}\n__pending_cb_fn(data)\n_G.__pending_cb_fn = nil", setup_code);
+        let result = self.execute_inline(
+            &code,
+            context_msg, &[], false,
+        );
+        let _ = self.lua.globals().set("__pending_cb_fn", mlua::Value::Nil);
+        result
+    }
+
     /// 驗證腳本語法
     pub fn validate(&self, code: &str) -> Result<(), ScriptError> {
         self.lua.load(code).into_function()?;
@@ -1222,7 +1659,7 @@ end
         let engine = ScriptEngine::new();
 
         // Set variables
-        engine.execute_inline(
+        let _ = engine.execute_inline(
             r#"mud.variables.target = "dragon"; mud.variables.target_id = "mob123""#,
             "", &[], false,
         ).unwrap();
@@ -1262,7 +1699,7 @@ end
         let engine = ScriptEngine::new();
 
         // Define a hook
-        engine.execute_inline(
+        let _ = engine.execute_inline(
             r#"function on_server_message(msg, clean, is_echo)
                 if string.find(clean, "gold") then
                     mud.send("count gold")
@@ -1289,6 +1726,103 @@ end
     }
 
     #[test]
+    fn test_timer_function_param() {
+        let engine = ScriptEngine::new();
+
+        // String mode (backward compatible)
+        let result = engine.execute_inline(
+            r#"mud.timer(5, "mud.send('look')")"#,
+            "", &[], false,
+        ).unwrap();
+        assert_eq!(result.timers.len(), 1);
+        assert_eq!(result.timers[0].0, 5000);
+        assert!(matches!(&result.timers[0].1, LuaCallback::Code(s) if s == "mud.send('look')"));
+
+        // Function mode
+        let result2 = engine.execute_inline(
+            r#"
+            local counter = 42
+            mud.timer(2.5, function()
+                mud.send("count " .. counter)
+            end)
+            "#,
+            "", &[], false,
+        ).unwrap();
+        assert_eq!(result2.timers.len(), 1);
+        assert_eq!(result2.timers[0].0, 2500);
+        assert!(matches!(&result2.timers[0].1, LuaCallback::Function(_)));
+
+        // Function mode: verify execute_lua_callback works with closure capture
+        let result3 = engine.execute_inline(
+            r#"
+            local msg = "hello from closure"
+            mud.timer(1, function()
+                mud.echo(msg)
+            end)
+            "#,
+            "", &[], false,
+        ).unwrap();
+        // Extract the RegistryKey and simulate timer expiry
+        let (_, callback) = result3.timers.into_iter().next().unwrap();
+        if let LuaCallback::Function(key) = callback {
+            let timer_result = engine.execute_lua_callback(key, "test_timer").unwrap();
+            assert_eq!(timer_result.echos.len(), 1);
+            assert_eq!(timer_result.echos[0], "hello from closure");
+        } else {
+            panic!("Expected LuaCallback::Function");
+        }
+    }
+
+    #[test]
+    fn test_json_module() {
+        let engine = ScriptEngine::new();
+
+        // Test json.encode
+        let result = engine.execute_inline_with_result(
+            r#"json.encode({name = "test", hp = 100, items = {1, 2, 3}})"#,
+            "", &[],
+        ).unwrap();
+        let json_val: serde_json::Value = serde_json::from_str(&result.1).unwrap();
+        let inner: serde_json::Value = serde_json::from_str(json_val.as_str().unwrap()).unwrap();
+        assert_eq!(inner["name"], "test");
+        assert_eq!(inner["hp"], 100);
+        assert_eq!(inner["items"], serde_json::json!([1, 2, 3]));
+
+        // Test json.decode
+        let result2 = engine.execute_inline_with_result(
+            r#"json.decode('{"a":1,"b":"hello","c":[true,false,null]}')"#,
+            "", &[],
+        ).unwrap();
+        let decoded: serde_json::Value = serde_json::from_str(&result2.1).unwrap();
+        assert_eq!(decoded["a"], 1);
+        assert_eq!(decoded["b"], "hello");
+        assert_eq!(decoded["c"][0], true);
+        assert_eq!(decoded["c"][1], false);
+        assert!(decoded["c"][2].is_null());
+
+        // Test json.encode with pretty
+        let result3 = engine.execute_inline_with_result(
+            r#"json.encode({x = 1}, true)"#,
+            "", &[],
+        ).unwrap();
+        let pretty_str = serde_json::from_str::<serde_json::Value>(&result3.1).unwrap();
+        assert!(pretty_str.as_str().unwrap().contains('\n'));
+
+        // Test roundtrip
+        let result4 = engine.execute_inline_with_result(
+            r#"
+            local original = {name = "武器", damage = 50, flags = {"magic", "glow"}}
+            local encoded = json.encode(original)
+            local decoded = json.decode(encoded)
+            return decoded.name .. ":" .. decoded.damage
+            "#,
+            "", &[],
+        ).unwrap();
+        let roundtrip: serde_json::Value = serde_json::from_str(&result4.1).unwrap();
+        assert_eq!(roundtrip.as_str().unwrap(), "武器:50");
+    }
+
+    #[test]
     fn test_event_api() {
         let engine = ScriptEngine::new();
         let result = engine.execute_inline(
@@ -1305,6 +1839,7 @@ end
 
         assert_eq!(result.event_registrations.len(), 2);
         assert_eq!(result.event_registrations[0].0, "combat_end");
+        assert!(matches!(result.event_registrations[0].1, LuaCallback::Code(_)));
         assert!(!result.event_registrations[0].3); // not once
         assert_eq!(result.event_registrations[1].0, "connected");
         assert!(result.event_registrations[1].3); // once
@@ -1312,5 +1847,26 @@ end
         assert_eq!(result.event_removals.len(), 1);
         assert_eq!(result.event_emissions.len(), 1);
         assert_eq!(result.event_emissions[0].0, "custom_event");
+    }
+
+    #[test]
+    fn test_event_function_param() {
+        let engine = ScriptEngine::new();
+        let result = engine.execute_inline(
+            r#"
+            mud.on("test_event", function(data)
+                mud.echo("got event")
+            end, 5)
+            "#,
+            "",
+            &[],
+            false,
+        ).unwrap();
+
+        assert_eq!(result.event_registrations.len(), 1);
+        assert_eq!(result.event_registrations[0].0, "test_event");
+        assert!(matches!(result.event_registrations[0].1, LuaCallback::Function(_)));
+        assert_eq!(result.event_registrations[0].2, 5); // priority
+        assert!(!result.event_registrations[0].3); // not once
     }
 }

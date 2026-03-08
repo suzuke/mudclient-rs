@@ -620,9 +620,9 @@ impl MudApp {
                                                                 let _ = msg_tx.send(NetMessage::Text(format!(">>> 發送失敗: {}\n", e), Vec::new())).await;
                                                             }
                                                         }
-                                                        SessionCommand::CollectResponse { command, callback_code } => {
+                                                        SessionCommand::CollectResponse { command, callback } => {
                                                             // 處理 CollectResponse 佇列（支援 send_chain 連續多個）
-                                                            let mut queue = vec![(command, callback_code)];
+                                                            let mut queue: Vec<(String, Option<mudcore::script::LuaCallback>)> = vec![(command, callback)];
 
                                                             // === Phase 0: 收集 channel 中所有待處理的指令 ===
                                                             // Send 立即發出，CollectResponse 加入佇列依序處理
@@ -633,7 +633,7 @@ impl MudApp {
                                                                             let _ = msg_tx.send(NetMessage::Text(format!(">>> 發送失敗: {}\n", e), Vec::new())).await;
                                                                         }
                                                                     }
-                                                                    SessionCommand::CollectResponse { command: c, callback_code: cb } => {
+                                                                    SessionCommand::CollectResponse { command: c, callback: cb } => {
                                                                         queue.push((c, cb));
                                                                     }
                                                                     SessionCommand::Disconnect => {
@@ -647,7 +647,7 @@ impl MudApp {
                                                             }
 
                                                             // === 依序處理每個 CollectResponse ===
-                                                            for (cmd, cb_code) in queue {
+                                                            for (cmd, cb) in queue {
                                                                 // Drain — 讀盡管線中所有待處理的回應
                                                                 loop {
                                                                     match tokio::time::timeout(
@@ -720,7 +720,7 @@ impl MudApp {
                                                                 // 發送收集結果
                                                                 let _ = msg_tx.send(NetMessage::CollectedResponse {
                                                                     lines: collected_lines,
-                                                                    callback_code: cb_code,
+                                                                    callback: cb,
                                                                 }).await;
                                                                 ctx.request_repaint();
                                                             }
@@ -839,8 +839,8 @@ impl MudApp {
                                     }
                                 }
                             }
-                            NetMessage::CollectedResponse { lines, callback_code } => {
-                                session.execute_collected_response(lines, callback_code);
+                            NetMessage::CollectedResponse { lines, callback } => {
+                                session.execute_collected_response(lines, callback);
                             }
                         }
                     }
@@ -858,16 +858,16 @@ impl MudApp {
         let all_states = self.api_state_mgr.all_states();
         
         for (session_key, api_state) in all_states {
-            let (commands, lua_codes, eval_lua_codes, api_queries) = {
+            let (commands, lua_codes, eval_lua_codes, api_queries, llm_fn_results) = {
                 if let Ok(mut api) = api_state.lock() {
-                    (api.drain_commands(), api.drain_lua(), api.drain_eval_lua(), api.drain_api_queries())
+                    (api.drain_commands(), api.drain_lua(), api.drain_eval_lua(), api.drain_api_queries(), api.drain_llm_fn_results())
                 } else {
                     continue;
                 }
             };
 
             // 跳過沒有待處理項目的 Session
-            if commands.is_empty() && lua_codes.is_empty() && eval_lua_codes.is_empty() && api_queries.is_empty() {
+            if commands.is_empty() && lua_codes.is_empty() && eval_lua_codes.is_empty() && api_queries.is_empty() && llm_fn_results.is_empty() {
                 continue;
             }
 
@@ -908,6 +908,18 @@ impl MudApp {
                 for (query, tx) in api_queries {
                     let result = session.handle_api_query(query);
                     let _ = tx.send(result);
+                }
+                // LLM function callback 結果
+                for (callback, result_text) in llm_fn_results {
+                    if let mudcore::script::LuaCallback::Function(key) = callback {
+                        match session.script_engine.execute_lua_callback_with_result(key, &result_text) {
+                            Ok(ctx) => session.apply_script_context(ctx),
+                            Err(e) => {
+                                tracing::error!("LLM function callback error (session {}): {}", session_key, e);
+                                session.system_message(&format!("[ask_llm] function callback 錯誤: {}", e));
+                            }
+                        }
+                    }
                 }
             }
         }

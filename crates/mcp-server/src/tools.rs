@@ -1,7 +1,7 @@
 use rmcp::{
     ServerHandler, tool, tool_handler, tool_router,
     handler::server::{wrapper::Parameters, tool::ToolRouter},
-    model::ServerInfo,
+    model::{ServerInfo, ServerCapabilities},
     schemars,
 };
 use serde::Deserialize;
@@ -334,7 +334,12 @@ impl MudMcpServer {
 #[tool_handler]
 impl ServerHandler for MudMcpServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::default()
-            .with_instructions("MUD Client MCP Server — control a running MUD client via 19 tools")
+        let capabilities = ServerCapabilities::builder()
+            .enable_tools()
+            .build();
+        let mut info = ServerInfo::default();
+        info.capabilities = capabilities;
+        info.instructions = Some("MUD Client MCP Server — control a running MUD client via 19 tools".into());
+        info
     }
 }
