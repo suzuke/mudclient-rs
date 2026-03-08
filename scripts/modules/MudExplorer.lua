@@ -212,7 +212,8 @@ function MudExplorer.explore(callback)
     s.doors_opened = false
     
     if MudExplorer.config.debug then mud.echo("[MudExplorer] Start Explore") end
-    
+    mud.emit("explorer_started", {target = MudExplorer.config.target, max_laps = MudExplorer.config.max_laps})
+
     -- Initial Look (Don't open blindly, wait for Exits)
     mud.send("l")
 end
@@ -244,6 +245,7 @@ end
 
 function MudExplorer.stop()
     MudExplorer.state.exploring = false
+    mud.emit("explorer_stopped", {rooms_visited = MudExplorer.state.instance and MudExplorer.state.instance.room_count or 0})
     if MudExplorer.config.debug then mud.echo("[MudExplorer] Stopped") end
 end
 
@@ -271,6 +273,7 @@ function MudExplorer.on_server_message(line)
         if s.instance then s.instance:confirm_move() end
         
         s.exploring = false
+        mud.emit("explorer_target_found", {target = MudExplorer.config.target, line = line})
         if s.callback then s.callback(true, line) end
         return
     end
@@ -347,6 +350,7 @@ function MudExplorer.process_next_step()
     
     if next_cmd then
         if MudExplorer.config.debug then mud.echo("[MudExplorer] Move: " .. next_cmd) end
+        s.last_exit_process_time = nil  -- 重設，確保下個房間的出口不被過濾
         mud.send(next_cmd)
     else
         -- Done with this lap

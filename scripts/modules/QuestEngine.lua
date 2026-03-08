@@ -394,7 +394,9 @@ function QuestEngine._combat_heartbeat()
     end
 
     -- Send attack via collect_response; next round only fires if target still alive
-    mud.collect_response(s.hunt_step.attack_cmd, "_G._quest_on_combat_round()")
+    mud.collect_response(s.hunt_step.attack_cmd, function()
+        _G._quest_on_combat_round()
+    end)
 end
 
 _G._quest_on_combat_round = function()
@@ -557,17 +559,19 @@ function QuestEngine._do_summon(step)
     local s = QuestEngine.state
 
     -- First check if target is already in room via 'l'
-    mud.collect_response("l", "_G._quest_summon_check()")
+    mud.collect_response("l", function(lines)
+        _G._quest_summon_check(lines)
+    end)
 end
 
 -- Callback: check if summon target is already in room
-_G._quest_summon_check = function()
+_G._quest_summon_check = function(lines)
     local MudCombat = require_module("MudCombat")
     local s = QuestEngine.state
     if not s.running then return end
 
     local step = QuestEngine.quests[s.quest_name].steps[s.step_index]
-    local lines = _G._collected_lines or {}
+    lines = lines or {}
     local target_found = false
 
     for _, line in ipairs(lines) do

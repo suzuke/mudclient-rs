@@ -35,15 +35,18 @@ function MudLoot.process_loot(options, callback)
     s.rid = MudUtils.run_id
 
     if MudLoot.config.debug then mud.echo("[MudLoot] 🔍 使用 collect_response 掃描環境...") end
-    mud.collect_response("l", "_G.MudLoot._on_scan_collected()")
+    mud.emit("loot_started", {items = s.options.items})
+    mud.collect_response("l", function(lines)
+        _G.MudLoot._on_scan_collected(lines)
+    end)
 end
 
 --- collect_response 回呼：解析完整的 look 輸出
-function MudLoot._on_scan_collected()
+function MudLoot._on_scan_collected(lines)
     local s = MudLoot.state
     if s.rid ~= MudUtils.run_id then return end
 
-    local lines = _G._collected_lines or {}
+    lines = lines or {}
     local found_corpses = 0
     local found_items = {}
     local in_container = false
@@ -135,14 +138,18 @@ function MudLoot.execute_actions(found_corpses, found_items)
         if MudLoot.config.debug then mud.echo("[MudLoot] 💨 無可搜刮目標") end
     end
 
-    -- 4. 回呼
+    -- 4. 回呼：用 collect_response 當 fence，確保所有指令已被伺服器處理
+    mud.emit("loot_complete", {commands = #cmds, corpses = found_corpses, ground_items = #found_items})
     if s.callback then
-        local delay = #cmds * 0.1 + 0.5
-        MudUtils.safe_timer(delay, function(rid)
-            if rid == s.rid and s.callback then
-                s.callback()
-            end
-        end)
+        mud.collect_response("l", function() _G.MudLoot._on_finish() end)
+    end
+end
+
+function MudLoot._on_finish()
+    local s = MudLoot.state
+    if s.rid ~= MudUtils.run_id then return end
+    if s.callback then
+        s.callback()
     end
 end
 

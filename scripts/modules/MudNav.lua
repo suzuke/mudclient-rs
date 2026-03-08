@@ -62,6 +62,7 @@ function MudNav.walk(path, callback)
     s.index = 1
     s.callback = callback
     if MudNav.config.debug then mud.echo("[MudNav] Start Walk (" .. #s.queue .. " steps)") end
+    mud.emit("nav_walk_started", {steps = #s.queue})
     MudNav.send_next()
 end
 
@@ -72,6 +73,7 @@ function MudNav.send_next()
     if s.index > #s.queue then
         if MudNav.config.debug then mud.echo("[MudNav] Walk Complete.") end
         s.walking = false
+        mud.emit("nav_walk_completed", {steps = #s.queue})
         if s.callback then s.callback(true) end -- true = success
         return
     end
@@ -266,6 +268,7 @@ function MudNav.on_server_message(line, clean_line)
         if not s.paused then
             s.paused = true
             s.waiting_confirm = false
+            mud.emit("nav_stamina_exhausted", {step = s.index, total = #s.queue})
             if mud then mud.send(MudNav.config.refresh_cmd) end
         end
         return
@@ -306,6 +309,7 @@ function MudNav.on_server_message(line, clean_line)
                      mud.echo("   預期 ID: " .. tostring(step.id))
                      mud.echo("   實際 ID: " .. tostring(actual_id))
                      s.walking = false
+                     mud.emit("nav_walk_failed", {reason = "id_mismatch", expected = step.id, actual = actual_id})
                      if s.callback then s.callback(false, "id_mismatch") end
                      return
                  else

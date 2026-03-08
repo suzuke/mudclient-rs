@@ -91,12 +91,12 @@ function MudCombat.safe_summon(target_name, summon_cmd, options, on_success, on_
     mud.emit("summon_start", {target = tostring(target_name), cmd = summon_cmd})
 
     -- First check if target is already in the room
-    mud.collect_response("l", [==[
+    mud.collect_response("l", function(lines)
         local s = MudCombat.summon_state
         if not s.active then return end
         local tn = s.target_name
         local found = false
-        for _, line in ipairs(_G._collected_lines or {}) do
+        for _, line in ipairs(lines or {}) do
             if not string.find(line, "屍體", 1, true)
                and not string.find(line, "corpse", 1, true) then
                 if type(tn) == "table" then
@@ -117,7 +117,7 @@ function MudCombat.safe_summon(target_name, summon_cmd, options, on_success, on_
         else
             MudCombat.do_summon()
         end
-    ]==])
+    end)
 end
 
 function MudCombat.do_summon()

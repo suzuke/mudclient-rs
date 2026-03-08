@@ -242,12 +242,16 @@ describe("QuestEngine Summon Handler", function()
 
         -- Mock collect_response to immediately call the callback
         local orig_collect = mud.collect_response
-        mud.collect_response = function(cmd, callback_code)
+        mud.collect_response = function(cmd, callback)
             -- Simulate empty room (target not found)
-            _G._collected_lines = {"一個空曠的房間", "[出口: 南]"}
-            -- Execute the callback
-            local fn = load(callback_code)
-            if fn then fn() end
+            local lines = {"一個空曠的房間", "[出口: 南]"}
+            if type(callback) == "function" then
+                callback(lines)
+            elseif type(callback) == "string" then
+                _G._collected_lines = lines
+                local fn = load(callback)
+                if fn then fn() end
+            end
         end
 
         -- Track safe_summon calls
@@ -278,10 +282,15 @@ describe("QuestEngine Summon Handler", function()
 
         -- Mock collect_response: target IS in room
         local orig_collect = mud.collect_response
-        mud.collect_response = function(cmd, callback_code)
-            _G._collected_lines = {"test_mob正站在這兒。", "[出口: 南]"}
-            local fn = load(callback_code)
-            if fn then fn() end
+        mud.collect_response = function(cmd, callback)
+            local lines = {"test_mob正站在這兒。", "[出口: 南]"}
+            if type(callback) == "function" then
+                callback(lines)
+            elseif type(callback) == "string" then
+                _G._collected_lines = lines
+                local fn = load(callback)
+                if fn then fn() end
+            end
         end
 
         local summon_called = false

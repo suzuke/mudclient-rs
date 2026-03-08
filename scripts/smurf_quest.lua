@@ -55,16 +55,6 @@ local PATTERNS = {
     TARGET_NOT_HERE = "你想攻擊的對象不在這裡",
 }
 
--- ===== 信號機制 =====
--- Handler 完成時注入信號，統一由 expect 推進
-local function signal(name)
-    MudUtils.safe_timer(0.3, function(rid)
-        if MudUtils.check_run(rid) then
-            _G.SmurfQuest.on_server_message("__SIGNAL__:" .. name)
-        end
-    end)
-end
-
 -- ===== 設定 =====
 _G.SmurfQuest.config = {
     entry_path = "3w;3s;e;look painting;s;4e;4n", -- 前往村莊入口
@@ -73,16 +63,16 @@ _G.SmurfQuest.config = {
 }
 
 -- ===== 任務步驟定義 =====
--- 所有步驟統一由 expect 推進，handler 完成後注入 signal 觸發 expect
+-- expect: 由伺服器文字匹配推進; event: 由 mud.emit/mud.once 事件推進
 local QUEST_STEPS = {
     {name="go_entrance",    cmds={"5n;2w;n"}, expect="通往賈不妙的城堡的小徑"},
-    {name="summon_papa_1",  cmds={},          expect="__SIGNAL__:summon_papa_1"},
+    {name="summon_papa_1",  cmds={},          event="smurf_summon_papa_1"},
     {name="talk_papa_yes",  cmds={"ta papa yes"}, expect=PATTERNS.PAPA_GIVE_KEY},
     {name="go_castle_gate", cmds={"n"},       expect="賈不妙的城堡外"},
     {name="enter_castle",   cmds={},          expect="他的大鍋放在房間的中央"},
-    {name="kill_gargamel",  cmds={},          expect="__SIGNAL__:kill_gargamel"},
-    {name="get_wand",       cmds={},          expect="__SIGNAL__:get_wand"},
-    {name="summon_papa_2",  cmds={},          expect="__SIGNAL__:summon_papa_2"},
+    {name="kill_gargamel",  cmds={},          event="smurf_kill_gargamel"},
+    {name="get_wand",       cmds={},          event="smurf_get_wand"},
+    {name="summon_papa_2",  cmds={},          event="smurf_summon_papa_2"},
     {name="give_wand",      cmds={"gi wand papa"}, expect=PATTERNS.PAPA_GIVE_POTION},
 }
 
@@ -202,7 +192,7 @@ function step_handlers.summon_papa_1(rid)
     MudCombat.safe_summon("小精靈老爸", "c sum papa", {max_retries=10, retry_delay=3.0, verify_delay=3.0}, 
         function() 
             _G.SmurfQuest.echo("✅ 老爸召喚成功！")
-            signal("summon_papa_1")
+            mud.emit("smurf_summon_papa_1")
         end,
         function() 
             _G.SmurfQuest.echo("❌ 召喚失敗次數過多！")
@@ -217,7 +207,7 @@ function step_handlers.summon_papa_2(rid)
         MudCombat.safe_summon("小精靈老爸", "c sum papa", {max_retries=10, retry_delay=3.0, verify_delay=3.0}, 
             function() 
                 _G.SmurfQuest.echo("✅ 老爸召喚成功！")
-                signal("summon_papa_2")
+                mud.emit("smurf_summon_papa_2")
             end,
             function() 
                 _G.SmurfQuest.echo("❌ 召喚失敗次數過多！")
@@ -271,17 +261,19 @@ function _G.SmurfQuest._combat_round()
     local current_step = QUEST_STEPS[s.step_index]
     if not current_step or current_step.name ~= "kill_gargamel" then return end
 
-    mud.collect_response("report", "_G.SmurfQuest._on_combat_report()")
+    mud.collect_response("report", function(lines)
+        _G.SmurfQuest._on_combat_report(lines)
+    end)
 end
 
-function _G.SmurfQuest._on_combat_report()
+function _G.SmurfQuest._on_combat_report(lines)
     local s = _G.SmurfQuest.state
     if not s.running or s.combat_finished then return end
     local current_step = QUEST_STEPS[s.step_index]
     if not current_step or current_step.name ~= "kill_gargamel" then return end
 
     -- 解析 report 回應
-    local lines = _G._collected_lines or {}
+    lines = lines or {}
     for _, line in ipairs(lines) do
         if line:find("你報告自己的狀況", 1, true) then
             local ma = line:match("(%d+)/%d+ 精神力")
@@ -315,9 +307,22 @@ function step_handlers.get_wand(rid)
             items = {"wand"},
             sac = false
         }, function()
-            signal("get_wand")
+            mud.emit("smurf_get_wand")
         end)
     end)
+end
+
+function _G.SmurfQuest._on_step_event()
+    local s = _G.SmurfQuest.state
+    if not s.running or s.step_completed then return end
+
+    local step = QUEST_STEPS[s.step_index]
+    if step then
+        _G.SmurfQuest.echo("✨ 事件達成: " .. step.name)
+        s.step_completed = true
+        _G.SmurfQuest.update_activity()
+        MudUtils.safe_timer(0.5, _G.SmurfQuest.advance_step)
+    end
 end
 
 function _G.SmurfQuest.run_step(rid)
@@ -331,6 +336,11 @@ function _G.SmurfQuest.run_step(rid)
     _G.SmurfQuest.state.target_found = false
     _G.SmurfQuest.echo("📋 執行步驟: " .. step.name)
     _G.SmurfQuest.update_activity()
+
+    -- 事件驅動步驟：註冊一次性事件監聽
+    if step.event then
+        mud.once(step.event, function() _G.SmurfQuest._on_step_event() end)
+    end
 
     if step_handlers[step.name] then
         step_handlers[step.name](rid)
@@ -458,7 +468,7 @@ function _G.SmurfQuest.on_server_message(clean_line)
     -- 偵測賈不妙死亡 → 立即停止戰鬥循環，再發送信號
     if clean_line:find(PATTERNS.GARGAMEL_DIE, 1, true) then
         s.combat_finished = true
-        signal("kill_gargamel")
+        mud.emit("smurf_kill_gargamel")
     end
 
     -- Step Expectation（統一推進機制）

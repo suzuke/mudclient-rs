@@ -273,9 +273,8 @@ function EqDB._setup_hooks()
     MudUtils.unregister_hook("EqDB")
 
     MudUtils.register_hook("EqDB", function(line, clean_line)
-        -- Use clean_line (ANSI stripped) if available, otherwise strip manually
+        -- Use clean_line (ANSI stripped, \r already trimmed by Rust)
         line = clean_line or line
-        line = line:gsub("\r", "")
 
         -- Detect identify output start
         if line:match("^物品'.-' 類別:") then
@@ -476,11 +475,13 @@ end
 
 function EqDB.scan_eq()
     mud.echo("[EqDB] Scanning equipment...")
-    mud.collect_response("eq", "_G.EqDB._on_eq_collected()")
+    mud.collect_response("eq", function(lines)
+        _G.EqDB._on_eq_collected(lines)
+    end)
 end
 
-function EqDB._on_eq_collected()
-    local lines = _G._collected_lines or {}
+function EqDB._on_eq_collected(lines)
+    lines = lines or {}
     local updated = 0
 
     for _, line in ipairs(lines) do

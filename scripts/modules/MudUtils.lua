@@ -1,13 +1,19 @@
 -- MudUtils Module
-local MudUtils = {}
-_G.MudUtils = MudUtils -- Export to global for timer callbacks
+-- 使用全域單例模式：dofile 重載時保留既有實例，避免 require cache 雙實例問題
+local MudUtils = _G.MudUtils or {}
+_G.MudUtils = MudUtils
 
-MudUtils.run_id = 0
-MudUtils.callbacks = {}
-MudUtils.callback_id = 0
-MudUtils.active_quests = {} -- { [name] = stop_fn }
-MudUtils.inventory_parsing = false
-MudUtils.has_life_crystal = true -- 預設為 true，直到檢查失敗
+-- 同步 require cache，確保 require("scripts.modules.MudUtils") 返回同一實例
+for _, key in ipairs({"scripts.modules.MudUtils", "modules.MudUtils", "MudUtils"}) do
+    package.loaded[key] = MudUtils
+end
+
+MudUtils.run_id = MudUtils.run_id or 0
+MudUtils.callbacks = MudUtils.callbacks or {}
+MudUtils.callback_id = MudUtils.callback_id or 0
+MudUtils.active_quests = MudUtils.active_quests or {}
+MudUtils.inventory_parsing = MudUtils.inventory_parsing or false
+if MudUtils.has_life_crystal == nil then MudUtils.has_life_crystal = true end
 
 function MudUtils.get_new_run_id()
     MudUtils.run_id = MudUtils.run_id + 1
@@ -46,14 +52,13 @@ function MudUtils.safe_timer(seconds, callback)
     local rid = MudUtils.run_id
     MudUtils.callback_id = MudUtils.callback_id + 1
     local set_cb_id = MudUtils.callback_id
-    
+
     MudUtils.callbacks[set_cb_id] = callback
-    
-    -- In real MUD this is a string to execute
-    -- In our mock, we can capture this string
-    local code = "_G.MudUtils.exec_timer(" .. set_cb_id .. ", " .. rid .. ")"
+
     if mud and mud.timer then
-        return mud.timer(seconds, code)
+        return mud.timer(seconds, function()
+            _G.MudUtils.exec_timer(set_cb_id, rid)
+        end)
     end
     return nil
 end
@@ -153,6 +158,7 @@ function MudUtils.halt_all_quests(reason)
         mud.echo("════════════════════════════════════════")
         mud.echo("🚨 [全局停止] 原因: " .. (reason or "未知"))
         mud.echo("════════════════════════════════════════")
+        mud.emit("quests_halting", {reason = reason or "unknown"})
     end
 
     for name, stop_fn in pairs(MudUtils.active_quests) do
@@ -168,11 +174,13 @@ end
 
 function MudUtils.start_inventory_check(on_complete_callback)
     MudUtils._inventory_callback = on_complete_callback
-    mud.collect_response("i", "_G.MudUtils._on_inventory_collected()")
+    mud.collect_response("i", function(lines)
+        _G.MudUtils._on_inventory_collected(lines)
+    end)
 end
 
-function MudUtils._on_inventory_collected()
-    local lines = _G._collected_lines or {}
+function MudUtils._on_inventory_collected(lines)
+    lines = lines or {}
     local found = false
     for _, line in ipairs(lines) do
         if string.find(line, "生命水晶", 1, true) or

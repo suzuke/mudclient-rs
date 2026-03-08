@@ -84,15 +84,15 @@ function _G.MemCalc.scan_all()
     mud.send("spell all")
     
     -- 5 秒後切換到技能掃描
-    mud.timer(5.0, "_G.MemCalc.scan_skills()")
+    mud.timer(5.0, function() _G.MemCalc.scan_skills() end)
 end
 
 function _G.MemCalc.scan_skills()
     _G.MemCalc.scan_state.current_type = "skill"
     mud.send("skill all")
-    
+
     -- 10 秒後完成掃描
-    mud.timer(10.0, "_G.MemCalc.scan_finish()")
+    mud.timer(10.0, function() _G.MemCalc.scan_finish() end)
 end
 
 function _G.MemCalc.scan_finish()
@@ -156,7 +156,7 @@ function _G.MemCalc.scan_full()
     mud.send("spell all")
     
     -- 5 秒後切換到技能掃描
-    mud.timer(5.0, "_G.MemCalc.scan_skills()")
+    mud.timer(5.0, function() _G.MemCalc.scan_skills() end)
 end
 
 -- 開始相依性掃描
@@ -233,7 +233,7 @@ function _G.MemCalc.query_next_dep()
     end
     
     -- 2 秒後查詢下一個
-    mud.timer(2.0, "_G.MemCalc.query_next_dep()")
+    mud.timer(2.0, function() _G.MemCalc.query_next_dep() end)
 end
 
 -- 完成完整掃描
@@ -488,7 +488,8 @@ function _G.MemCalc.process_queue()
     _G.MemCalc.state.last_activity = os.time()
     
     -- 設定超時保護
-    mud.timer(5.0, "_G.MemCalc.check_timeout('" .. next_skill .. "')")
+    local skill_to_check = next_skill
+    mud.timer(5.0, function() _G.MemCalc.check_timeout(skill_to_check) end)
     
     -- 決定查詢模式
     local mode = nil
@@ -500,11 +501,12 @@ function _G.MemCalc.process_queue()
     if mode then
         -- 單一模式
         _G.MemCalc.state.pending_prompts = 1
-        mud.timer(0.5, string.format("_G.MemCalc.send_queries('%s', '%s')", next_skill, mode))
+        local m = mode
+        mud.timer(0.5, function() _G.MemCalc.send_queries(skill_to_check, m) end)
     else
         -- 雙重模式
         _G.MemCalc.state.pending_prompts = 2
-        mud.timer(0.5, string.format("_G.MemCalc.send_queries('%s', nil)", next_skill))
+        mud.timer(0.5, function() _G.MemCalc.send_queries(skill_to_check, nil) end)
     end
 end
 
@@ -515,7 +517,7 @@ function _G.MemCalc.check_timeout(skill_checking)
     if (now - _G.MemCalc.state.last_activity) >= 4 then
         _G.MemCalc.force_next()
     else
-        mud.timer(3.0, "_G.MemCalc.check_timeout('" .. skill_checking .. "')")
+        mud.timer(3.0, function() _G.MemCalc.check_timeout(skill_checking) end)
     end
 end
 

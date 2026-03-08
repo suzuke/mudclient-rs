@@ -2,8 +2,8 @@
 -- 展示事件系統、觸發器群組、狀態機的整合使用
 
 -- === Event Handlers ===
-mud.on("room_changed", "mud.echo('[Event] Room: ' .. (event_data or 'unknown'))")
-mud.on("connected", "mud.echo('[Event] Connected!')")
+mud.on("room_changed", function(data) mud.echo('[Event] Room: ' .. (data or 'unknown')) end)
+mud.on("connected", function() mud.echo('[Event] Connected!') end)
 
 -- === Message Routing ===
 -- Route chat messages to a dedicated window

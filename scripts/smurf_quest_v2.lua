@@ -31,14 +31,16 @@ local function kill_gargamel(step, engine)
     s.combat_finished = false
 
     -- Check if gargamel is here via collect_response
-    mud.collect_response("l", "_G._smurf_check_gargamel()")
+    mud.collect_response("l", function(lines)
+        _G._smurf_check_gargamel(lines)
+    end)
 end
 
-_G._smurf_check_gargamel = function()
+_G._smurf_check_gargamel = function(lines)
     local s = QuestEngine.state
     if not s.running or s.combat_finished then return end
 
-    local lines = _G._collected_lines or {}
+    lines = lines or {}
     local found = false
     for _, line in ipairs(lines) do
         -- Match NPC line specifically, not room description containing "賈不妙的城堡"
@@ -57,7 +59,9 @@ _G._smurf_check_gargamel = function()
         mud.send("s")
         MudUtils.safe_timer(1.5, function()
             if not s.running or s.combat_finished then return end
-            mud.collect_response("l", "_G._smurf_check_gargamel()")
+            mud.collect_response("l", function(lines)
+                _G._smurf_check_gargamel(lines)
+            end)
         end)
     end
 end
@@ -67,14 +71,16 @@ function combat_round(engine)
     local s = engine.state
     if not s.running or s.combat_finished then return end
 
-    mud.collect_response("report", "_G._smurf_on_combat_report()")
+    mud.collect_response("report", function(lines)
+        _G._smurf_on_combat_report(lines)
+    end)
 end
 
-_G._smurf_on_combat_report = function()
+_G._smurf_on_combat_report = function(lines)
     local s = QuestEngine.state
     if not s.running or s.combat_finished then return end
 
-    local lines = _G._collected_lines or {}
+    lines = lines or {}
     local current_v, current_ma = 0, 0
     for _, line in ipairs(lines) do
         if line:find("你報告自己的狀況", 1, true) then

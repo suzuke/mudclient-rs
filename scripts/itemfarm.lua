@@ -485,6 +485,7 @@ function _G.ItemFarm.start()
     
     local j = _G.ItemFarm.job()
     mud.echo("🎯 開始自動收集 (" .. #_G.ItemFarm.jobs .. " 個任務)")
+    mud.emit("itemfarm_started", {jobs = #_G.ItemFarm.jobs})
     MudUtils.start_log("itemfarm")
     
     -- 註冊並觸發物品檢查（非同步），完成後呼叫 after_inventory_checked
@@ -512,6 +513,7 @@ function _G.ItemFarm.stop()
     _G.ItemFarm.state.running = false
     _G.ItemFarm.state.stage = "idle"
     mud.echo("🛑 已停止自動收集")
+    mud.emit("itemfarm_stopped", {loot_count = _G.ItemFarm.state.loot_count})
     MudUtils.stop_log()
     mud.echo("   本次收集: " .. _G.ItemFarm.state.loot_count .. " 次")
 end
@@ -584,6 +586,7 @@ function _G.ItemFarm.next_job()
         local j = _G.ItemFarm.job()
         if not j.disabled then
             _G.ItemFarm.echo("🔄 切換任務: [" .. s.current_job .. "] " .. j.name)
+            mud.emit("itemfarm_job_changed", {index = s.current_job, name = j.name})
             s.stage = "idle"
             _G.ItemFarm.safe_timer(1.0, "_G.ItemFarm.search")
             return
@@ -1066,6 +1069,7 @@ function _G.ItemFarm.start_fighting(rid)
     local j = _G.ItemFarm.job()
     _G.ItemFarm.state.stage = "fighting"
     _G.ItemFarm.echo("⚔️ [" .. j.name .. "] 召喚成功，直接開始攻擊！")
+    mud.emit("itemfarm_fighting", {job = j.name, mode = j.mode or "summon"})
     send_cmds(j.attack_cmd)
 end
 
@@ -1104,6 +1108,7 @@ function _G.ItemFarm.evaluate_status_and_fight(rid)
     if buff_status == true then
         s.stage = "fighting"
         _G.ItemFarm.echo("⚔️ [" .. j.name .. "] 狀態與 Buff 良好，開始攻擊！")
+        mud.emit("itemfarm_fighting", {job = j.name, mode = j.mode or "direct"})
         send_cmds(j.attack_cmd)
     elseif buff_status == "waiting" then
         -- 等待消散中：30 秒保底檢查，其餘靠 Hook
@@ -1213,6 +1218,7 @@ function _G.ItemFarm.drop_items(rid)
     
     _G.ItemFarm.state.loot_count = _G.ItemFarm.state.loot_count + 1
     _G.ItemFarm.echo("✅ [" .. j.name .. "] 收集完成 (第 " .. _G.ItemFarm.state.loot_count .. " 次)")
+    mud.emit("itemfarm_loot_collected", {job = j.name, count = _G.ItemFarm.state.loot_count})
     
     _G.ItemFarm.safe_timer(2.0, "_G.ItemFarm.rest_and_repeat")
 end
@@ -1230,6 +1236,7 @@ function _G.ItemFarm.emergency_escape()
     end
     
     _G.ItemFarm.echo_force("🚨 [緊急] 偵測到非預期戰鬥！嘗試逃脫並停用此任務...")
+    mud.emit("itemfarm_emergency", {job = j.name})
     s.stage = "emergency"
     j.disabled = true
     
@@ -1244,8 +1251,9 @@ function _G.ItemFarm.rest_and_repeat(rid)
     
     _G.ItemFarm.state.stage = "resting"
     _G.ItemFarm.echo("💤 休息中...")
+    mud.emit("itemfarm_resting", {job = _G.ItemFarm.job().name})
     mud.send(_G.ItemFarm.config.rest_cmd)
-    
+
     _G.ItemFarm.safe_timer(5.0, "_G.ItemFarm.check_mp")
 end
 
@@ -1376,6 +1384,7 @@ function _G.ItemFarm.on_server_message(line, clean_line)
         -- 戰鬥階段
         if string.find(clean_line, "魂歸西天了", 1, true) and match_target(clean_line, j.target_mob) then
             _G.ItemFarm.echo("💀 目標已擊殺！")
+            mud.emit("itemfarm_target_killed", {job = j.name})
             _G.ItemFarm.safe_timer(0.5, "_G.ItemFarm.loot")
         elseif match_target(clean_line, j.target_mob) and 
                (string.find(clean_line, "逃了", 1, true) or string.find(clean_line, "離開了", 1, true)) then

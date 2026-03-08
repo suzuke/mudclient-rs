@@ -120,7 +120,8 @@ function _G.IkkokuQuest.start()
     mud.send("i")
 
     _G.IkkokuQuest.echo("🚀 啟動相聚一刻任務！")
-    
+    mud.emit("quest_started", {name = "IkkokuQuest"})
+
     -- 開始檢查 NPC (從第 1 個開始)
     _G.IkkokuQuest.check_npc_recursive(_G.IkkokuQuest.state.run_id, 1)
 end
@@ -200,26 +201,6 @@ function _G.IkkokuQuest.on_entered()
         if not check_run(rid) then return end
         _G.IkkokuQuest.process_step(rid)
     end)
-end
-
-function _G.IkkokuQuest.stop()
-    local s = _G.IkkokuQuest.state
-    if not s.running then return end
-    
-    s.running = false
-    s.phase = "stopped"
-    
-    -- 取消所有進行中的非同步任務
-    MudUtils.get_new_run_id()
-    
-    MudExplorer.stop()
-    MudNav.reset()
-    
-    -- 停止 Log
-    MudUtils.stop_log()
-
-    _G.IkkokuQuest.echo("🛑 任務停止，移至中古書賣場清理紀錄並 Recall...")
-    _G.IkkokuQuest.cleanup_and_recall()
 end
 
 function _G.IkkokuQuest.cleanup_and_recall()
@@ -488,10 +469,11 @@ end
 function _G.IkkokuQuest.stop(is_success)
     local s = _G.IkkokuQuest.state
     if not s.running then return end
-    
+
     s.running = false
+    mud.emit("quest_stopped", {name = "IkkokuQuest"})
     s.phase = "stopped"
-    
+
     -- 取消所有進行中的非同步任務
     MudUtils.get_new_run_id()
     
@@ -520,6 +502,7 @@ function _G.IkkokuQuest.advance_step(rid)
     
     if next_name == "done" then
         _G.IkkokuQuest.echo("🎉 恭喜！任務全部完成。")
+        mud.emit("quest_completed", {name = "IkkokuQuest"})
         _G.IkkokuQuest.stop(true) -- 傳入 true 表示成功
         return
     end
@@ -612,6 +595,7 @@ function _G.IkkokuQuest.on_server_message(line, clean_line)
     if s.phase == "waiting_response" and step and step.expect then
         if string.find(clean_line, step.expect, 1, true) then
             _G.IkkokuQuest.echo("✨ 觸發劇情: " .. step.expect)
+            mud.emit("quest_step_done", {name = "IkkokuQuest", step = step.name})
             s.phase = "acting"
             _G.IkkokuQuest.advance_step(s.run_id)
         end

@@ -26,26 +26,11 @@ local MudLoot = require_module("MudLoot")
 -- ===== 設定 =====
 _G.PokerQuest.config = {
     entry_path = {
-        {cmd="s", id="f68f5a9b385faebe02e67d68b2d876c260de625c7faacb2490d6cfb46186a9c6"},
-        {cmd="s", id="9bad12b039d44f2b8553216a60d64db8783e7b29d699fabcc04a383e66ee84b1"},
-        {cmd="s", id="cf0a0ab17bf723c2789588ae4fb24a78fddafd5e8d2c6a1d967934bf3f6ebd78"},
-        {cmd="s", id="9ca65027c18769ffd34267c354263dd11bb92830744fc53325fb2a02efe56c40"},
-        {cmd="s", id="b8fd27751242449456c5ed98dcfee41d04b8b0dbe1b2f84e917c5837563b31a8"},
-        {cmd="s", id="8bb7e9ef2cb2dd66a1fd115d2d92712836af12a672a223787c42759d43cd9f88"},
-        {cmd="e", id="d8dcefd59f876ec73304c32d5f2d422fcdd3ff00098f36493644f1ccee463fac"},
-        {cmd="e", id="3fe050b8c78337cfa2887578d8d17f67f6b4a02523feef3ad9e0236d2a2d43fc"},
-        {cmd="u", id="1fa1cc866132eea837c70be48270401facfb1491a4e44a1e4e432866df619d51"},
-        {cmd="u", id="1fa1cc866132eea837c70be48270401facfb1491a4e44a1e4e432866df619d51"},
-        {cmd="u", id="f5605d3490c133940482f120fb4697e2730f258e1afd8bcb77f3f8557efc01f7"},
+        "s", "s", "s", "s", "s", "s", "e", "e", "u", "u", "u",
         {cmd="u", id="20ce628eff898093aae8aea12ce15043ad2c599a254804579c1956afff2b4bef"},
     },
     deliver_path = {
-        {cmd="n", id="cbabc3eb8f2c4573ddabf1953a72190d785d428f3091bd3433cc7ac467f13c33"},
-        {cmd="n", id="ed28728e96456d94a397a67872a2073df8fe3baae863493f6ae8ca6b436c4f42"},
-        {cmd="w", id="1c091039f8b8939808b10c27dafda4b4d81a2bd86541ec2c8235257a854259a5"},
-        {cmd="w", id="7edba7339fe074549920e08ee32cc268ffa59ec71ea690ccee0df326a0ac7520"},
-        {cmd="n", id="e4c8be8e9f036b54b10b92c3c84c359a5da580415a1edc0d9dd3d48bf76a77cf"},
-        {cmd="n", id="ed28728e96456d94a397a67872a2073df8fe3baae863493f6ae8ca6b436c4f42"},
+        "n", "n", "w", "w", "n", "n",
         {cmd="w", id="6faf86d9c11f591577f24cab47c7a2f29d980e9f424d85dcb97af994559b3f15"},
     },
     attack_cmd = "ear spade",
@@ -58,20 +43,12 @@ local QUEST_STEPS = {
     {name="explore_spade",  handler="do_explore_spade", expect="success_or_fail", next="deliver_stone"},
     {name="deliver_stone",  path=_G.PokerQuest.config.deliver_path, handler="do_deliver_stone", expect="把 黃色石頭 給了", next="talk_queen"},
     {name="talk_queen",     path={
-        {cmd="e", id="ed28728e96456d94a397a67872a2073df8fe3baae863493f6ae8ca6b436c4f42"},
-        {cmd="n", id="e4c8be8e9f036b54b10b92c3c84c359a5da580415a1edc0d9dd3d48bf76a77cf"},
-        {cmd="n", id="7f00e7340aef1569254cec317c5ffd1703f8565a50383cfa4a6879380073fd82"},
-        {cmd="e", id="9121542baf0cbc058fcd5d852380f7f2f7c199b8fdcc71e4b9bfcee81f4c5912"},
-        {cmd="e", id="ed28728e96456d94a397a67872a2073df8fe3baae863493f6ae8ca6b436c4f42"},
+        "e", "n", "n", "e", "e",
         {cmd="n", id="68e309f3e2252bd02102e43fcc000c90a3551d36791d21974f54ebf92e929c21"},
     }, cmds={"say goodmorning"}, expect="黑桃王后說道: 我可以告訴你是 'ireallywantleave'", next="go_palace"},
     -- Use Heart Queen response or generic say confirm
     {name="go_palace",      path={
-        {cmd="s", id="ed28728e96456d94a397a67872a2073df8fe3baae863493f6ae8ca6b436c4f42"},
-        {cmd="s", id="f6b6cd2805198021c746860203e97effa79bfabe74a48930a6fb97f62efc4d04"},
-        {cmd="s", id="8ca292a65ee9a70cae5c1dfaad652a9fb60cc9bdfbfeaa9610d13fb3780f46f8"},
-        {cmd="u", id="25ce2977d70f28cd3777be311f2f446189925416df8afb1baf9ea7333dcd8549"},
-        {cmd="u", id="25ce2977d70f28cd3777be311f2f446189925416df8afb1baf9ea7333dcd8549"},
+        "s", "s", "s", "u", "u",
         {cmd="u", id="fd4a9da729fd717f3b7595f056e6a313877e48a865d17aaa4c73f69cbef078c6"},
     }, cmds={"say ireallywantleave"}, expect="紅心女王說道: 好吧 !我再試一試這咒語", next="done"},
 }
@@ -120,7 +97,8 @@ function _G.PokerQuest.start()
     MudUtils.register_quest("PokerQuest", _G.PokerQuest.stop)
     
     _G.PokerQuest.echo("🚀 啟動撲克王國任務！")
-    
+    mud.emit("quest_started", {name = "PokerQuest"})
+
     -- Recall & Enter
     MudUtils.send_cmds("wa;recall")
     MudUtils.safe_timer(1.5, _G.PokerQuest.enter_area)
@@ -138,8 +116,9 @@ function _G.PokerQuest.stop(is_success)
     if not s.running then return end
     
     s.running = false
+    mud.emit("quest_stopped", {name = "PokerQuest", success = is_success or false, kills = s.kills})
     s.phase = "stopped"
-    
+
     MudUtils.get_new_run_id() -- Invalidate pending
     MudExplorer.stop()
     MudNav.reset()
@@ -257,13 +236,18 @@ end
 function _G.PokerQuest.combat_heartbeat(rid)
     if not check_run(rid) then return end
     local s = _G.PokerQuest.state
-    if s.phase ~= "fighting" or s.recovering then return end
-    
-    if _G.PokerQuest.config.attack_cmd then
-        mud.send(_G.PokerQuest.config.attack_cmd)
+    if s.phase ~= "fighting" then return end
+
+    if not s.recovering and _G.PokerQuest.config.attack_cmd then
+        if s.non_target_combat then
+            -- 被非目標怪物攻擊，嘗試逃跑
+            mud.send("flee")
+        else
+            mud.send(_G.PokerQuest.config.attack_cmd)
+        end
     end
-    
-    MudUtils.safe_timer(2.0, function()
+
+    MudUtils.safe_timer(2.5, function()
         _G.PokerQuest.combat_heartbeat(rid)
     end)
 end
@@ -278,6 +262,7 @@ local function make_explore_cb(rid)
         if found then
             _G.PokerQuest.echo("⚔️ 發現 Spade！準備戰鬥...")
             s.phase = "fighting"
+            s.non_target_combat = false
             s.last_combat_time = os.time()
             s.corpse_offset = 0
             mud.send("wa")
@@ -348,15 +333,17 @@ function _G.PokerQuest.check_combat_clear(rid)
     local s = _G.PokerQuest.state
     if s.phase ~= "clearing" then return end
 
-    -- Check time since last combat message
-    -- Check combat state via MudCombat
-    -- Also use local timer as double check if MudCombat is too strict/lenient?
-    -- Actually, rely on MudCombat + local timer sync.
-    if not MudCombat.is_fighting() then
-        _G.PokerQuest.echo("✅ 戰鬥似乎已完全結束 (3秒無戰鬥訊息)")
+    s.clear_checks = (s.clear_checks or 0) + 1
+
+    if not MudCombat.is_fighting() or s.clear_checks >= 10 then
+        if s.clear_checks >= 10 then
+            _G.PokerQuest.echo("✅ 戰鬥清除超時，強制進入搜刮")
+        else
+            _G.PokerQuest.echo("✅ 戰鬥已結束 (" .. s.clear_checks .. "次檢查)")
+        end
+        s.clear_checks = 0
         _G.PokerQuest.handle_loot_and_backtrack(rid)
     else
-        -- Still fighting or just fought, check again in 1s
         MudUtils.safe_timer(1.0, _G.PokerQuest.check_combat_clear)
     end
 end
@@ -367,7 +354,7 @@ function _G.PokerQuest.handle_loot_and_backtrack(rid)
     
     _G.PokerQuest.echo("💰 戰利品階段，啟動 MudLoot...")
     MudLoot.process_loot({
-        items = {"stone", "yellow stone"},
+        items = {"stone"},
         loot_ground = true,
         sac = true,
         fallback_blind = true
@@ -428,9 +415,17 @@ end)
 function _G.PokerQuest.on_server_message(line, clean_line)
     if not _G.PokerQuest.state.running then return end
     local s = _G.PokerQuest.state
-    
+
+    -- 睡覺偵測：凍原山頂會自動入睡，需要 wake 後才能行動
+    if string.find(clean_line, "你正在睡覺") or string.find(clean_line, "睡得很熟") then
+        MudUtils.safe_timer(1.5, function()
+            mud.send("wa")
+        end)
+        return
+    end
+
     -- MudNav/MudExplorer 已透過 Hook Registry 自行接收訊息
-    
+
     -- 監測戰鬥訊息 (Delegated to MudCombat)
     if MudCombat.on_server_message(clean_line) then
         s.last_combat_time = os.time()
@@ -451,7 +446,13 @@ function _G.PokerQuest.on_server_message(line, clean_line)
             or string.find(clean_line, "這裡禁止攻擊")
 
         if not is_killing_blow and not is_false_positive and (s.phase == "finding" or s.phase == "looting" or s.phase == "clearing") then
-             _G.PokerQuest.echo("⚠️ 偵測到戰鬥活動，切換回戰鬥狀態！")
+             -- 判斷是否為非目標怪物（非 Spade）
+             s.non_target_combat = not string.find(clean_line, "[Ss]pade")
+             if s.non_target_combat then
+                 _G.PokerQuest.echo("⚠️ 被非目標怪物攻擊，嘗試逃跑！")
+             else
+                 _G.PokerQuest.echo("⚠️ 偵測到戰鬥活動，切換回戰鬥狀態！")
+             end
              s.phase = "fighting"
              _G.PokerQuest.combat_heartbeat(MudUtils.run_id)
         end
@@ -465,12 +466,20 @@ function _G.PokerQuest.on_server_message(line, clean_line)
         s.last_combat_time = os.time()
         _G.PokerQuest.combat_heartbeat(MudUtils.run_id)
     end
-    
+
+    -- Flee 成功偵測：逃離非目標戰鬥後恢復探索
+    if s.non_target_combat and string.find(clean_line, "你逃離了戰鬥") then
+        _G.PokerQuest.echo("🏃 成功逃離非目標戰鬥，恢復探索...")
+        s.non_target_combat = false
+        s.phase = "finding"
+        MudExplorer.explore(make_explore_cb(s.run_id))
+    end
+
     -- Specific Fix: Instant Loot Detection (Got Stone)
-    if string.find(clean_line, "從.*屍體.*拿出.*黃色石頭") or string.find(clean_line, "獲得.*黃色石頭") then
+    if not s.got_stone and (string.find(clean_line, "從.*屍體.*拿出.*黃色石頭") or string.find(clean_line, "獲得.*黃色石頭")) then
         _G.PokerQuest.echo("💎 [Instant] 偵測到獲得黄石！")
         s.got_stone = true
-        _G.PokerQuest.check_loot_result(MudUtils.run_id) 
+        mud.emit("poker_stone_found")
     end
 
     -- Proactive Ground Loot (During exploration)
@@ -489,6 +498,7 @@ function _G.PokerQuest.on_server_message(line, clean_line)
         if string.find(clean_line, "魂歸西天了") then
              if string.find(clean_line, "Spade") then
                  s.kills = s.kills + 1
+                 mud.emit("poker_spade_killed", {total = s.kills})
                  _G.PokerQuest.echo("💀 擊殺 Spade (Total: " .. s.kills .. ")")
                  -- 擊殺重點目標，進入 clearing 檢查
                  s.phase = "clearing"
