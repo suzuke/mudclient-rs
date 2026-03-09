@@ -186,6 +186,9 @@ enum SidePanelTab {
 impl MudApp {
     /// 創建新的 MUD 客戶端應用程式
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // 壓縮超過 7 天的舊日誌
+        mudcore::logger::compress_old_logs("logs", 7);
+
         // 載入設定並設定字型
         let global_config = GlobalConfig::load();
         Self::setup_fonts(&cc.egui_ctx, &global_config.ui.font_family);
