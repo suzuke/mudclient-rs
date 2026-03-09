@@ -29,8 +29,9 @@
     *   **Key Bindings**: 快捷鍵綁定 (F1-F12, Ctrl/Alt 組合鍵)。
     *   **Message Routing**: 訊息路由到子視窗，支援 gag 隱藏。
 *   **Logger (日誌層)**:
-    *   結構化日誌記錄。
-    *   支援 ANSI 轉 HTML 的日誌輸出。
+    *   結構化日誌記錄，支援重複行摺疊。
+    *   支援 PlainText / Raw / HTML 三種格式。
+    *   啟動時自動 gzip 壓縮超過 7 天的舊 log（`.txt` → `.txt.gz`）。
 
 ### 2. `mudgui` (圖形介面)
 負責畫面渲染與使用者互動，是 MUD 客戶端的臉面。
@@ -137,7 +138,7 @@ Rust 原生的 MCP Server，透過 stdio 模式讓 AI Agent（如 Claude Code、
 *   `docs/`: 專案文件。
 *   `packaging/`: 打包腳本 (DMG 建置等)。
 *   `scripts/`: Lua 腳本庫與共用模組。
-*   `logs/`: 執行日誌與遊戲紀錄。
+*   `logs/`: 執行日誌與遊戲紀錄（舊檔自動壓縮為 `.txt.gz`，可用 `zcat`/`zgrep` 查詢）。
 *   `target/`: 編譯產出。
 *   `tests/`: 整合測試。
 

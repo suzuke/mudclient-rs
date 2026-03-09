@@ -1162,6 +1162,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "filetime"
+version = "0.2.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f98844151eee8917efc50bd9e8318cb963ae8b297431495d3f758616ea5c57db"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "libredox",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2252,6 +2263,8 @@ version = "0.8.0"
 dependencies = [
  "bytes",
  "encoding_rs",
+ "filetime",
+ "flate2",
  "lazy_static",
  "mlua",
  "regex",
