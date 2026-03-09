@@ -19,8 +19,9 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Claude Code MCP config (absolute paths)
+# Claude Code
 .mcp.json
+.claude/
 
 # Data files (raw fetched data and source notes, keep locally only)
 docs/7777/ptt/
