@@ -79,25 +79,25 @@ local function create_scheduler_sm()
         initial = "idle",
         states = {
             idle = {
-                enter = [[_G.ItemFarm._scheduler_idle()]],
+                enter = function() _G.ItemFarm._scheduler_idle() end,
             },
             executing = {
-                enter = [[_G.ItemFarm._scheduler_executing()]],
+                enter = function() _G.ItemFarm._scheduler_executing() end,
             },
             rotating = {
-                enter = [[_G.ItemFarm._scheduler_rotating()]],
+                enter = function() _G.ItemFarm._scheduler_rotating() end,
             },
             recovering = {
-                enter = [[_G.ItemFarm._scheduler_recovering()]],
+                enter = function() _G.ItemFarm._scheduler_recovering() end,
             },
             resting = {
-                enter = [[_G.ItemFarm._scheduler_resting()]],
+                enter = function() _G.ItemFarm._scheduler_resting() end,
             },
             waiting_respawn = {
-                enter = [[_G.ItemFarm._scheduler_waiting_respawn()]],
+                enter = function() _G.ItemFarm._scheduler_waiting_respawn() end,
             },
             stopped = {
-                enter = [[_G.ItemFarm._scheduler_stopped()]],
+                enter = function() _G.ItemFarm._scheduler_stopped() end,
             },
         },
         transitions = {
@@ -206,12 +206,12 @@ function _G.ItemFarm._scheduler_recovering()
         if mud.sm_current("itemfarm_scheduler") ~= "recovering" then return end
         _G.ItemFarm.echo("Brief rest " .. rest_secs .. "s...")
         mud.send(rest_cmd)
-        mud.timer(rest_secs, [[
+        mud.timer(rest_secs, function()
             if mud.sm_current("itemfarm_scheduler") == "recovering" then
                 mud.send("wa")
                 mud.sm_transition("itemfarm_scheduler", "recovered")
             end
-        ]])
+        end)
     end
 
     local s = _G.ItemFarm.state
@@ -237,12 +237,12 @@ function _G.ItemFarm._scheduler_waiting_respawn()
     MudNav.walk(rest_path, function()
         if mud.sm_current("itemfarm_scheduler") ~= "waiting_respawn" then return end
         mud.send(rest_cmd)
-        mud.timer(rest_secs, [[
+        mud.timer(rest_secs, function()
             if mud.sm_current("itemfarm_scheduler") == "waiting_respawn" then
                 mud.send("wa")
                 mud.sm_transition("itemfarm_scheduler", "wake")
             end
-        ]])
+        end)
     end)
 end
 
@@ -258,12 +258,12 @@ function _G.ItemFarm._scheduler_resting()
         if mud.sm_current("itemfarm_scheduler") ~= "resting" then return end
         _G.ItemFarm.echo("Resting " .. rest_secs .. "s...")
         mud.send(rest_cmd)
-        mud.timer(rest_secs, [[
+        mud.timer(rest_secs, function()
             if mud.sm_current("itemfarm_scheduler") == "resting" then
                 mud.send("wa")
                 mud.sm_transition("itemfarm_scheduler", "rested")
             end
-        ]])
+        end)
     end)
 end
 
@@ -288,7 +288,7 @@ end)
 
 -- ===== Register Global Emergency Handler =====
 local function register_global_handlers()
-    mud.on("ifarm:unexpected_combat", [[
+    mud.on("ifarm:unexpected_combat", function()
         local cur = mud.sm_current("itemfarm_engage")
         -- Only trigger emergency if not already fighting
         if cur and cur ~= "fighting" and cur ~= "waiting_kill" then
@@ -299,7 +299,7 @@ local function register_global_handlers()
             if j then j.disabled = true end
             mud.sm_transition("itemfarm_engage", "fail")
         end
-    ]], -100)  -- High priority (low number = runs first)
+    end, -100)  -- High priority (low number = runs first)
 end
 
 -- ===== External API =====

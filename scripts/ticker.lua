@@ -79,8 +79,7 @@ end
 function _G.Ticker._schedule(name)
     local entry = _G.Ticker.registry[name]
     if entry and entry.enabled then
-        local callback_code = string.format("_G.Ticker._execute('%s')", name)
-        mud.timer(entry.interval, callback_code)
+        mud.timer(entry.interval, function() _G.Ticker._execute(name) end)
     end
 end
 

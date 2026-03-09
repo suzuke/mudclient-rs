@@ -182,8 +182,8 @@ function mud.emit(event_name, data) end
 ---@field target string 超時後轉移到的狀態名稱
 
 ---@class SmStateDef
----@field enter? string 進入狀態時執行的 Lua 程式碼
----@field exit? string 離開狀態時執行的 Lua 程式碼
+---@field enter? string|fun() 進入狀態時執行的 Lua 程式碼或 function
+---@field exit? string|fun() 離開狀態時執行的 Lua 程式碼或 function
 ---@field timeout? SmStateTimeout 超時設定
 ---@field timeout_secs? number 超時秒數（替代 timeout table 格式）
 ---@field timeout_goto? string 超時目標狀態（替代 timeout table 格式）

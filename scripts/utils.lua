@@ -47,9 +47,8 @@ function utils.sequence(delay, commands)
         if run_at == 0 then
             mud.send(cmd)
         else
-            -- 這裡需要 escaping 引號
-            local safe_cmd = string.gsub(cmd, "'", "\\'")
-            mud.timer(run_at, string.format("mud.send('%s')", safe_cmd))
+            local c = cmd
+            mud.timer(run_at, function() mud.send(c) end)
         end
     end
 end

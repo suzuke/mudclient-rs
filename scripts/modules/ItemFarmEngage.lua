@@ -44,28 +44,20 @@ local function match_target(line, target_display)
     return false
 end
 
--- Serialize target_display (string or table) for embedding in Lua code strings
-function M.serialize_target(td)
-    if type(td) == "string" then
-        return string.format("%q", td)
-    elseif type(td) == "table" then
-        local parts = {}
-        for _, v in ipairs(td) do
-            parts[#parts + 1] = string.format("%q", v)
+-- Check if a line matches target_display (excluding corpses)
+local function match_target_no_corpse(line, td)
+    if not line or not td then return false end
+    local matched = false
+    if type(td) == "table" then
+        for _, kw in ipairs(td) do
+            if string.find(line, kw, 1, true) then matched = true; break end
         end
-        return "{" .. table.concat(parts, ",") .. "}"
+    elseif type(td) == "string" then
+        matched = string.find(line, td, 1, true) ~= nil
     end
-    return "nil"
-end
-
--- Serialize a string list for embedding in Lua code strings
-function M.serialize_list(list)
-    if not list then return "{}" end
-    local parts = {}
-    for _, v in ipairs(list) do
-        parts[#parts + 1] = string.format("%q", v)
-    end
-    return "{" .. table.concat(parts, ",") .. "}"
+    return matched
+        and not string.find(line, "屍體", 1, true)
+        and not string.find(line, "corpse", 1, true)
 end
 
 -------------------------------------------------------------------------------
@@ -93,55 +85,42 @@ function M.start(job, merged_resources)
 
     local mode = job.engage.mode or "direct"
     local charm_max = job.engage.charm_retries or 5
-    local td_ser = M.serialize_target(job.engage.target_display)
+    local td = job.engage.target_display
 
     ---------------------------------------------------------------------------
     -- Phase: verify_mob (skip for summon modes — safe_summon handles room check)
     ---------------------------------------------------------------------------
     if mode ~= "summon" and mode ~= "summon_charm" then
         order[#order + 1] = "verify_mob"
-        -- Use mud.collect_response("l", ...) to check room description
         states.verify_mob = {
-            enter = string.format([[
+            enter = function()
                 _G.ItemFarm.engage.echo("Confirming target in room...")
-                mud.collect_response("l", [==[
-                    local td = %s
-                    for _, line in ipairs(_G._collected_lines or {}) do
-                        local matched = false
-                        if type(td) == "table" then
-                            for _, kw in ipairs(td) do
-                                if string.find(line, kw, 1, true) then matched = true; break end
-                            end
-                        elseif type(td) == "string" then
-                            matched = string.find(line, td, 1, true) ~= nil
-                        end
-                        if matched
-                           and not string.find(line, "屍體", 1, true)
-                           and not string.find(line, "corpse", 1, true)
-                        then
+                mud.collect_response("l", function(lines)
+                    for _, line in ipairs(lines) do
+                        if match_target_no_corpse(line, td) then
                             if mud.sm_current("itemfarm_engage") == "verify_mob" then
                                 mud.sm_transition("itemfarm_engage", "mob_sighted")
                             end
                             return
                         end
                     end
-                    -- Not found in room; timeout_goto will handle fallback
+                    -- Not found in room; transition to verify_loc
                     if mud.sm_current("itemfarm_engage") == "verify_mob" then
                         mud.sm_transition("itemfarm_engage", "mob_not_here")
                     end
-                ]==])
-            ]], td_ser),
+                end)
+            end,
             timeout_secs = 5.0,
             timeout_goto = "verify_loc",
         }
 
         -- verify_loc: fallback — send search_cmd to check if mob is alive elsewhere
         states.verify_loc = {
-            enter = string.format([[
+            enter = function()
                 _G.ItemFarm.engage.echo("Target not in room, checking status...")
-                mud.collect_response(%q, [==[
+                mud.collect_response(job.search.cmd, function(lines)
                     local found = false
-                    for _, line in ipairs(_G._collected_lines or {}) do
+                    for _, line in ipairs(lines) do
                         if string.find(line, "他正在這個世界中", 1, true)
                            or string.find(line, "攜帶著", 1, true) then
                             found = true
@@ -151,13 +130,12 @@ function M.start(job, merged_resources)
                     if mud.sm_current("itemfarm_engage") ~= "verify_loc" then return end
                     if found then
                         _G.ItemFarm.engage.echo("Mob alive elsewhere, failing engage")
-                        mud.sm_transition("itemfarm_engage", "fail")
                     else
                         _G.ItemFarm.engage.echo("Mob not found at all, failing engage")
-                        mud.sm_transition("itemfarm_engage", "fail")
                     end
-                ]==])
-            ]], job.search.cmd),
+                    mud.sm_transition("itemfarm_engage", "fail")
+                end)
+            end,
             timeout_secs = 5.0,
             timeout_goto = "failed",
         }
@@ -168,44 +146,42 @@ function M.start(job, merged_resources)
     ---------------------------------------------------------------------------
     if job.engage.dispel then
         local dispel_cmd = job.engage.dispel.cmd
-        local indicators_ser = M.serialize_list(job.engage.dispel.indicators)
         local max_retries = job.engage.dispel.max_retries or 10
 
         order[#order + 1] = "dispelling"
         states.dispelling = {
-            enter = string.format([[
+            enter = function()
                 _G.ItemFarm.engage.echo("Dispelling...")
                 _G.ItemFarm.engage.dispel_retries = 0
-                mud.send(%q)
-                mud.timer(1.5, [==[
+                mud.send(dispel_cmd)
+                mud.timer(1.5, function()
                     if mud.sm_current("itemfarm_engage") == "dispelling" then
                         _G.ItemFarm.engage.check_dispel()
                     end
-                ]==])
-            ]], dispel_cmd),
+                end)
+            end,
             timeout_secs = 8.0,
             timeout_goto = "dispel_check",
         }
 
         -- dispel_check: retry loop
         states.dispel_check = {
-            enter = string.format([[
-                local e = _G.ItemFarm.engage
-                e.dispel_retries = e.dispel_retries + 1
-                local max = %d
-                if e.dispel_retries >= max then
-                    e.echo("Dispel failed " .. max .. " times, aborting")
+            enter = function()
+                local eng = _G.ItemFarm.engage
+                eng.dispel_retries = eng.dispel_retries + 1
+                if eng.dispel_retries >= max_retries then
+                    eng.echo("Dispel failed " .. max_retries .. " times, aborting")
                     mud.sm_transition("itemfarm_engage", "fail")
                 else
-                    e.echo("Dispel retry " .. e.dispel_retries .. "/" .. max)
-                    mud.send(%q)
-                    mud.timer(1.5, [==[
+                    eng.echo("Dispel retry " .. eng.dispel_retries .. "/" .. max_retries)
+                    mud.send(dispel_cmd)
+                    mud.timer(1.5, function()
                         if mud.sm_current("itemfarm_engage") == "dispel_check" then
                             _G.ItemFarm.engage.check_dispel()
                         end
-                    ]==])
+                    end)
                 end
-            ]], max_retries, dispel_cmd),
+            end,
             timeout_secs = 8.0,
             timeout_goto = "dispel_check",  -- loop until max
         }
@@ -218,11 +194,11 @@ function M.start(job, merged_resources)
        or (merged_resources.mp_threshold and merged_resources.mp_threshold > 0) then
         order[#order + 1] = "check_status"
         states.check_status = {
-            enter = [[
+            enter = function()
                 _G.ItemFarm.engage.echo("Checking HP/MP status...")
                 mud.send("rep")
                 mud.send("score aff")
-            ]],
+            end,
             timeout_secs = 5.0,
             timeout_goto = "check_status",  -- retry on timeout
         }
@@ -234,9 +210,9 @@ function M.start(job, merged_resources)
     if merged_resources.buffs and #merged_resources.buffs > 0 then
         order[#order + 1] = "buffing"
         states.buffing = {
-            enter = [[
+            enter = function()
                 _G.ItemFarm.engage.apply_next_buff()
-            ]],
+            end,
             timeout_secs = 30.0,
             timeout_goto = "buffing",  -- retry
         }
@@ -248,76 +224,75 @@ function M.start(job, merged_resources)
     if mode == "summon" then
         order[#order + 1] = "summoning"
         states.summoning = {
-            enter = [[
+            enter = function()
                 _G.ItemFarm.engage.echo("Summoning target...")
                 _G.ItemFarm.engage.start_summon()
-            ]],
+            end,
             timeout_secs = 30.0,
             timeout_goto = "failed",
         }
         order[#order + 1] = "fighting"
         states.fighting = {
-            enter = [[
+            enter = function()
                 _G.ItemFarm.engage.echo("Fighting!")
                 _G.ItemFarm.engage.send_attack()
-            ]],
+            end,
             timeout_secs = 60.0,
             timeout_goto = "failed",
         }
     elseif mode == "direct" then
         order[#order + 1] = "fighting"
         states.fighting = {
-            enter = [[
+            enter = function()
                 _G.ItemFarm.engage.echo("Fighting!")
                 _G.ItemFarm.engage.send_attack()
-            ]],
+            end,
             timeout_secs = 60.0,
             timeout_goto = "failed",
         }
     elseif mode == "charm" then
         order[#order + 1] = "charming"
         states.charming = {
-            enter = [[
+            enter = function()
                 _G.ItemFarm.engage.echo("Charming target...")
                 _G.ItemFarm.engage.charm_retries = 0
                 _G.ItemFarm.engage.send_attack()
-            ]],
+            end,
             timeout_secs = 3.0,
             timeout_goto = "charm_retry",
         }
         states.charm_retry = {
-            enter = string.format([[
-                local e = _G.ItemFarm.engage
-                e.charm_retries = (e.charm_retries or 0) + 1
-                local max = %d
-                if e.charm_retries > max then
-                    e.echo("Charm failed " .. max .. " times, aborting")
+            enter = function()
+                local eng = _G.ItemFarm.engage
+                eng.charm_retries = (eng.charm_retries or 0) + 1
+                if eng.charm_retries > charm_max then
+                    eng.echo("Charm failed " .. charm_max .. " times, aborting")
                     mud.sm_transition("itemfarm_engage", "fail")
                 else
-                    e.echo("Charm retry " .. e.charm_retries .. "/" .. max)
-                    e.send_attack()
+                    eng.echo("Charm retry " .. eng.charm_retries .. "/" .. charm_max)
+                    eng.send_attack()
                 end
-            ]], charm_max),
+            end,
             timeout_secs = 3.0,
             timeout_goto = "charm_retry",
         }
 
         order[#order + 1] = "leading"
         states.leading = {
-            enter = [[
+            enter = function()
                 _G.ItemFarm.engage.echo("Leading charmed target to kill zone...")
                 _G.ItemFarm.engage.lead_to_kill()
-            ]],
+            end,
             timeout_secs = 60.0,
             timeout_goto = "failed",
         }
         if job.engage.pre_kill_cmds then
             order[#order + 1] = "pre_killing"
             states.pre_killing = {
-                enter = [[
+                enter = function()
                     _G.ItemFarm.engage.echo("Executing pre-kill commands...")
                     _G.ItemFarm.engage.do_pre_kill()
-                ]],
+                end,
                 timeout_secs = 10.0,
                 timeout_goto = "kill_confirmed",
             }
@@ -325,10 +300,10 @@ function M.start(job, merged_resources)
         if job.engage.purge_path then
             order[#order + 1] = "purging"
             states.purging = {
-                enter = [[
+                enter = function()
                     _G.ItemFarm.engage.echo("Walking to purge zone...")
                     _G.ItemFarm.engage.do_purge_walk()
-                ]],
+                end,
                 timeout_secs = 60.0,
                 timeout_goto = "kill_confirmed",
             }
@@ -337,55 +312,54 @@ function M.start(job, merged_resources)
         -- Summon first, then charm, lead, and wait for kill
         order[#order + 1] = "summoning"
         states.summoning = {
-            enter = [[
+            enter = function()
                 _G.ItemFarm.engage.echo("Summoning target...")
                 _G.ItemFarm.engage.start_summon()
-            ]],
+            end,
             timeout_secs = 30.0,
             timeout_goto = "failed",
         }
         order[#order + 1] = "charming"
         states.charming = {
-            enter = [[
+            enter = function()
                 _G.ItemFarm.engage.echo("Charming target...")
                 _G.ItemFarm.engage.charm_retries = 0
                 _G.ItemFarm.engage.send_attack()
-            ]],
+            end,
             timeout_secs = 3.0,
             timeout_goto = "charm_retry",
         }
         states.charm_retry = {
-            enter = string.format([[
-                local e = _G.ItemFarm.engage
-                e.charm_retries = (e.charm_retries or 0) + 1
-                local max = %d
-                if e.charm_retries > max then
-                    e.echo("Charm failed " .. max .. " times, aborting")
+            enter = function()
+                local eng = _G.ItemFarm.engage
+                eng.charm_retries = (eng.charm_retries or 0) + 1
+                if eng.charm_retries > charm_max then
+                    eng.echo("Charm failed " .. charm_max .. " times, aborting")
                     mud.sm_transition("itemfarm_engage", "fail")
                 else
-                    e.echo("Charm retry " .. e.charm_retries .. "/" .. max)
-                    e.send_attack()
+                    eng.echo("Charm retry " .. eng.charm_retries .. "/" .. charm_max)
+                    eng.send_attack()
                 end
-            ]], charm_max),
+            end,
             timeout_secs = 3.0,
             timeout_goto = "charm_retry",
         }
         order[#order + 1] = "leading"
         states.leading = {
-            enter = [[
+            enter = function()
                 _G.ItemFarm.engage.echo("Leading charmed target to kill zone...")
                 _G.ItemFarm.engage.lead_to_kill()
-            ]],
+            end,
             timeout_secs = 60.0,
             timeout_goto = "failed",
         }
         if job.engage.pre_kill_cmds then
             order[#order + 1] = "pre_killing"
             states.pre_killing = {
-                enter = [[
+                enter = function()
                     _G.ItemFarm.engage.echo("Executing pre-kill commands...")
                     _G.ItemFarm.engage.do_pre_kill()
-                ]],
+                end,
                 timeout_secs = 10.0,
                 timeout_goto = "kill_confirmed",
             }
@@ -393,10 +367,10 @@ function M.start(job, merged_resources)
         if job.engage.purge_path then
             order[#order + 1] = "purging"
             states.purging = {
-                enter = [[
+                enter = function()
                     _G.ItemFarm.engage.echo("Walking to purge zone...")
                     _G.ItemFarm.engage.do_purge_walk()
-                ]],
+                end,
                 timeout_secs = 60.0,
                 timeout_goto = "kill_confirmed",
             }
@@ -408,14 +382,14 @@ function M.start(job, merged_resources)
     ---------------------------------------------------------------------------
     local function terminal_state(job_event, msg)
         return {
-            enter = string.format([[
+            enter = function()
                 if not _G.ItemFarm or not _G.ItemFarm.engage then return end
-                if %q ~= "" then _G.ItemFarm.engage.echo(%q) end
+                if msg and msg ~= "" then _G.ItemFarm.engage.echo(msg) end
                 local cur = mud.sm_current("itemfarm_job")
                 if cur == "engaging" then
-                    mud.sm_transition("itemfarm_job", %q)
+                    mud.sm_transition("itemfarm_job", job_event)
                 end
-            ]], msg or "", msg or "", job_event),
+            end,
         }
     end
     order[#order + 1] = "kill_confirmed"
@@ -567,11 +541,11 @@ function M.setup_helpers(job, merged_resources)
             send_cmds(job.engage.pre_kill_cmds)
         end
         -- Brief wait for commands to execute; ifarm:mob_dropped will proceed early
-        mud.timer(3.0, [[
+        mud.timer(3.0, function()
             if mud.sm_current("itemfarm_engage") == "pre_killing" then
                 mud.sm_transition("itemfarm_engage", "done")
             end
-        ]])
+        end)
     end
 
     e.do_purge_walk = function()
@@ -586,23 +560,11 @@ function M.setup_helpers(job, merged_resources)
     e.check_dispel = function()
         local indicators = job.engage.dispel and job.engage.dispel.indicators or {}
         local td = job.engage.target_display
-        local indicators_ser = M.serialize_list(indicators)
-        local td_ser = M.serialize_target(td)
 
-        mud.collect_response("l", string.format([==[
-            local td = %s
-            local indicators = %s
+        mud.collect_response("l", function(lines)
             local mob_line = nil
-            for _, line in ipairs(_G._collected_lines or {}) do
-                local matched = false
-                if type(td) == "table" then
-                    for _, kw in ipairs(td) do
-                        if string.find(line, kw, 1, true) then matched = true; break end
-                    end
-                elseif type(td) == "string" then
-                    matched = string.find(line, td, 1, true) ~= nil
-                end
-                if matched and not string.find(line, "屍體", 1, true) then
+            for _, line in ipairs(lines) do
+                if match_target_no_corpse(line, td) then
                     mob_line = line
                     break
                 end
@@ -617,12 +579,11 @@ function M.setup_helpers(job, merged_resources)
                     break
                 end
             end
-            if has_indicator then
-                -- Still has protection, timeout_goto will retry
-            else
+            if not has_indicator then
                 mud.sm_transition("itemfarm_engage", "dispel_success")
             end
-        ]==], td_ser, indicators_ser))
+            -- Still has protection: timeout_goto will retry
+        end)
     end
 
     -- evaluate_status: check HP/MP against thresholds
@@ -645,11 +606,10 @@ function M.setup_helpers(job, merged_resources)
 
     -- apply_next_buff: refresh active_spells via score aff, then apply first missing buff
     e.apply_next_buff = function()
-        -- Send score aff to refresh active_spells before checking
-        mud.collect_response("score aff", [=[
+        mud.collect_response("score aff", function()
             if mud.sm_current("itemfarm_engage") ~= "buffing" then return end
             _G.ItemFarm.engage._do_apply_buff()
-        ]=])
+        end)
     end
 
     e._do_apply_buff = function()
@@ -660,11 +620,11 @@ function M.setup_helpers(job, merged_resources)
                 e.echo("Applying buff: " .. b.indicator)
                 mud.send(b.cmd)
                 -- Wait for spell to take effect, then re-check with fresh score aff
-                mud.timer(2.0, [=[
+                mud.timer(2.0, function()
                     if mud.sm_current("itemfarm_engage") == "buffing" then
                         _G.ItemFarm.engage.apply_next_buff()
                     end
-                ]=])
+                end)
                 return
             end
         end
@@ -682,35 +642,26 @@ end
 
 function M.register_event_handlers(job)
     local td = job.engage.target_display
-    local td_ser = M.serialize_target(td)
+    local mode = job.engage.mode or "direct"
 
     -- ifarm:mob_killed -> check target match -> transition "killed"
-    mud.on("ifarm:mob_killed", string.format([[
+    mud.on("ifarm:mob_killed", function(data)
         local d = data or {}
         local line = d.line or ""
         local cur = mud.sm_current("itemfarm_engage")
         if not cur then return end
-        local td = %s
-        local matched = false
-        if type(td) == "table" then
-            for _, kw in ipairs(td) do
-                if string.find(line, kw, 1, true) then matched = true; break end
-            end
-        elseif type(td) == "string" then
-            matched = string.find(line, td, 1, true) ~= nil
-        end
-        if matched then
+        if match_target(line, td) then
             if cur == "fighting" or cur == "waiting_kill" then
                 mud.sm_transition("itemfarm_engage", "killed")
             end
         end
-    ]], td_ser), 0)
+    end, 0)
 
     -- ifarm:mob_fled -> re-summon if summon mode, else fail
-    mud.on("ifarm:mob_fled", string.format([[
+    mud.on("ifarm:mob_fled", function()
         local cur = mud.sm_current("itemfarm_engage")
         if cur == "fighting" then
-            if %q == "summon" then
+            if mode == "summon" then
                 if _G.ItemFarm and _G.ItemFarm.engage then
                     _G.ItemFarm.engage.echo("Target fled, re-summoning...")
                 end
@@ -719,12 +670,12 @@ function M.register_event_handlers(job)
                 mud.sm_transition("itemfarm_engage", "fail")
             end
         end
-    ]], job.engage.mode), 0)
+    end, 0)
 
     -- ifarm:target_missing -> re-summon if summon mode + fighting, else fail
-    mud.on("ifarm:target_missing", string.format([[
+    mud.on("ifarm:target_missing", function()
         local cur = mud.sm_current("itemfarm_engage")
-        if cur == "fighting" and %q == "summon" then
+        if cur == "fighting" and mode == "summon" then
             if _G.ItemFarm and _G.ItemFarm.engage then
                 _G.ItemFarm.engage.echo("Target missing, re-summoning...")
             end
@@ -732,10 +683,10 @@ function M.register_event_handlers(job)
         elseif cur == "fighting" or cur == "charming" or cur == "charm_retry" then
             mud.sm_transition("itemfarm_engage", "fail")
         end
-    ]], job.engage.mode), 0)
+    end, 0)
 
     -- ifarm:status_report -> evaluate HP/MP
-    mud.on("ifarm:status_report", [[
+    mud.on("ifarm:status_report", function(data)
         local cur = mud.sm_current("itemfarm_engage")
         if cur ~= "check_status" then return end
         local d = data or {}
@@ -744,33 +695,33 @@ function M.register_event_handlers(job)
         _G.ItemFarm.engage.last_mp = d.mp
         _G.ItemFarm.engage.last_mp_max = d.mp_max
         _G.ItemFarm.engage.evaluate_status()
-    ]], 0)
+    end, 0)
 
     -- ifarm:charm_success -> charm_ok
-    mud.on("ifarm:charm_success", [[
+    mud.on("ifarm:charm_success", function()
         local cur = mud.sm_current("itemfarm_engage")
         if cur == "charming" or cur == "charm_retry" then
             mud.sm_transition("itemfarm_engage", "charm_ok")
         end
-    ]], 0)
+    end, 0)
 
     -- ifarm:spell_list_start -> reset active_spells
-    mud.on("ifarm:spell_list_start", [[
+    mud.on("ifarm:spell_list_start", function()
         if not _G.ItemFarm or not _G.ItemFarm.engage then return end
         _G.ItemFarm.engage.active_spells = {}
-    ]], 0)
+    end, 0)
 
     -- ifarm:spell_detected -> track active spells
-    mud.on("ifarm:spell_detected", [[
+    mud.on("ifarm:spell_detected", function(data)
         if not _G.ItemFarm or not _G.ItemFarm.engage then return end
         local d = data or {}
         if d.name and d.hours then
             _G.ItemFarm.engage.active_spells[d.name] = d.hours
         end
-    ]], 0)
+    end, 0)
 
     -- ifarm:buff_faded -> remove from active_spells, re-check if buffing
-    mud.on("ifarm:buff_faded", [[
+    mud.on("ifarm:buff_faded", function(data)
         if not _G.ItemFarm or not _G.ItemFarm.engage then return end
         local d = data or {}
         if d.indicator then
@@ -780,10 +731,10 @@ function M.register_event_handlers(job)
         if cur == "buffing" then
             _G.ItemFarm.engage.apply_next_buff()
         end
-    ]], 0)
+    end, 0)
 
     -- ifarm:mana_depleted -> fail engage if in buffing/fighting/charming
-    mud.on("ifarm:mana_depleted", [[
+    mud.on("ifarm:mana_depleted", function()
         local cur = mud.sm_current("itemfarm_engage")
         if cur == "buffing" or cur == "fighting" or cur == "charming" or cur == "charm_retry"
            or cur == "dispelling" or cur == "dispel_check" then
@@ -792,19 +743,15 @@ function M.register_event_handlers(job)
             end
             mud.sm_transition("itemfarm_engage", "fail")
         end
-    ]], 0)
+    end, 0)
 
     -- ifarm:mob_dropped -> proceed from pre_killing early (item drop confirmed)
-    mud.on("ifarm:mob_dropped", [[
+    mud.on("ifarm:mob_dropped", function()
         local cur = mud.sm_current("itemfarm_engage")
         if cur == "pre_killing" then
             mud.sm_transition("itemfarm_engage", "done")
         end
-    ]], 0)
-
-    -- NOTE: engage_done/engage_failed are handled via direct SM transitions
-    -- in the kill_confirmed/failed state enter callbacks, NOT via mud.on().
-    -- This prevents handler accumulation across job cycles.
+    end, 0)
 end
 
 -------------------------------------------------------------------------------
