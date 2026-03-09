@@ -1394,42 +1394,26 @@ impl Session {
         }
 
         // 12. State machine definitions (before emissions so emit() in same scope can trigger SM)
-        for (name, initial, states_json, trans_json) in context.state_machine_defs {
-            if let (Ok(states_val), Ok(trans_val)) = (
-                serde_json::from_str::<serde_json::Value>(&states_json),
-                serde_json::from_str::<serde_json::Value>(&trans_json),
-            ) {
-                let mut states = HashMap::new();
-                if let Some(obj) = states_val.as_object() {
-                    for (sname, sdef) in obj {
-                        states.insert(sname.clone(), mudcore::state_machine::State {
-                            name: sname.clone(),
-                            enter_code: sdef.get("enter").and_then(|v| v.as_str()).map(String::from),
-                            exit_code: sdef.get("exit").and_then(|v| v.as_str()).map(String::from),
-                            timeout_secs: sdef.get("timeout_secs").and_then(|v| v.as_f64()),
-                            timeout_goto: sdef.get("timeout_goto").and_then(|v| v.as_str()).map(String::from),
-                        });
-                    }
-                }
-                let mut transitions = Vec::new();
-                if let Some(arr) = trans_val.as_array() {
-                    for t in arr {
-                        if let (Some(from), Some(event), Some(to)) = (
-                            t.get("from").and_then(|v| v.as_str()),
-                            t.get("event").and_then(|v| v.as_str()),
-                            t.get("to").and_then(|v| v.as_str()),
-                        ) {
-                            transitions.push(mudcore::state_machine::Transition {
-                                from: from.to_string(), event: event.to_string(), to: to.to_string(),
-                            });
-                        }
-                    }
-                }
-                let sm = mudcore::StateMachine::new(name.clone(), initial, states, transitions);
-                tracing::info!("State machine '{}' created, initial state: '{}'", name, sm.current_state());
-                self.state_machines.add(sm);
-                self.mark_sm_dirty();
+        for sm_def in context.state_machine_defs {
+            let mut states = std::collections::HashMap::new();
+            for sdef in sm_def.states {
+                states.insert(sdef.name.clone(), mudcore::state_machine::State {
+                    name: sdef.name,
+                    enter: sdef.enter,
+                    exit: sdef.exit,
+                    timeout_secs: sdef.timeout_secs,
+                    timeout_goto: sdef.timeout_goto,
+                });
             }
+            let transitions: Vec<mudcore::state_machine::Transition> = sm_def.transitions
+                .into_iter()
+                .map(|(from, event, to)| mudcore::state_machine::Transition { from, event, to })
+                .collect();
+
+            let sm = mudcore::StateMachine::new(sm_def.name.clone(), sm_def.initial, states, transitions);
+            tracing::info!("State machine '{}' created, initial state: '{}'", sm_def.name, sm.current_state());
+            self.state_machines.add(sm);
+            self.mark_sm_dirty();
         }
 
         // 13. Event emissions (after SM defs so same-scope emit can trigger SM)
@@ -1569,31 +1553,75 @@ impl Session {
 
     /// Execute state machine transition callbacks (exit then enter)
     fn execute_transition_callbacks(&mut self, machine_name: &str, result: mudcore::state_machine::TransitionResult) {
-        tracing::info!("[SM:{}] {} -> {}", machine_name, result.old_state, result.new_state);
+        use mudcore::state_machine::TransitionCallback;
+        use mudcore::script::LuaCallback;
 
-        // Mark dirty so next sync_sm_to_lua() will refresh Lua state
+        tracing::info!("[SM:{}] {} -> {}", machine_name, result.old_state, result.new_state);
         self.mark_sm_dirty();
 
         // Execute exit callback
-        if let Some(code) = result.exit_code {
-            self.sync_sm_to_lua(); // ensure mud.sm_current() is up-to-date
-            match self.script_engine.execute_inline(&code, "", &[], false) {
-                Ok(ctx) => self.apply_script_context(ctx),
-                Err(e) => {
-                    tracing::error!("[SM:{}] exit callback error: {}", machine_name, e);
-                    self.system_message(&format!("[SM:{}] Exit Callback Error: {}", machine_name, e));
+        if let Some(cb) = result.exit_callback {
+            self.sync_sm_to_lua();
+            match cb {
+                TransitionCallback::Code(code) => {
+                    match self.script_engine.execute_inline(&code, "", &[], false) {
+                        Ok(ctx) => self.apply_script_context(ctx),
+                        Err(e) => {
+                            tracing::error!("[SM:{}] exit callback error: {}", machine_name, e);
+                            self.system_message(&format!("[SM:{}] Exit Callback Error: {}", machine_name, e));
+                        }
+                    }
+                }
+                TransitionCallback::PersistentFunction => {
+                    // Borrow RegistryKey from SM and execute (NLL safe: different struct fields)
+                    let exec_result = {
+                        if let Some(sm) = self.state_machines.get(machine_name) {
+                            if let Some(LuaCallback::Function(key)) = sm.get_state_callback(&result.old_state, false) {
+                                Some(self.script_engine.execute_lua_callback_ref(key, "SM_EXIT"))
+                            } else { None }
+                        } else { None }
+                    };
+                    match exec_result {
+                        Some(Ok(ctx)) => self.apply_script_context(ctx),
+                        Some(Err(e)) => {
+                            tracing::error!("[SM:{}] exit fn error: {}", machine_name, e);
+                            self.system_message(&format!("[SM:{}] Exit Callback Error: {}", machine_name, e));
+                        }
+                        None => {}
+                    }
                 }
             }
         }
 
         // Execute enter callback
-        if let Some(code) = result.enter_code {
-            self.sync_sm_to_lua(); // ensure mud.sm_current() is up-to-date
-            match self.script_engine.execute_inline(&code, "", &[], false) {
-                Ok(ctx) => self.apply_script_context(ctx),
-                Err(e) => {
-                    tracing::error!("[SM:{}] enter callback error: {}", machine_name, e);
-                    self.system_message(&format!("[SM:{}] Enter Callback Error: {}", machine_name, e));
+        if let Some(cb) = result.enter_callback {
+            self.sync_sm_to_lua();
+            match cb {
+                TransitionCallback::Code(code) => {
+                    match self.script_engine.execute_inline(&code, "", &[], false) {
+                        Ok(ctx) => self.apply_script_context(ctx),
+                        Err(e) => {
+                            tracing::error!("[SM:{}] enter callback error: {}", machine_name, e);
+                            self.system_message(&format!("[SM:{}] Enter Callback Error: {}", machine_name, e));
+                        }
+                    }
+                }
+                TransitionCallback::PersistentFunction => {
+                    let exec_result = {
+                        if let Some(sm) = self.state_machines.get(machine_name) {
+                            if let Some(LuaCallback::Function(key)) = sm.get_state_callback(&result.new_state, true) {
+                                Some(self.script_engine.execute_lua_callback_ref(key, "SM_ENTER"))
+                            } else { None }
+                        } else { None }
+                    };
+                    match exec_result {
+                        Some(Ok(ctx)) => self.apply_script_context(ctx),
+                        Some(Err(e)) => {
+                            tracing::error!("[SM:{}] enter fn error: {}", machine_name, e);
+                            self.system_message(&format!("[SM:{}] Enter Callback Error: {}", machine_name, e));
+                        }
+                        None => {}
+                    }
                 }
             }
         }

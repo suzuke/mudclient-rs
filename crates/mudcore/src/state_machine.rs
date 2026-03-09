@@ -5,14 +5,27 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use crate::script::LuaCallback;
+
 /// A single state definition
-#[derive(Debug, Clone)]
 pub struct State {
     pub name: String,
-    pub enter_code: Option<String>,
-    pub exit_code: Option<String>,
+    pub enter: Option<LuaCallback>,
+    pub exit: Option<LuaCallback>,
     pub timeout_secs: Option<f64>,
     pub timeout_goto: Option<String>,
+}
+
+impl std::fmt::Debug for State {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("State")
+            .field("name", &self.name)
+            .field("enter", &self.enter)
+            .field("exit", &self.exit)
+            .field("timeout_secs", &self.timeout_secs)
+            .field("timeout_goto", &self.timeout_goto)
+            .finish()
+    }
 }
 
 /// A transition rule
@@ -23,11 +36,18 @@ pub struct Transition {
     pub to: String,
 }
 
+/// Describes which kind of callback to execute after a transition
+#[derive(Debug)]
+pub enum TransitionCallback {
+    Code(String),
+    PersistentFunction,
+}
+
 /// Result of a state transition (exit/enter callbacks to run)
 #[derive(Debug)]
 pub struct TransitionResult {
-    pub exit_code: Option<String>,
-    pub enter_code: Option<String>,
+    pub exit_callback: Option<TransitionCallback>,
+    pub enter_callback: Option<TransitionCallback>,
     pub old_state: String,
     pub new_state: String,
 }
@@ -74,16 +94,28 @@ impl StateMachine {
 
     pub fn current_state(&self) -> &str { &self.current }
 
+    /// Get a reference to a state's enter or exit callback
+    pub fn get_state_callback(&self, state_name: &str, is_enter: bool) -> Option<&LuaCallback> {
+        let state = self.states.get(state_name)?;
+        if is_enter { state.enter.as_ref() } else { state.exit.as_ref() }
+    }
+
     fn do_transition(&mut self, to: String) -> Option<TransitionResult> {
         if !self.states.contains_key(&to) { return None; }
         let old = self.current.clone();
-        let exit_code = self.states.get(&old).and_then(|s| s.exit_code.clone());
-        let enter_code = self.states.get(&to).and_then(|s| s.enter_code.clone());
+        let exit_callback = self.states.get(&old).and_then(|s| s.exit.as_ref()).map(|cb| match cb {
+            LuaCallback::Code(s) => TransitionCallback::Code(s.clone()),
+            LuaCallback::Function(_) => TransitionCallback::PersistentFunction,
+        });
+        let enter_callback = self.states.get(&to).and_then(|s| s.enter.as_ref()).map(|cb| match cb {
+            LuaCallback::Code(s) => TransitionCallback::Code(s.clone()),
+            LuaCallback::Function(_) => TransitionCallback::PersistentFunction,
+        });
         self.current = to.clone();
         self.timeout_at = self.states.get(&to)
             .and_then(|s| s.timeout_secs)
             .map(|secs| Instant::now() + Duration::from_secs_f64(secs));
-        Some(TransitionResult { exit_code, enter_code, old_state: old, new_state: to })
+        Some(TransitionResult { exit_callback, enter_callback, old_state: old, new_state: to })
     }
 }
 
@@ -147,17 +179,17 @@ mod tests {
     fn make_test_machine() -> StateMachine {
         let mut states = HashMap::new();
         states.insert("idle".into(), State {
-            name: "idle".into(), enter_code: Some("mud.echo('idle')".into()),
-            exit_code: Some("mud.echo('leaving idle')".into()),
+            name: "idle".into(), enter: Some(LuaCallback::Code("mud.echo('idle')".into())),
+            exit: Some(LuaCallback::Code("mud.echo('leaving idle')".into())),
             timeout_secs: None, timeout_goto: None,
         });
         states.insert("fighting".into(), State {
-            name: "fighting".into(), enter_code: Some("mud.echo('combat!')".into()),
-            exit_code: None, timeout_secs: Some(60.0), timeout_goto: Some("idle".into()),
+            name: "fighting".into(), enter: Some(LuaCallback::Code("mud.echo('combat!')".into())),
+            exit: None, timeout_secs: Some(60.0), timeout_goto: Some("idle".into()),
         });
         states.insert("looting".into(), State {
-            name: "looting".into(), enter_code: Some("mud.send('get all')".into()),
-            exit_code: None, timeout_secs: Some(10.0), timeout_goto: Some("idle".into()),
+            name: "looting".into(), enter: Some(LuaCallback::Code("mud.send('get all')".into())),
+            exit: None, timeout_secs: Some(10.0), timeout_goto: Some("idle".into()),
         });
         StateMachine::new("bot".into(), "idle".into(), states, vec![
             Transition { from: "idle".into(), event: "combat_start".into(), to: "fighting".into() },
@@ -173,8 +205,8 @@ mod tests {
         let r = sm.handle_event("combat_start").unwrap();
         assert_eq!(r.old_state, "idle");
         assert_eq!(r.new_state, "fighting");
-        assert!(r.exit_code.unwrap().contains("leaving idle"));
-        assert!(r.enter_code.unwrap().contains("combat!"));
+        assert!(matches!(&r.exit_callback, Some(TransitionCallback::Code(s)) if s.contains("leaving idle")));
+        assert!(matches!(&r.enter_callback, Some(TransitionCallback::Code(s)) if s.contains("combat!")));
     }
 
     #[test]

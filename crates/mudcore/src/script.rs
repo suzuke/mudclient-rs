@@ -43,6 +43,25 @@ impl std::fmt::Debug for LuaCallback {
     }
 }
 
+/// SM state definition for two-phase transport
+#[derive(Debug)]
+pub struct SmStateDef {
+    pub name: String,
+    pub enter: Option<LuaCallback>,
+    pub exit: Option<LuaCallback>,
+    pub timeout_secs: Option<f64>,
+    pub timeout_goto: Option<String>,
+}
+
+/// SM definition for two-phase transport
+#[derive(Debug)]
+pub struct SmDef {
+    pub name: String,
+    pub initial: String,
+    pub states: Vec<SmStateDef>,
+    pub transitions: Vec<(String, String, String)>,  // (from, event, to)
+}
+
 /// MUD 腳本上下文（腳本執行後的結果）
 #[derive(Debug, Default)]
 #[must_use = "MudContext contains pending operations — call apply_script_context()"]
@@ -90,8 +109,8 @@ pub struct MudContext {
     /// Trigger group updates: (group_name, enabled)
     pub group_updates: Vec<(String, bool)>,
 
-    /// State machine definitions: (name, initial, states_json, transitions_json)
-    pub state_machine_defs: Vec<(String, String, String, String)>,
+    /// State machine definitions
+    pub state_machine_defs: Vec<SmDef>,
     /// State machine manual transitions: (machine_name, event_name)
     pub state_machine_transitions: Vec<(String, String)>,
     /// State machine resets: machine_name
@@ -261,6 +280,26 @@ impl ScriptEngine {
     ) -> Result<(MudContext, String), ScriptError> {
         let (ctx, result) = self.run_code("", Some(code), message, message, captures, false)?;
         Ok((ctx, result.unwrap_or_else(|| "null".to_string())))
+    }
+
+    /// Extract a LuaCallback from a Lua table field (supports string and function values)
+    fn extract_lua_callback(lua: &mlua::Lua, table: &mlua::Table, key: &str) -> Option<LuaCallback> {
+        match table.get::<mlua::Value>(key) {
+            Ok(mlua::Value::String(s)) => {
+                let code = s.to_string_lossy();
+                if code.is_empty() { None } else { Some(LuaCallback::Code(code)) }
+            }
+            Ok(val @ mlua::Value::Function(_)) => {
+                match lua.create_registry_value(val) {
+                    Ok(key) => Some(LuaCallback::Function(key)),
+                    Err(e) => {
+                        tracing::error!("Failed to register SM callback function: {}", e);
+                        None
+                    }
+                }
+            }
+            _ => None,
+        }
     }
 
     fn lua_value_to_json(val: &mlua::Value) -> serde_json::Value {
@@ -764,29 +803,41 @@ impl ScriptEngine {
                 let initial: String = def.get("initial")?;
                 let states_table: mlua::Table = def.get("states")?;
 
-                // Serialize states to JSON
-                let mut states_map = serde_json::Map::new();
+                // Build states_out table preserving string/function values for enter/exit
+                let states_out = lua.create_table()?;
                 for pair in states_table.pairs::<String, mlua::Table>() {
                     let (state_name, state_def) = pair?;
-                    let mut obj = serde_json::Map::new();
-                    if let Ok(enter) = state_def.get::<String>("enter") { obj.insert("enter".into(), serde_json::Value::String(enter)); }
-                    if let Ok(exit) = state_def.get::<String>("exit") { obj.insert("exit".into(), serde_json::Value::String(exit)); }
+                    let out = lua.create_table()?;
+                    out.set("name", state_name.clone())?;
+
+                    // Preserve enter/exit as-is (string or function)
+                    let enter_val: mlua::Value = state_def.get("enter")?;
+                    match &enter_val {
+                        mlua::Value::String(_) | mlua::Value::Function(_) => { out.set("enter", enter_val)?; }
+                        _ => {}
+                    }
+                    let exit_val: mlua::Value = state_def.get("exit")?;
+                    match &exit_val {
+                        mlua::Value::String(_) | mlua::Value::Function(_) => { out.set("exit", exit_val)?; }
+                        _ => {}
+                    }
+
                     // Support both formats:
                     //   timeout = { seconds = N, target = "state" }
                     //   timeout_secs = N, timeout_goto = "state"
                     if let Ok(timeout) = state_def.get::<mlua::Table>("timeout") {
                         if let (Ok(secs), Ok(goto)) = (timeout.get::<f64>("seconds"), timeout.get::<String>("target").or_else(|_| timeout.get::<String>("goto"))) {
-                            obj.insert("timeout_secs".into(), serde_json::json!(secs));
-                            obj.insert("timeout_goto".into(), serde_json::Value::String(goto));
+                            out.set("timeout_secs", secs)?;
+                            out.set("timeout_goto", goto)?;
                         }
                     } else if let (Ok(secs), Ok(goto)) = (state_def.get::<f64>("timeout_secs"), state_def.get::<String>("timeout_goto")) {
-                        obj.insert("timeout_secs".into(), serde_json::json!(secs));
-                        obj.insert("timeout_goto".into(), serde_json::Value::String(goto));
+                        out.set("timeout_secs", secs)?;
+                        out.set("timeout_goto", goto)?;
                     }
-                    states_map.insert(state_name, serde_json::Value::Object(obj));
+                    states_out.set(state_name, out)?;
                 }
 
-                // Serialize transitions
+                // Serialize transitions (no functions here, JSON is fine)
                 let trans_table: mlua::Table = def.get("transitions")?;
                 let mut trans_arr = Vec::new();
                 for i in 1..=trans_table.len()? {
@@ -802,7 +853,7 @@ impl ScriptEngine {
                 let entry = lua.create_table()?;
                 entry.set(1, name.clone())?;
                 entry.set(2, initial)?;
-                entry.set(3, serde_json::Value::Object(states_map).to_string())?;
+                entry.set(3, states_out)?;
                 entry.set(4, serde_json::Value::Array(trans_arr).to_string())?;
                 defs.set(len, entry)?;
                 Ok(name)
@@ -1384,12 +1435,47 @@ impl ScriptEngine {
             if let Ok(defs) = mud.get::<mlua::Table>("_sm_defs") {
                 for pair in defs.pairs::<i64, mlua::Table>() {
                     if let Ok((_, entry)) = pair {
-                        if let (Ok(name), Ok(initial), Ok(states_json), Ok(trans_json)) = (
-                            entry.get::<String>(1), entry.get::<String>(2),
-                            entry.get::<String>(3), entry.get::<String>(4),
-                        ) {
-                            context.state_machine_defs.push((name, initial, states_json, trans_json));
+                        let name: String = match entry.get(1) { Ok(v) => v, _ => continue };
+                        let initial: String = match entry.get(2) { Ok(v) => v, _ => continue };
+                        let states_table: mlua::Table = match entry.get(3) { Ok(v) => v, _ => continue };
+                        let trans_json: String = match entry.get(4) { Ok(v) => v, _ => continue };
+
+                        // Parse states from Lua table (preserving function references)
+                        let mut states = Vec::new();
+                        for sp in states_table.pairs::<String, mlua::Table>() {
+                            if let Ok((state_name, state_tbl)) = sp {
+                                let enter = Self::extract_lua_callback(&self.lua, &state_tbl, "enter");
+                                let exit = Self::extract_lua_callback(&self.lua, &state_tbl, "exit");
+                                let timeout_secs = state_tbl.get::<f64>("timeout_secs").ok();
+                                let timeout_goto = state_tbl.get::<String>("timeout_goto").ok();
+                                states.push(SmStateDef {
+                                    name: state_name,
+                                    enter,
+                                    exit,
+                                    timeout_secs,
+                                    timeout_goto,
+                                });
+                            }
                         }
+
+                        // Parse transitions from JSON
+                        let transitions: Vec<(String, String, String)> = serde_json::from_str::<Vec<serde_json::Value>>(&trans_json)
+                            .unwrap_or_default()
+                            .iter()
+                            .filter_map(|v| {
+                                let from = v.get("from")?.as_str()?.to_string();
+                                let event = v.get("event")?.as_str()?.to_string();
+                                let to = v.get("to")?.as_str()?.to_string();
+                                Some((from, event, to))
+                            })
+                            .collect();
+
+                        context.state_machine_defs.push(SmDef {
+                            name,
+                            initial,
+                            states,
+                            transitions,
+                        });
                     }
                 }
             }
