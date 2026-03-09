@@ -81,6 +81,10 @@ git clone https://github.com/suzuke/mudclient-rs.git
 cd mudclient-rs
 cargo build -p mudgui
 
+# 安裝 Git Hooks（自動同步 Cargo.toml 版本與 git tag）
+cp githooks/sync-cargo-version .git/hooks/post-checkout
+cp githooks/sync-cargo-version .git/hooks/post-merge
+
 # 執行測試
 cargo test --workspace
 
