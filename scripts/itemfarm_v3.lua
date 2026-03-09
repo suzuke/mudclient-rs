@@ -290,13 +290,22 @@ end)
 local function register_global_handlers()
     mud.on("ifarm:unexpected_combat", function()
         local cur = mud.sm_current("itemfarm_engage")
-        -- Only trigger emergency if not already fighting
-        if cur and cur ~= "fighting" and cur ~= "waiting_kill" then
-            _G.ItemFarm.echo_force("EMERGENCY: unexpected combat! Fleeing...")
+        if not cur or cur == "fighting" or cur == "waiting_kill" then return end
+        if cur == "charming" or cur == "charm_retry" then
+            -- Charm failed and target attacked — expected, flee and retry
+            _G.ItemFarm.echo_force("Charm resisted, fleeing combat...")
+            mud.send("fl")
+            mud.sm_transition("itemfarm_engage", "fail")
+        else
+            -- Truly unexpected combat (non-target mob), emergency stop
+            local msg = "EMERGENCY: unexpected combat! Stopping all jobs"
+            _G.ItemFarm.echo_force("!!! " .. msg .. " !!!")
             mud.send("fl")
             mud.send("recall")
-            local j = _G.ItemFarm.job()
-            if j then j.disabled = true end
+            for _, j in ipairs(_G.ItemFarm.jobs) do
+                j.disabled = true
+            end
+            mud.emit("ifarm:emergency", { message = msg })
             mud.sm_transition("itemfarm_engage", "fail")
         end
     end, -100)  -- High priority (low number = runs first)
