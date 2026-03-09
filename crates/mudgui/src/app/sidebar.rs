@@ -268,9 +268,19 @@ impl MudApp {
                     if !code.is_empty() {
                         if let Some(session) = self.session_manager.active_session_mut() {
                             match session.script_engine.execute_inline_with_result(&code, "", &[]) {
-                                Ok((ctx, result)) => {
+                                Ok((mut ctx, result)) => {
+                                    // Extract echos before applying context so they
+                                    // show in the debug panel instead of the main window
+                                    let echos = std::mem::take(&mut ctx.echos);
                                     session.apply_script_context(ctx);
-                                    self.debug_lua_result = Some(result);
+                                    let mut output = result;
+                                    for echo in echos {
+                                        if !output.is_empty() {
+                                            output.push('\n');
+                                        }
+                                        output.push_str(&echo);
+                                    }
+                                    self.debug_lua_result = Some(output);
                                 }
                                 Err(e) => {
                                     self.debug_lua_result = Some(format!("Error: {}", e));
