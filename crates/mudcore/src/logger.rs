@@ -334,7 +334,7 @@ impl Default for Logger {
     }
 }
 
-/// 壓縮指定目錄中超過 `days` 天的 .txt log 檔為 .txt.gz
+/// 壓縮指定目錄中超過 `days` 天的 .txt log 檔，以及既有的 .txt.gz 散檔，合併為單一 .tar.gz 歸檔
 pub fn compress_old_logs(log_dir: &str, days: u64) {
     let Ok(entries) = fs::read_dir(log_dir) else {
         return;
@@ -342,41 +342,146 @@ pub fn compress_old_logs(log_dir: &str, days: u64) {
     let cutoff = std::time::SystemTime::now()
         - std::time::Duration::from_secs(days * 24 * 3600);
 
+    let mut old_txt_files: Vec<PathBuf> = Vec::new();
+    let mut old_gz_files: Vec<PathBuf> = Vec::new();
+
     for entry in entries.flatten() {
         let path = entry.path();
-        let Some(ext) = path.extension() else { continue };
-        if ext != "txt" {
+        if !path.is_file() {
             continue;
         }
-        let Ok(meta) = path.metadata() else { continue };
-        let Ok(modified) = meta.modified() else { continue };
-        if modified > cutoff {
-            continue;
-        }
+        let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
 
-        // 壓縮
-        let gz_path = path.with_extension("txt.gz");
-        match compress_file(&path, &gz_path) {
-            Ok(()) => {
-                let _ = fs::remove_file(&path);
-                tracing::info!("compressed log: {}", path.display());
+        if name.ends_with(".txt.gz") {
+            // 既有的 .txt.gz 散檔，無條件收集
+            old_gz_files.push(path);
+        } else if name.ends_with(".txt") {
+            // .txt 檔案依修改時間過濾
+            let Ok(meta) = path.metadata() else { continue };
+            let Ok(modified) = meta.modified() else { continue };
+            if modified <= cutoff {
+                old_txt_files.push(path);
             }
-            Err(e) => {
-                tracing::warn!("failed to compress {}: {}", path.display(), e);
-                let _ = fs::remove_file(&gz_path);
+        }
+    }
+
+    if old_txt_files.is_empty() && old_gz_files.is_empty() {
+        return;
+    }
+
+    old_txt_files.sort();
+    old_gz_files.sort();
+
+    let archive_dir = Path::new(log_dir).join("archived");
+    if let Err(e) = fs::create_dir_all(&archive_dir) {
+        tracing::warn!("failed to create archive dir: {}", e);
+        return;
+    }
+
+    let today = {
+        let duration = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap_or_default();
+        chrono_free_date(duration.as_secs())
+    };
+
+    // 避免同一天多次啟動覆蓋：加序號
+    let archive_path = {
+        let base = archive_dir.join(format!("{}.tar.gz", today));
+        if !base.exists() {
+            base
+        } else {
+            let mut i = 1u32;
+            loop {
+                let p = archive_dir.join(format!("{}_{}.tar.gz", today, i));
+                if !p.exists() {
+                    break p;
+                }
+                i += 1;
             }
+        }
+    };
+
+    let archive_name = archive_path.file_name().unwrap_or_default().to_string_lossy();
+    match create_tar_gz_mixed(&archive_path, &old_txt_files, &old_gz_files) {
+        Ok(()) => {
+            let count = old_txt_files.len() + old_gz_files.len();
+            for f in old_txt_files.iter().chain(old_gz_files.iter()) {
+                let _ = fs::remove_file(f);
+            }
+            tracing::info!(
+                "archived {} logs ({} txt + {} gz) into archived/{}",
+                count, old_txt_files.len(), old_gz_files.len(), archive_name
+            );
+        }
+        Err(e) => {
+            tracing::warn!("failed to create archive {}: {}", archive_name, e);
+            let _ = fs::remove_file(&archive_path);
         }
     }
 }
 
-fn compress_file(src: &Path, dst: &Path) -> Result<(), LogError> {
+fn chrono_free_date(epoch_secs: u64) -> String {
+    // Civil date from unix timestamp (no chrono dependency)
+    let days = (epoch_secs / 86400) as i64;
+    // Algorithm from http://howardhinnant.github.io/date_algorithms.html
+    let z = days + 719468;
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{:04}-{:02}-{:02}", y, m, d)
+}
+
+/// 建立 tar.gz 歸檔，同時支援 .txt（直接加入）和 .txt.gz（解壓後加入）
+fn create_tar_gz_mixed(
+    dst: &Path,
+    txt_files: &[PathBuf],
+    gz_files: &[PathBuf],
+) -> Result<(), LogError> {
+    use flate2::read::GzDecoder;
     use flate2::write::GzEncoder;
     use flate2::Compression;
+    use std::io::Read;
 
-    let input = fs::read(src)?;
     let out_file = File::create(dst)?;
-    let mut encoder = GzEncoder::new(out_file, Compression::default());
-    encoder.write_all(&input)?;
+    let encoder = GzEncoder::new(out_file, Compression::default());
+    let mut archive = tar::Builder::new(encoder);
+
+    // .txt 檔案直接加入
+    for path in txt_files {
+        let file_name = path.file_name().unwrap_or_default();
+        archive.append_path_with_name(path, file_name)?;
+    }
+
+    // .txt.gz 解壓後以 .txt 名稱加入
+    for path in gz_files {
+        let gz_data = fs::read(path)?;
+        let mut decoder = GzDecoder::new(&gz_data[..]);
+        let mut content = Vec::new();
+        decoder.read_to_end(&mut content)?;
+
+        // foo.txt.gz → foo.txt
+        let stem = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .trim_end_matches(".gz")
+            .to_string();
+
+        let mut header = tar::Header::new_gnu();
+        header.set_size(content.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        archive.append_data(&mut header, &stem, &content[..])?;
+    }
+
+    let encoder = archive.into_inner()?;
     encoder.finish()?;
     Ok(())
 }
@@ -472,41 +577,78 @@ mod tests {
         let _ = fs::remove_dir_all(&temp_dir);
         fs::create_dir_all(&temp_dir).unwrap();
 
-        // 建立一個「舊」log 檔
-        let old_file = temp_dir.join("old_log.txt");
-        fs::write(&old_file, "old log content").unwrap();
-        // 將修改時間設為 8 天前
+        // 建立兩個「舊」log 檔
+        let old_file1 = temp_dir.join("old_log_1.txt");
+        let old_file2 = temp_dir.join("old_log_2.txt");
+        fs::write(&old_file1, "old log content 1").unwrap();
+        fs::write(&old_file2, "old log content 2").unwrap();
         let eight_days_ago = SystemTime::now() - Duration::from_secs(8 * 24 * 3600);
-        filetime::set_file_mtime(&old_file, filetime::FileTime::from_system_time(eight_days_ago)).unwrap();
+        filetime::set_file_mtime(&old_file1, filetime::FileTime::from_system_time(eight_days_ago)).unwrap();
+        filetime::set_file_mtime(&old_file2, filetime::FileTime::from_system_time(eight_days_ago)).unwrap();
 
         // 建立一個「新」log 檔
         let new_file = temp_dir.join("new_log.txt");
         fs::write(&new_file, "new log content").unwrap();
 
-        // 建立一個已壓縮的檔案（不應被處理）
-        let gz_file = temp_dir.join("already.txt.gz");
-        fs::write(&gz_file, "fake gz").unwrap();
+        // 建立一個既有的 .txt.gz 散檔（應被收集合併）
+        let legacy_gz = temp_dir.join("legacy_log.txt.gz");
+        {
+            use flate2::write::GzEncoder;
+            use flate2::Compression;
+            let f = File::create(&legacy_gz).unwrap();
+            let mut enc = GzEncoder::new(f, Compression::default());
+            enc.write_all(b"legacy gz content").unwrap();
+            enc.finish().unwrap();
+        }
 
         // 執行壓縮
         compress_old_logs(temp_dir.to_str().unwrap(), 7);
 
-        // 舊檔案應被壓縮
-        assert!(!old_file.exists(), "old .txt should be removed");
-        assert!(temp_dir.join("old_log.txt.gz").exists(), ".gz should exist");
+        // 舊 .txt 和舊 .txt.gz 都應被刪除
+        assert!(!old_file1.exists(), "old .txt 1 should be removed");
+        assert!(!old_file2.exists(), "old .txt 2 should be removed");
+        assert!(!legacy_gz.exists(), "legacy .txt.gz should be removed");
+
+        // 應該在 archived/ 子目錄產生一個 YYYY-MM-DD.tar.gz
+        let archive_dir = temp_dir.join("archived");
+        assert!(archive_dir.exists(), "archived/ dir should be created");
+        let tar_gz_files: Vec<_> = fs::read_dir(&archive_dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s == "gz")
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert_eq!(tar_gz_files.len(), 1, "should have exactly one archive");
 
         // 新檔案不變
         assert!(new_file.exists(), "new .txt should remain");
-        assert!(!temp_dir.join("new_log.txt.gz").exists());
 
-        // 已壓縮檔不變
-        assert!(gz_file.exists());
-
-        // 驗證解壓內容正確
-        let gz_data = fs::read(temp_dir.join("old_log.txt.gz")).unwrap();
-        let mut decoder = flate2::read::GzDecoder::new(&gz_data[..]);
-        let mut decoded = String::new();
-        std::io::Read::read_to_string(&mut decoder, &mut decoded).unwrap();
-        assert_eq!(decoded, "old log content");
+        // 驗證 tar.gz 內容（2 txt + 1 解壓的 gz = 3 entries）
+        let archive_path = tar_gz_files[0].path();
+        let gz_data = fs::read(&archive_path).unwrap();
+        let decoder = flate2::read::GzDecoder::new(&gz_data[..]);
+        let mut archive = tar::Archive::new(decoder);
+        let mut found_files: Vec<(String, String)> = Vec::new();
+        for entry in archive.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            let name = entry.path().unwrap().to_string_lossy().to_string();
+            let mut content = String::new();
+            std::io::Read::read_to_string(&mut entry, &mut content).unwrap();
+            found_files.push((name, content));
+        }
+        found_files.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(found_files.len(), 3);
+        assert_eq!(found_files[0].0, "legacy_log.txt");
+        assert_eq!(found_files[0].1, "legacy gz content");
+        assert_eq!(found_files[1].0, "old_log_1.txt");
+        assert_eq!(found_files[1].1, "old log content 1");
+        assert_eq!(found_files[2].0, "old_log_2.txt");
+        assert_eq!(found_files[2].1, "old log content 2");
 
         // 清理
         let _ = fs::remove_dir_all(&temp_dir);
