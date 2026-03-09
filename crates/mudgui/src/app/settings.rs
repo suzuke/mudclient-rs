@@ -1424,6 +1424,11 @@ impl MudApp {
                     }
                     SettingsTab::General => {
                         ui.heading("一般設定");
+                        ui.label(
+                            RichText::new(format!("版本: {}", env!("GIT_VERSION")))
+                                .small()
+                                .color(Color32::GRAY)
+                        );
                         ui.add_space(10.0);
 
                         // === 主題切換 ===
