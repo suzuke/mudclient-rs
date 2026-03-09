@@ -93,6 +93,11 @@ pub struct MudContext {
     /// 觸發器狀態更新 (name, enabled)
     pub trigger_updates: Vec<(String, bool)>,
 
+    /// 觸發器新增: (name, pattern, pattern_type, script, group)
+    pub trigger_additions: Vec<(String, String, String, Option<String>, Option<String>)>,
+    /// 觸發器移除: name
+    pub trigger_removals: Vec<String>,
+
     /// 指令回應收集請求 (command, callback) — None 表示 send_chain 中間指令
     pub response_collectors: Vec<(String, Option<LuaCallback>)>,
 
@@ -396,6 +401,12 @@ impl ScriptEngine {
             let trigger_updates = self.lua.create_table()?;
             mud.set("trigger_updates", trigger_updates)?;
 
+            // 創建 trigger_additions / trigger_removals 表
+            let trigger_additions = self.lua.create_table()?;
+            mud.set("_trigger_additions", trigger_additions)?;
+            let trigger_removals = self.lua.create_table()?;
+            mud.set("_trigger_removals", trigger_removals)?;
+
             // 創建 response_collectors 表
             let response_collectors = self.lua.create_table()?;
             mud.set("response_collectors", response_collectors)?;
@@ -569,6 +580,32 @@ impl ScriptEngine {
                 Ok(())
             })?;
             mud.set("enable_trigger", enable_trigger_fn)?;
+
+            // mud.add_trigger({ name, pattern, pattern_type, script, group })
+            let add_trigger_fn = scope.create_function(|lua, def: mlua::Table| {
+                let mud: mlua::Table = lua.globals().get("mud")?;
+                let additions: mlua::Table = mud.get("_trigger_additions")?;
+                let len = additions.len()? + 1;
+                let entry = lua.create_table()?;
+                entry.set(1, def.get::<String>("name")?)?;
+                entry.set(2, def.get::<String>("pattern")?)?;
+                entry.set(3, def.get::<String>("pattern_type").unwrap_or_else(|_| "regex".to_string()))?;
+                entry.set(4, def.get::<Option<String>>("script").unwrap_or(None))?;
+                entry.set(5, def.get::<Option<String>>("group").unwrap_or(None))?;
+                additions.set(len, entry)?;
+                Ok(())
+            })?;
+            mud.set("add_trigger", add_trigger_fn)?;
+
+            // mud.remove_trigger(name)
+            let remove_trigger_fn = scope.create_function(|lua, name: String| {
+                let mud: mlua::Table = lua.globals().get("mud")?;
+                let removals: mlua::Table = mud.get("_trigger_removals")?;
+                let len = removals.len()? + 1;
+                removals.set(len, name)?;
+                Ok(())
+            })?;
+            mud.set("remove_trigger", remove_trigger_fn)?;
 
             // mud.enable_group(group_name, enabled) 函數 - 啟用/禁用觸發器群組
             let enable_group_fn = scope.create_function_mut(|lua, (group, enabled): (String, bool)| {
@@ -1312,6 +1349,30 @@ impl ScriptEngine {
                         if let (Ok(name), Ok(enabled)) = (tbl.get::<String>(1), tbl.get::<bool>(2)) {
                             context.trigger_updates.push((name, enabled));
                         }
+                    }
+                }
+            }
+
+            // 收集 trigger_additions
+            if let Ok(additions) = mud.get::<mlua::Table>("_trigger_additions") {
+                for pair in additions.pairs::<i64, mlua::Table>() {
+                    if let Ok((_, entry)) = pair {
+                        if let (Ok(name), Ok(pattern), Ok(ptype)) = (
+                            entry.get::<String>(1), entry.get::<String>(2), entry.get::<String>(3),
+                        ) {
+                            let script = entry.get::<Option<String>>(4).unwrap_or(None);
+                            let group = entry.get::<Option<String>>(5).unwrap_or(None);
+                            context.trigger_additions.push((name, pattern, ptype, script, group));
+                        }
+                    }
+                }
+            }
+
+            // 收集 trigger_removals
+            if let Ok(removals) = mud.get::<mlua::Table>("_trigger_removals") {
+                for pair in removals.pairs::<i64, String>() {
+                    if let Ok((_, name)) = pair {
+                        context.trigger_removals.push(name);
                     }
                 }
             }

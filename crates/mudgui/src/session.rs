@@ -1305,6 +1305,12 @@ impl Session {
 
         // 3. 子視窗輸出
         for (win_id, text) in context.window_outputs {
+            // Auto-create sub-window if it doesn't exist
+            if self.window_manager.get(&win_id).is_none() && win_id != "main" {
+                self.window_manager.add_window(
+                    mudcore::SubWindow::new(win_id.clone(), win_id.clone())
+                );
+            }
             self.window_manager.route_message(
                 &win_id,
                 WindowMessage {
@@ -1336,6 +1342,32 @@ impl Session {
                 trigger.enabled = enabled;
                 tracing::info!("Script updated trigger '{}' enabled: {}", name, enabled);
             }
+        }
+
+        // 6a. Trigger removals (before additions, so stop()+start() pattern works)
+        for name in context.trigger_removals {
+            if self.trigger_manager.remove(&name).is_some() {
+                tracing::info!("Script removed trigger '{}'", name);
+            }
+        }
+
+        // 6a2. Trigger additions
+        for (name, pattern, ptype, script, group) in context.trigger_additions {
+            let pat = match ptype.as_str() {
+                "contains" => mudcore::TriggerPattern::Contains(pattern),
+                "startswith" => mudcore::TriggerPattern::StartsWith(pattern),
+                "endswith" => mudcore::TriggerPattern::EndsWith(pattern),
+                _ => mudcore::TriggerPattern::Regex(pattern),
+            };
+            let mut trigger = mudcore::Trigger::new(&name, pat);
+            if let Some(s) = script {
+                trigger = trigger.add_action(mudcore::TriggerAction::ExecuteScript(s));
+            }
+            if let Some(g) = group {
+                trigger = trigger.with_group(g);
+            }
+            self.trigger_manager.add(trigger);
+            tracing::info!("Script added trigger '{}'", name);
         }
 
         // 6b. Trigger group updates

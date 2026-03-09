@@ -71,6 +71,14 @@ function mud.timer(seconds, callback) end
 ---@param enabled boolean true=啟用, false=禁用
 function mud.enable_trigger(name, enabled) end
 
+--- 新增觸發器
+---@param def {name: string, pattern: string, pattern_type?: string, script?: string, group?: string}
+function mud.add_trigger(def) end
+
+--- 移除觸發器
+---@param name string 觸發器名稱
+function mud.remove_trigger(name) end
+
 --- 啟用或禁用整個觸發器群組
 ---@param group_name string 群組名稱
 ---@param enabled boolean true=啟用, false=禁用
