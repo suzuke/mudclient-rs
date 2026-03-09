@@ -334,6 +334,53 @@ impl Default for Logger {
     }
 }
 
+/// 壓縮指定目錄中超過 `days` 天的 .txt log 檔為 .txt.gz
+pub fn compress_old_logs(log_dir: &str, days: u64) {
+    let Ok(entries) = fs::read_dir(log_dir) else {
+        return;
+    };
+    let cutoff = std::time::SystemTime::now()
+        - std::time::Duration::from_secs(days * 24 * 3600);
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(ext) = path.extension() else { continue };
+        if ext != "txt" {
+            continue;
+        }
+        let Ok(meta) = path.metadata() else { continue };
+        let Ok(modified) = meta.modified() else { continue };
+        if modified > cutoff {
+            continue;
+        }
+
+        // 壓縮
+        let gz_path = path.with_extension("txt.gz");
+        match compress_file(&path, &gz_path) {
+            Ok(()) => {
+                let _ = fs::remove_file(&path);
+                tracing::info!("compressed log: {}", path.display());
+            }
+            Err(e) => {
+                tracing::warn!("failed to compress {}: {}", path.display(), e);
+                let _ = fs::remove_file(&gz_path);
+            }
+        }
+    }
+}
+
+fn compress_file(src: &Path, dst: &Path) -> Result<(), LogError> {
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+
+    let input = fs::read(src)?;
+    let out_file = File::create(dst)?;
+    let mut encoder = GzEncoder::new(out_file, Compression::default());
+    encoder.write_all(&input)?;
+    encoder.finish()?;
+    Ok(())
+}
+
 impl Drop for Logger {
     fn drop(&mut self) {
         let _ = self.stop();
@@ -415,5 +462,53 @@ mod tests {
         assert_eq!(lines[2], "Line C");
 
         let _ = fs::remove_file(&log_path);
+    }
+
+    #[test]
+    fn test_compress_old_logs() {
+        use std::time::{Duration, SystemTime};
+
+        let temp_dir = std::env::temp_dir().join("test_compress_logs");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        // 建立一個「舊」log 檔
+        let old_file = temp_dir.join("old_log.txt");
+        fs::write(&old_file, "old log content").unwrap();
+        // 將修改時間設為 8 天前
+        let eight_days_ago = SystemTime::now() - Duration::from_secs(8 * 24 * 3600);
+        filetime::set_file_mtime(&old_file, filetime::FileTime::from_system_time(eight_days_ago)).unwrap();
+
+        // 建立一個「新」log 檔
+        let new_file = temp_dir.join("new_log.txt");
+        fs::write(&new_file, "new log content").unwrap();
+
+        // 建立一個已壓縮的檔案（不應被處理）
+        let gz_file = temp_dir.join("already.txt.gz");
+        fs::write(&gz_file, "fake gz").unwrap();
+
+        // 執行壓縮
+        compress_old_logs(temp_dir.to_str().unwrap(), 7);
+
+        // 舊檔案應被壓縮
+        assert!(!old_file.exists(), "old .txt should be removed");
+        assert!(temp_dir.join("old_log.txt.gz").exists(), ".gz should exist");
+
+        // 新檔案不變
+        assert!(new_file.exists(), "new .txt should remain");
+        assert!(!temp_dir.join("new_log.txt.gz").exists());
+
+        // 已壓縮檔不變
+        assert!(gz_file.exists());
+
+        // 驗證解壓內容正確
+        let gz_data = fs::read(temp_dir.join("old_log.txt.gz")).unwrap();
+        let mut decoder = flate2::read::GzDecoder::new(&gz_data[..]);
+        let mut decoded = String::new();
+        std::io::Read::read_to_string(&mut decoder, &mut decoded).unwrap();
+        assert_eq!(decoded, "old log content");
+
+        // 清理
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 }
