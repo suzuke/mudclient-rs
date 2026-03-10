@@ -1930,6 +1930,15 @@ impl eframe::App for MudApp {
                         }
                         SessionStatus::Connected(_) => {
                             ui.label(RichText::new("● 已連線").color(Color32::GREEN));
+                            let lag_text = session.lag_monitor.display_text();
+                            let color = match session.lag_monitor.lag_color() {
+                                Some(ms) if ms > 2000 => Color32::RED,
+                                Some(ms) if ms > 500 => Color32::YELLOW,
+                                Some(_) => Color32::LIGHT_GREEN,
+                                None => Color32::GRAY,
+                            };
+                            ui.separator();
+                            ui.label(RichText::new(format!("⏱ {}", lag_text)).color(color));
                         }
                         SessionStatus::Reconnecting => {
                             ui.spinner();

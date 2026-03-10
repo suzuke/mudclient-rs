@@ -24,6 +24,77 @@ use crate::api::SharedApiState;
 use crate::config::{AliasConfig, Profile, TriggerConfig};
 use lazy_static::lazy_static;
 
+// ============================================================================
+// LagMonitor — 伺服器延遲偵測
+// ============================================================================
+
+const LAG_HISTORY_SIZE: usize = 20;
+
+pub struct LagMonitor {
+    /// 上次送出指令的時間
+    last_command_sent: Option<Instant>,
+    /// 最近 N 筆延遲紀錄
+    recent_lags: std::collections::VecDeque<Duration>,
+    /// 目前最新一筆延遲
+    pub current_lag: Option<Duration>,
+}
+
+impl LagMonitor {
+    pub fn new() -> Self {
+        Self {
+            last_command_sent: None,
+            recent_lags: std::collections::VecDeque::with_capacity(LAG_HISTORY_SIZE),
+            current_lag: None,
+        }
+    }
+
+    /// 記錄指令發送時間
+    pub fn mark_command_sent(&mut self) {
+        self.last_command_sent = Some(Instant::now());
+    }
+
+    /// 收到 server 回應時計算延遲
+    pub fn mark_response_received(&mut self) {
+        if let Some(sent_at) = self.last_command_sent.take() {
+            let lag = sent_at.elapsed();
+            self.current_lag = Some(lag);
+            if self.recent_lags.len() >= LAG_HISTORY_SIZE {
+                self.recent_lags.pop_front();
+            }
+            self.recent_lags.push_back(lag);
+        }
+    }
+
+    /// 平均延遲
+    pub fn average_lag(&self) -> Option<Duration> {
+        if self.recent_lags.is_empty() {
+            return None;
+        }
+        let total: Duration = self.recent_lags.iter().sum();
+        Some(total / self.recent_lags.len() as u32)
+    }
+
+    /// 格式化顯示延遲（毫秒）
+    pub fn display_text(&self) -> String {
+        match self.current_lag {
+            Some(lag) => {
+                let ms = lag.as_millis();
+                if let Some(avg) = self.average_lag() {
+                    format!("{}ms (avg {}ms)", ms, avg.as_millis())
+                } else {
+                    format!("{}ms", ms)
+                }
+            }
+            None => "--".to_string(),
+        }
+    }
+
+    /// 延遲顏色（用於 UI）
+    pub fn lag_color(&self) -> Option<u128> {
+        self.current_lag.map(|d| d.as_millis())
+    }
+}
+
 /// 訊息路由規則
 pub struct RouteRule {
     pub name: String,
@@ -302,6 +373,9 @@ pub struct Session {
     pub map_database: MapDatabase,
     /// 上次自動儲存時的 map data_version
     map_last_saved_version: u64,
+
+    /// 伺服器延遲偵測
+    pub lag_monitor: LagMonitor,
 }
 
 /// 單字來源類型
@@ -545,6 +619,7 @@ impl Session {
                 }
             },
             map_last_saved_version: 0,
+            lag_monitor: LagMonitor::new(),
         };
 
         // 自動載入 scripts/ 目錄下的腳本
@@ -1824,6 +1899,11 @@ impl Session {
 
 
 
+        // 偵測 server lag：收到非回顯的 server 回應時計算延遲
+        if !is_echo {
+            self.lag_monitor.mark_response_received();
+        }
+
         let mut gagged = false;
         let mut targets = vec!["main".to_string()];
 
@@ -2710,6 +2790,7 @@ impl Session {
             let event_data = format!(r#"{{"command":"{}"}}"#, input.replace('\\', "\\\\").replace('"', "\\\""));
             self.emit_event("command_sent", Some(event_data));
 
+            self.lag_monitor.mark_command_sent();
             let _ = tx.blocking_send(crate::session::Command::Send(input.to_string()));
             tracing::info!("[DEBUG] Command sent to channel: '{}'", input);
         }
