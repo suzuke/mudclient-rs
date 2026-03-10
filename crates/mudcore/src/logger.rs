@@ -29,9 +29,14 @@ pub enum LogFormat {
     Html,
 }
 
+/// 單檔大小上限（5 MB）
+const MAX_LOG_FILE_SIZE: u64 = 5 * 1024 * 1024;
+
 /// 日誌記錄器
 pub struct Logger {
-    /// 日誌檔案路徑
+    /// 日誌檔案路徑（不含序號的基底路徑）
+    base_path: Option<PathBuf>,
+    /// 目前日誌檔案路徑
     path: Option<PathBuf>,
     /// 緩衝寫入器
     writer: Option<BufWriter<File>>,
@@ -45,12 +50,17 @@ pub struct Logger {
     last_message: Option<String>,
     /// 重複計數
     repeat_count: usize,
+    /// 目前檔案已寫入位元組數（估算）
+    bytes_written: u64,
+    /// 目前檔案序號（0 = 第一個檔案，不加後綴）
+    file_index: u32,
 }
 
 impl Logger {
     /// 創建新的日誌記錄器
     pub fn new() -> Self {
         Self {
+            base_path: None,
             path: None,
             writer: None,
             format: LogFormat::default(),
@@ -58,6 +68,8 @@ impl Logger {
             log_count: 0,
             last_message: None,
             repeat_count: 0,
+            bytes_written: 0,
+            file_index: 0,
         }
     }
 
@@ -84,7 +96,7 @@ impl Logger {
     /// 開始記錄到指定檔案
     pub fn start(&mut self, path: impl AsRef<Path>) -> Result<(), LogError> {
         let path = path.as_ref();
-        
+
         // 確保目錄存在
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -95,9 +107,15 @@ impl Logger {
             .append(true)
             .open(path)?;
 
+        // 取得既有檔案大小
+        let existing_size = file.metadata().map(|m| m.len()).unwrap_or(0);
+
         self.writer = Some(BufWriter::new(file));
+        self.base_path = Some(path.to_path_buf());
         self.path = Some(path.to_path_buf());
         self.recording = true;
+        self.bytes_written = existing_size;
+        self.file_index = 0;
 
         // 寫入 HTML 頭部（如果需要）
         if self.format == LogFormat::Html {
@@ -136,26 +154,30 @@ impl Logger {
     fn write_pending_message(&mut self) -> Result<(), LogError> {
         if let Some(msg) = self.last_message.take() {
             let writer = self.writer.as_mut().ok_or(LogError::NotOpen)?;
-            
+
             let final_msg = if self.repeat_count > 1 {
                 format!("{} [x{}]", msg, self.repeat_count)
             } else {
                 msg
             };
 
-            match self.format {
+            let written = match self.format {
                 LogFormat::PlainText => {
                     let clean = Self::strip_ansi(&final_msg);
                     writeln!(writer, "{}", clean)?;
+                    clean.len() + 1
                 }
                 LogFormat::Raw => {
                     writeln!(writer, "{}", final_msg)?;
+                    final_msg.len() + 1
                 }
                 LogFormat::Html => {
                     let html = Self::ansi_to_html(&final_msg);
                     writeln!(writer, "{}<br>", html)?;
+                    html.len() + 5
                 }
-            }
+            };
+            self.bytes_written += written as u64;
             self.repeat_count = 0;
         }
         Ok(())
@@ -186,6 +208,9 @@ impl Logger {
         // 訊息不同，先寫入上一條
         self.write_pending_message()?;
 
+        // 檢查是否需要輪換檔案
+        self.rotate_if_needed()?;
+
         // 更新為新訊息
         self.last_message = Some(message.to_string());
         self.repeat_count = 1;
@@ -198,6 +223,58 @@ impl Logger {
         }
 
         Ok(())
+    }
+
+    /// 檢查檔案大小，超過上限時輪換到新檔案
+    fn rotate_if_needed(&mut self) -> Result<(), LogError> {
+        if self.bytes_written < MAX_LOG_FILE_SIZE {
+            return Ok(());
+        }
+
+        let base_path = match &self.base_path {
+            Some(p) => p.clone(),
+            None => return Ok(()),
+        };
+
+        // 關閉目前檔案
+        if self.format == LogFormat::Html {
+            self.write_html_footer()?;
+        }
+        if let Some(ref mut writer) = self.writer {
+            writer.flush()?;
+        }
+        self.writer = None;
+
+        // 產生新檔名：base.txt → base_001.txt, base_002.txt, ...
+        self.file_index += 1;
+        let new_path = Self::indexed_path(&base_path, self.file_index);
+
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&new_path)?;
+
+        self.bytes_written = 0;
+        self.writer = Some(BufWriter::new(file));
+        self.path = Some(new_path);
+
+        if self.format == LogFormat::Html {
+            self.write_html_header()?;
+        }
+
+        Ok(())
+    }
+
+    /// 產生帶序號的檔案路徑：base.txt → base_001.txt
+    fn indexed_path(base: &Path, index: u32) -> PathBuf {
+        let stem = base.file_stem().unwrap_or_default().to_string_lossy();
+        let ext = base.extension().unwrap_or_default().to_string_lossy();
+        let parent = base.parent().unwrap_or(Path::new("."));
+        if ext.is_empty() {
+            parent.join(format!("{}_{:03}", stem, index))
+        } else {
+            parent.join(format!("{}_{:03}.{}", stem, index, ext))
+        }
     }
 
     /// 刷新緩衝區
@@ -652,5 +729,58 @@ mod tests {
 
         // 清理
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_log_rotation() {
+        let temp_dir = std::env::temp_dir().join("test_log_rotation");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let log_path = temp_dir.join("session.txt");
+
+        let mut logger = Logger::new();
+        logger.start(&log_path).unwrap();
+
+        // 寫入超過 MAX_LOG_FILE_SIZE 的資料（用大訊息加速）
+        let big_msg = "X".repeat(1024); // 1 KB per message
+        let target_bytes = MAX_LOG_FILE_SIZE + 1024;
+        let iterations = (target_bytes / 1024) + 1;
+        for i in 0..iterations {
+            // 每條訊息不同，避免被 folding 摺疊
+            logger.log(&format!("{}{:06}", big_msg, i)).unwrap();
+        }
+        logger.stop().unwrap();
+
+        // 應該產生了第二個檔案
+        assert!(log_path.exists(), "original file should exist");
+        let rotated = temp_dir.join("session_001.txt");
+        assert!(rotated.exists(), "rotated file session_001.txt should exist");
+
+        // 兩個檔案都應該有內容
+        let size1 = fs::metadata(&log_path).unwrap().len();
+        let size2 = fs::metadata(&rotated).unwrap().len();
+        assert!(size1 > 0);
+        assert!(size2 > 0);
+        // 原始檔案不應超過上限太多（允許最後一條訊息略超）
+        assert!(
+            size1 <= MAX_LOG_FILE_SIZE + 2048,
+            "first file size {} should be near the limit", size1
+        );
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_indexed_path() {
+        let base = PathBuf::from("/tmp/logs/session_123.txt");
+        assert_eq!(
+            Logger::indexed_path(&base, 1),
+            PathBuf::from("/tmp/logs/session_123_001.txt")
+        );
+        assert_eq!(
+            Logger::indexed_path(&base, 12),
+            PathBuf::from("/tmp/logs/session_123_012.txt")
+        );
     }
 }
