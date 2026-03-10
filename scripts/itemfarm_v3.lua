@@ -73,8 +73,6 @@ end
 
 -- ===== Scheduler SM =====
 local function create_scheduler_sm()
-    local defaults = _G.ItemFarm.defaults
-
     mud.state_machine("itemfarm_scheduler", {
         initial = "idle",
         states = {
@@ -86,9 +84,6 @@ local function create_scheduler_sm()
             },
             rotating = {
                 enter = function() _G.ItemFarm._scheduler_rotating() end,
-            },
-            recovering = {
-                enter = function() _G.ItemFarm._scheduler_recovering() end,
             },
             resting = {
                 enter = function() _G.ItemFarm._scheduler_resting() end,
@@ -103,11 +98,10 @@ local function create_scheduler_sm()
         transitions = {
             { from = "idle",              event = "job_found",      to = "executing" },
             { from = "idle",              event = "no_active_jobs", to = "stopped" },
-            { from = "executing",         event = "job_done",       to = "recovering" },
-            { from = "executing",         event = "job_failed",     to = "recovering" },
+            { from = "executing",         event = "job_done",       to = "rotating" },
+            { from = "executing",         event = "job_failed",     to = "rotating" },
             { from = "executing",         event = "not_found",      to = "rotating" },
             { from = "executing",         event = "low_resources",  to = "resting" },
-            { from = "recovering",        event = "recovered",      to = "rotating" },
             { from = "resting",           event = "rested",         to = "idle" },
             { from = "rotating",          event = "next_ready",     to = "idle" },
             { from = "rotating",          event = "all_checked",    to = "waiting_respawn" },
@@ -115,7 +109,6 @@ local function create_scheduler_sm()
             -- Emergency stop from any state
             { from = "idle",              event = "stop",           to = "stopped" },
             { from = "executing",         event = "stop",           to = "stopped" },
-            { from = "recovering",        event = "stop",           to = "stopped" },
             { from = "rotating",          event = "stop",           to = "stopped" },
             { from = "resting",           event = "stop",           to = "stopped" },
             { from = "waiting_respawn",   event = "stop",           to = "stopped" },
@@ -149,14 +142,11 @@ function _G.ItemFarm._scheduler_executing()
     local j = _G.ItemFarm.job()
     local defaults = _G.ItemFarm.defaults
 
-    -- ItemFarmExecutor.start() internally calls setup_actions() and
-    -- register_event_handlers(), so no need to call them separately.
     ItemFarmExecutor.start(j, defaults, function(reason)
         if reason == "done" then
             s.loot_count = s.loot_count + 1
             _G.ItemFarm.echo("Loot count: " .. s.loot_count)
         end
-        s.last_result = reason  -- "done", "not_found", "error", "low_resources"
         ItemFarmExecutor.cleanup()
         local event
         if reason == "low_resources" then event = "low_resources"
@@ -194,36 +184,6 @@ function _G.ItemFarm._scheduler_rotating()
     s.current_job = idx
     _G.ItemFarm.echo("Rotating to [" .. idx .. "] " .. _G.ItemFarm.jobs[idx].name)
     mud.sm_transition("itemfarm_scheduler", "next_ready")
-end
-
-function _G.ItemFarm._scheduler_recovering()
-    if mud.sm_current("itemfarm_scheduler") ~= "recovering" then return end
-    local defaults = _G.ItemFarm.defaults
-    local rest_cmd = defaults.rest_cmd or "sleep"
-    local rest_secs = 10  -- short rest between jobs
-
-    local function do_rest()
-        if mud.sm_current("itemfarm_scheduler") ~= "recovering" then return end
-        _G.ItemFarm.echo("Brief rest " .. rest_secs .. "s...")
-        mud.send(rest_cmd)
-        mud.timer(rest_secs, function()
-            if mud.sm_current("itemfarm_scheduler") == "recovering" then
-                mud.send("wa")
-                mud.sm_transition("itemfarm_scheduler", "recovered")
-            end
-        end)
-    end
-
-    local s = _G.ItemFarm.state
-    if s.last_result == "done" then
-        -- Job succeeded: executor's storing state already brought us to storage
-        do_rest()
-    else
-        -- Job failed mid-execution: still at target location, need to walk back
-        local rest_path = defaults.store and defaults.store.path or "recall"
-        _G.ItemFarm.echo("Returning to storage...")
-        MudNav.walk(rest_path, do_rest)
-    end
 end
 
 function _G.ItemFarm._scheduler_waiting_respawn()
