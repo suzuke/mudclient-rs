@@ -20,11 +20,35 @@ jobs:
             target: aarch64-apple-darwin
           - os: macos-latest
             target: x86_64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
 
     runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxcb1-dev \
+            libx11-dev \
+            libx11-xcb-dev \
+            libxi-dev \
+            libxrandr-dev \
+            libxcursor-dev \
+            libgl-dev \
+            libegl-dev \
+            libfontconfig1-dev \
+            libatk1.0-dev \
+            libgtk-3-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -93,6 +117,24 @@ jobs:
         with:
           name: mudgui-windows-x64
           path: mudgui-windows-x64.zip
+
+      # ── Linux: tar.gz with scripts, data & docs ──
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/mudgui dist/
+          cp -r scripts dist/scripts
+          cp -r data dist/data
+          cp -r docs dist/docs
+          tar -czf mudgui-linux-x64.tar.gz -C dist .
+
+      - name: Upload artifact (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mudgui-linux-x64
+          path: mudgui-linux-x64.tar.gz
 
       # ── macOS: upload raw binary for universal merge ──
       - name: Upload macOS binary
@@ -243,5 +285,6 @@ jobs:
         with:
           files: |
             artifacts/mudgui-windows-x64/mudgui-windows-x64.zip
+            artifacts/mudgui-linux-x64/mudgui-linux-x64.tar.gz
             artifacts/mudgui-macos-universal/MudClient-macos-universal.dmg
           generate_release_notes: true
