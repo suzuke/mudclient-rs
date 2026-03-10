@@ -453,9 +453,13 @@ function M.start(job, merged_resources)
             end
         end
         transitions[#transitions + 1] = { from = "summoning", event = "summon_ok", to = next_after_summon or "kill_confirmed" }
-        -- fighting: target fled/missing -> re-summon (mob walked away)
+        -- target fled/missing -> re-summon (mob walked away)
         if states.fighting then
             transitions[#transitions + 1] = { from = "fighting", event = "resummon", to = "summoning" }
+        end
+        if states.charming then
+            transitions[#transitions + 1] = { from = "charming", event = "resummon", to = "summoning" }
+            transitions[#transitions + 1] = { from = "charm_retry", event = "resummon", to = "summoning" }
         end
     end
 
@@ -508,9 +512,10 @@ function M.setup_helpers(job, merged_resources)
 
     e.start_summon = function()
         MudCombat.safe_summon(job.engage.target_display, job.engage.summon_cmd, {
-            max_retries = job.engage.summon_retries or 5, retry_delay = 2.0, verify_delay = 1.0,
+            max_retries = job.engage.summon_retries or 5, retry_delay = 2.0, verify_delay = 0,
         }, function()
-            -- success
+            -- success: immediately send attack/charm before SM transition
+            send_cmds(job.engage.attack)
             mud.sm_transition("itemfarm_engage", "summon_ok")
         end, function()
             -- fail
@@ -657,25 +662,24 @@ function M.register_event_handlers(job)
         end
     end, 0)
 
-    -- ifarm:mob_fled -> re-summon if summon mode, else fail
+    -- ifarm:mob_fled -> re-summon if summon/summon_charm mode, else fail
+    local can_resummon = (mode == "summon" or mode == "summon_charm")
     mud.on("ifarm:mob_fled", function()
         local cur = mud.sm_current("itemfarm_engage")
-        if cur == "fighting" then
-            if mode == "summon" then
-                if _G.ItemFarm and _G.ItemFarm.engage then
-                    _G.ItemFarm.engage.echo("Target fled, re-summoning...")
-                end
-                mud.sm_transition("itemfarm_engage", "resummon")
-            else
-                mud.sm_transition("itemfarm_engage", "fail")
+        if can_resummon and (cur == "fighting" or cur == "charming" or cur == "charm_retry") then
+            if _G.ItemFarm and _G.ItemFarm.engage then
+                _G.ItemFarm.engage.echo("Target fled, re-summoning...")
             end
+            mud.sm_transition("itemfarm_engage", "resummon")
+        elseif cur == "fighting" or cur == "charming" or cur == "charm_retry" then
+            mud.sm_transition("itemfarm_engage", "fail")
         end
     end, 0)
 
-    -- ifarm:target_missing -> re-summon if summon mode + fighting, else fail
+    -- ifarm:target_missing -> re-summon if summon/summon_charm mode, else fail
     mud.on("ifarm:target_missing", function()
         local cur = mud.sm_current("itemfarm_engage")
-        if cur == "fighting" and mode == "summon" then
+        if can_resummon and (cur == "fighting" or cur == "charming" or cur == "charm_retry") then
             if _G.ItemFarm and _G.ItemFarm.engage then
                 _G.ItemFarm.engage.echo("Target missing, re-summoning...")
             end

@@ -4,6 +4,7 @@
 
 local string = string
 local ipairs = ipairs
+local tonumber = tonumber
 
 local function require_module(name)
     local paths = { "scripts.modules." .. name, "modules." .. name, name }
@@ -89,6 +90,14 @@ function M.start(job, defaults, on_done)
             timeout_secs = 5.0,
             timeout_goto = "not_found",
         },
+        pre_check = {
+            enter = function()
+                _G.ItemFarm.executor.echo("Pre-flight status check...")
+                _G.ItemFarm.executor.do_pre_check()
+            end,
+            timeout_secs = 5.0,
+            timeout_goto = "traveling",  -- timeout = assume OK, proceed
+        },
         traveling = {
             enter = function()
                 _G.ItemFarm.executor.echo("Traveling to target...")
@@ -134,7 +143,9 @@ function M.start(job, defaults, on_done)
     }
 
     local transitions = {
-        { from = "searching",  event = "found",         to = "traveling" },
+        { from = "searching",  event = "found",         to = "pre_check" },
+        { from = "pre_check",  event = "status_ok",     to = "traveling" },
+        { from = "pre_check",  event = "low_resources", to = "low_resources" },
         { from = "traveling",  event = "arrived",       to = "engaging" },
         { from = "engaging",   event = "engage_done",   to = "looting" },
         { from = "engaging",   event = "engage_failed", to = "failed" },
@@ -189,6 +200,40 @@ end
 
 function M.setup_actions(job, defaults, merged_resources, merged_loot, merged_store)
     local ex = _G.ItemFarm.executor
+
+    ex.do_pre_check = function()
+        local hp_thresh = merged_resources.hp_threshold or 0
+        local mp_thresh = merged_resources.mp_threshold or 0
+        if hp_thresh == 0 and mp_thresh == 0 then
+            mud.sm_transition("itemfarm_job", "status_ok")
+            return
+        end
+        mud.collect_response("rep", function(lines)
+            if mud.sm_current("itemfarm_job") ~= "pre_check" then return end
+            for _, line in ipairs(lines) do
+                local hp, hp_max = string.match(line, "(%d+)/(%d+) 生命力")
+                local mp, mp_max = string.match(line, "(%d+)/(%d+) 精神力")
+                if hp and hp_max and mp and mp_max then
+                    hp, hp_max = tonumber(hp), tonumber(hp_max)
+                    mp, mp_max = tonumber(mp), tonumber(mp_max)
+                    local hp_pct = hp_max > 0 and (hp / hp_max * 100) or 100
+                    local mp_pct = mp_max > 0 and (mp / mp_max * 100) or 100
+                    local hp_ok = hp_thresh == 0 or hp_pct >= hp_thresh
+                    local mp_ok = mp_thresh == 0 or mp_pct >= mp_thresh
+                    if hp_ok and mp_ok then
+                        _G.ItemFarm.executor.echo(string.format("Status OK (HP %.0f%% MP %.0f%%)", hp_pct, mp_pct))
+                        mud.sm_transition("itemfarm_job", "status_ok")
+                    else
+                        _G.ItemFarm.executor.echo(string.format("Status low (HP %.0f%% MP %.0f%%), need rest", hp_pct, mp_pct))
+                        mud.sm_transition("itemfarm_job", "low_resources")
+                    end
+                    return
+                end
+            end
+            -- Couldn't parse rep output, proceed anyway
+            mud.sm_transition("itemfarm_job", "status_ok")
+        end)
+    end
 
     ex.do_travel = function()
         -- Pre-travel command
