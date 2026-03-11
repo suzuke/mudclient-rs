@@ -34,6 +34,7 @@ pub struct TerminalViewState {
     is_dragged: bool,
     scroll_pixels: f32,
     current_mouse_position_on_grid: TerminalGridPoint,
+    ime_preedit: String,
 }
 
 pub struct TerminalView<'a> {
@@ -147,12 +148,45 @@ impl<'a> TerminalView<'a> {
             return self;
         }
 
+        // Enable IME when terminal has focus
+        layout.ctx.output_mut(|o| {
+            o.ime = Some(egui::output::IMEOutput {
+                rect: layout.rect,
+                cursor_rect: layout.rect, // cursor position for IME candidate window
+            });
+        });
+
         let modifiers = layout.ctx.input(|i| i.modifiers);
         let events = layout.ctx.input(|i| i.events.clone());
+        let mut ime_composing = false;
         for event in events {
             let mut input_actions = vec![];
 
             match event {
+                egui::Event::Ime(ref ime_event) => {
+                    match ime_event {
+                        egui::ImeEvent::Preedit(text) => {
+                            ime_composing = true;
+                            state.ime_preedit = text.clone();
+                        },
+                        egui::ImeEvent::Commit(text) => {
+                            state.ime_preedit.clear();
+                            input_actions.push(InputAction::BackendCall(
+                                BackendCommand::Write(text.as_bytes().to_vec()),
+                            ));
+                        },
+                        egui::ImeEvent::Enabled => {
+                            ime_composing = true;
+                        },
+                        egui::ImeEvent::Disabled => {
+                            ime_composing = false;
+                            state.ime_preedit.clear();
+                        },
+                    }
+                },
+                egui::Event::Text(_) if ime_composing => {
+                    // Skip raw text events during IME composition
+                },
                 egui::Event::Text(_)
                 | egui::Event::Key { .. }
                 | egui::Event::Copy
@@ -339,6 +373,33 @@ impl<'a> TerminalView<'a> {
         }
 
         painter.extend(shapes);
+
+        // Draw IME preedit overlay near cursor
+        if !state.ime_preedit.is_empty() {
+            let cursor_point = content.grid.cursor.point;
+            let cursor_x = layout_min.x + (cell_width * cursor_point.column.0 as f32);
+            let cursor_line = cursor_point.line.0 + content.grid.display_offset() as i32;
+            let cursor_y = layout_min.y + (cell_height * cursor_line as f32);
+
+            let font_id = self.font.font_type();
+            let galley = painter.layout_no_wrap(
+                state.ime_preedit.clone(),
+                font_id,
+                egui::Color32::WHITE,
+            );
+            let text_size = galley.size();
+
+            // Background rect
+            let preedit_rect = Rect::from_min_size(
+                Pos2::new(cursor_x, cursor_y),
+                Vec2::new(text_size.x + 4.0, cell_height),
+            );
+            painter.rect_filled(preedit_rect, egui::Rounding::same(2.0), egui::Color32::from_rgb(60, 60, 80));
+            painter.rect_stroke(preedit_rect, egui::Rounding::same(2.0), Stroke::new(1.0, egui::Color32::from_rgb(120, 120, 180)));
+
+            // Preedit text
+            painter.galley(Pos2::new(cursor_x + 2.0, cursor_y), galley, egui::Color32::WHITE);
+        }
     }
 }
 
