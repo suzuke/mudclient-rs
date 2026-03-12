@@ -1341,9 +1341,18 @@ impl MudApp {
             }
 
             // 按 Enter 發送
-            // 檢查 IME 是否正在組字（Windows 注音等 IME 按 Enter 確認時會同時產生 Key::Enter）
-            let ime_composing = egui::TextEdit::load_state(ui.ctx(), response.id)
-                .map_or(false, |s| s.ime_enabled);
+            // 檢查 IME 是否正在組字：用當前 frame 有無實際內容的 Commit/Preedit 事件判斷
+            // （macOS 上 state.ime_enabled 在中文輸入法啟用時會一直為 true，不適合用來判斷）
+            // 排除空白和換行的 Commit（macOS 按 Enter 不組字時會送出這些）
+            let ime_composing = ui.input(|i| {
+                i.events.iter().any(|e| match e {
+                    egui::Event::Ime(egui::ImeEvent::Commit(s)) => {
+                        !s.is_empty() && s != "\n" && s != "\r"
+                    }
+                    egui::Event::Ime(egui::ImeEvent::Preedit(s)) => !s.is_empty(),
+                    _ => false,
+                })
+            });
             if ui.input(|i| i.key_pressed(egui::Key::Enter)) && response.has_focus() && !ime_composing {
                 // 發送訊息 (即使是空字串也發送，以便在 MUD 中執行重複動作或保持連線)
                 let raw_input = session.input.clone();
@@ -2034,7 +2043,7 @@ impl eframe::App for MudApp {
             egui::TopBottomPanel::bottom("input_panel").show(ctx, |ui| {
                 if let Some(session) = self.session_manager.get_mut(id) {
                     ui.add_space(5.0);
-                    let suppress_autofocus = any_popup_open || self.side_panel_tab == SidePanelTab::Terminal;
+                    let suppress_autofocus = any_popup_open;
                     Self::render_input_area(ui, session, suppress_autofocus, self.global_config.ui.font_size);
                     ui.add_space(5.0);
                 }

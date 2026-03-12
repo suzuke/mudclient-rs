@@ -848,11 +848,12 @@ impl State {
             self.clipboard.set(copied_text);
         }
 
-        let allow_ime = ime.is_some();
-        if self.allow_ime != allow_ime {
-            self.allow_ime = allow_ime;
+        // Always allow IME to avoid macOS state issues when multiple widgets
+        // (e.g. terminal + TextEdit) toggle set_ime_allowed rapidly
+        if !self.allow_ime {
+            self.allow_ime = true;
             profiling::scope!("set_ime_allowed");
-            window.set_ime_allowed(allow_ime);
+            window.set_ime_allowed(true);
         }
 
         if let Some(ime) = ime {

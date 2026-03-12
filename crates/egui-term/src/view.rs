@@ -148,14 +148,6 @@ impl<'a> TerminalView<'a> {
             return self;
         }
 
-        // Enable IME when terminal has focus
-        layout.ctx.output_mut(|o| {
-            o.ime = Some(egui::output::IMEOutput {
-                rect: layout.rect,
-                cursor_rect: layout.rect, // cursor position for IME candidate window
-            });
-        });
-
         let modifiers = layout.ctx.input(|i| i.modifiers);
         let events = layout.ctx.input(|i| i.events.clone());
         let mut ime_composing = false;
@@ -167,19 +159,23 @@ impl<'a> TerminalView<'a> {
                     match ime_event {
                         egui::ImeEvent::Preedit(text) => {
                             ime_composing = true;
+
                             state.ime_preedit = text.clone();
                         },
                         egui::ImeEvent::Commit(text) => {
                             state.ime_preedit.clear();
+
                             input_actions.push(InputAction::BackendCall(
                                 BackendCommand::Write(text.as_bytes().to_vec()),
                             ));
                         },
                         egui::ImeEvent::Enabled => {
                             ime_composing = true;
+
                         },
                         egui::ImeEvent::Disabled => {
                             ime_composing = false;
+
                             state.ime_preedit.clear();
                         },
                     }
